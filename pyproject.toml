@@ -1,0 +1,34 @@
+[project]
+name = "comfyui-wananimate2longvideosampler"
+version = "0.1.0"
+description = "One ComfyUI node that generates arbitrarily long Wan Animate 2 videos by chaining fixed-size chunks internally, with exact output length."
+authors = [{ name = "0xBeycan" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+# No dependencies: torch comes from the ComfyUI runtime and every node this
+# package calls is ComfyUI core. Pinning torch here would risk conflicting
+# with ComfyUI's own version.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/0xBeycan/ComfyUI-WanAnimate2LongVideoSampler"
+Repository = "https://github.com/0xBeycan/ComfyUI-WanAnimate2LongVideoSampler"
+"Bug Tracker" = "https://github.com/0xBeycan/ComfyUI-WanAnimate2LongVideoSampler/issues"
+
+# ComfyUI Registry metadata (https://docs.comfy.org/registry/overview).
+[tool.comfy]
+PublisherId = "0xbeycan"
+DisplayName = "ComfyUI-WanAnimate2LongVideoSampler"
+Icon = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# pytest imports this package's __init__.py during collection (the repo root
+# is a package). nodes.py defers its torch/comfy imports, so that works with
+# nothing but pytest installed. pythonpath lets the tests `import chunk_planner`.
+pythonpath = ["."]
