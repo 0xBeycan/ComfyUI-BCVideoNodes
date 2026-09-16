@@ -72,6 +72,31 @@ def _combo_default(options, preferred):
     return preferred if preferred in options else options[0]
 
 
+class _StepLogger:
+    """Wraps the KSamplerSelect sampler so every denoising step is logged with
+    its chunk. SamplerCustom builds its own callback (preview + progress bar)
+    and CFGGuider hands it to sampler.sample; that is the one point on the
+    core chain where the step is visible without re-implementing SamplerCustom.
+    Everything else is delegated to the real sampler."""
+
+    def __init__(self, sampler):
+        self._sampler = sampler
+        self.label = ""
+
+    def __getattr__(self, name):
+        return getattr(self._sampler, name)
+
+    def sample(self, model_wrap, sigmas, extra_args, callback, noise, latent_image=None, denoise_mask=None, disable_pbar=False):
+        label = self.label
+
+        def logged(step, x0, x, total_steps):
+            logging.info("%s %s step %d/%d", LOG_PREFIX, label, step + 1, total_steps)
+            if callback is not None:
+                callback(step, x0, x, total_steps)
+
+        return self._sampler.sample(model_wrap, sigmas, extra_args, logged, noise, latent_image, denoise_mask, disable_pbar)
+
+
 class WanAnimate2LongVideoSampler:
     @classmethod
     def INPUT_TYPES(cls):
@@ -188,7 +213,7 @@ class WanAnimate2LongVideoSampler:
             sigmas = _call_node("BasicScheduler", model=patched, scheduler=scheduler, steps=steps, denoise=denoise)[0]
         if sigmas.numel() < 2:
             raise ValueError("The sigma schedule is empty (denoise too low, or an empty sigmas_override).")
-        sampler = _call_node("KSamplerSelect", sampler_name=sampler_name)[0]
+        sampler = _StepLogger(_call_node("KSamplerSelect", sampler_name=sampler_name)[0])
 
         progress = comfy.utils.ProgressBar(len(plan))
         chunks = []
@@ -201,6 +226,7 @@ class WanAnimate2LongVideoSampler:
             index = len(lengths)
             length = next_chunk_length(produced, total, frames_per_chunk, overlap)
             chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
+            pose_offset = offset
 
             animate = _call_node(
                 ANIMATE_NODE,
@@ -226,6 +252,10 @@ class WanAnimate2LongVideoSampler:
             if len(animate) < ANIMATE_OUTPUTS:
                 raise RuntimeError("{} returned {} outputs, {} expected. {}".format(ANIMATE_NODE, len(animate), ANIMATE_OUTPUTS, UPDATE_HINT))
             chunk_positive, chunk_negative, latent, trim_latent, trim_image, offset = animate[:ANIMATE_OUTPUTS]
+
+            # 1-based frame span this chunk adds to the output, as the plan expects it.
+            sampler.label = "chunk {}/{} (frames {}-{}/{})".format(index + 1, len(plan), produced + 1, min(total, produced + length - trim_image), total)
+            logging.info("%s %s: length %d, pose offset %d, seed %d", LOG_PREFIX, sampler.label, length, pose_offset, chunk_seed)
 
             sampled = _call_node(
                 "SamplerCustom",
@@ -256,6 +286,7 @@ class WanAnimate2LongVideoSampler:
             if index > 0 and trim_image != overlap:
                 logging.warning("%s %s trimmed %d frames, planner assumed %d; using %d from here on.", LOG_PREFIX, ANIMATE_NODE, trim_image, overlap, trim_image)
                 overlap = trim_image
+            logging.info("%s %s done: %d new frames, %d/%d total", LOG_PREFIX, sampler.label, int(images.shape[0]), min(produced, total), total)
             progress.update(1)
 
         images = torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0]

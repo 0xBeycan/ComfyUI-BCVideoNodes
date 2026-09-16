@@ -351,3 +351,35 @@ def test_overlap_follows_the_core_constant(node_module, monkeypatch):
     assert count == 200
     assert plan.endswith("overlap 5)")
     assert all(c["continue"] == 5 for c in Calls.animate[1:])
+
+
+def test_chunk_and_step_logging(node_module, caplog):
+    caplog.set_level("INFO")
+    run(node_module, pose_frames=200, frames_per_chunk=81, seed=7)
+    # 81 + 81 + 41 -> 81 + 80 + 40 = 201 produced, cropped to 200
+    assert "chunk 1/3 (frames 1-81/200): length 81, pose offset 0, seed 7" in caplog.text
+    assert "chunk 2/3 (frames 82-161/200): length 81, pose offset 81, seed 8" in caplog.text
+    assert "chunk 3/3 (frames 162-200/200): length 41, pose offset 161, seed 9" in caplog.text
+    assert "chunk 2/3 (frames 82-161/200) done: 80 new frames, 161/200 total" in caplog.text
+
+
+def test_step_logger_wraps_callback_and_delegates(node_module, caplog):
+    caplog.set_level("INFO")
+    seen = []
+
+    class Inner:
+        extra_options = {"eta": 1.0}
+
+        def sample(self, model_wrap, sigmas, extra_args, callback, noise, latent_image=None, denoise_mask=None, disable_pbar=False):
+            for i in range(len(sigmas) - 1):
+                callback(i, "x0", "x", len(sigmas) - 1)
+            return "samples"
+
+    logger = node_module._StepLogger(Inner())
+    logger.label = "chunk 2/3 (frames 82-161/200)"
+    assert logger.extra_options == {"eta": 1.0}
+    result = logger.sample("wrap", [3, 2, 1, 0], {}, lambda *a: seen.append(a), "noise")
+    assert result == "samples"
+    assert seen == [(0, "x0", "x", 3), (1, "x0", "x", 3), (2, "x0", "x", 3)]
+    assert "chunk 2/3 (frames 82-161/200) step 1/3" in caplog.text
+    assert "chunk 2/3 (frames 82-161/200) step 3/3" in caplog.text
