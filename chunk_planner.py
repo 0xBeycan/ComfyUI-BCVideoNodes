@@ -1,4 +1,4 @@
-"""Chunk length math for chaining Wan Animate 2 generations.
+"""Chunk length math for chaining Wan Animate / Wan Animate 2 generations.
 
 Pure Python on purpose: no torch, no ComfyUI. The node imports this; the
 tests import only this.
@@ -29,12 +29,15 @@ def snap_up(frames):
 
 
 def overlap_for_motion_frames(motion_frames):
-    """Pixel frames WanAnimate2ToVideo reports as ``trim_image`` when it is
-    seeded with ``motion_frames`` frames of continue_motion.
+    """Pixel frames the core node reports as ``trim_image`` when it is seeded
+    with ``motion_frames`` frames of continue_motion.
 
-    Mirrors the node: the seed frames occupy ``((n - 1) // 4) + 1`` latent
-    frames, and trim_image is ``max(0, latents * 4 - 3)``. Equals n when n is
-    on the 4k+1 grid; the node's CONTINUE_MOTION_FRAMES = 1 gives 1.
+    Mirrors WanAnimateToVideo and WanAnimate2ToVideo alike: the seed frames
+    occupy ``((n - 1) // 4) + 1`` latent frames, and trim_image is
+    ``max(0, latents * 4 - 3)``. Equals n when n is on the 4k+1 grid, i.e.
+    this is also "largest 4k+1 <= n": WanAnimateToVideo's
+    continue_motion_max_frames widget (default 5) gives 5, WanAnimate2ToVideo's
+    CONTINUE_MOTION_FRAMES = 1 gives 1.
     """
     motion_frames = int(motion_frames)
     if motion_frames <= 0:

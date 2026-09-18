@@ -1,7 +1,7 @@
 [project]
-name = "comfyui-wananimate2longvideosampler"
-version = "0.1.0"
-description = "One ComfyUI node that generates arbitrarily long Wan Animate 2 videos by chaining fixed-size chunks internally, with exact output length."
+name = "comfyui-wananimatelongvideosampler"
+version = "0.2.0"
+description = "ComfyUI nodes that generate arbitrarily long Wan Animate and Wan Animate 2 videos by chaining fixed-size chunks internally, with exact output length."
 authors = [{ name = "0xBeycan" }]
 license = { text = "MIT" }
 readme = "README.md"
@@ -16,14 +16,14 @@ dependencies = []
 dev = ["pytest>=7.0"]
 
 [project.urls]
-Homepage = "https://github.com/0xBeycan/ComfyUI-WanAnimate2LongVideoSampler"
-Repository = "https://github.com/0xBeycan/ComfyUI-WanAnimate2LongVideoSampler"
-"Bug Tracker" = "https://github.com/0xBeycan/ComfyUI-WanAnimate2LongVideoSampler/issues"
+Homepage = "https://github.com/0xBeycan/ComfyUI-WanAnimateLongVideoSampler"
+Repository = "https://github.com/0xBeycan/ComfyUI-WanAnimateLongVideoSampler"
+"Bug Tracker" = "https://github.com/0xBeycan/ComfyUI-WanAnimateLongVideoSampler/issues"
 
 # ComfyUI Registry metadata (https://docs.comfy.org/registry/overview).
 [tool.comfy]
 PublisherId = "0xbeycan"
-DisplayName = "ComfyUI-WanAnimate2LongVideoSampler"
+DisplayName = "ComfyUI-WanAnimateLongVideoSampler"
 Icon = ""
 
 [tool.pytest.ini_options]
