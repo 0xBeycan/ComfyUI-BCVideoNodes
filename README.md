@@ -67,8 +67,8 @@ Shared widgets:
 | `frames_per_chunk`         | see per node   | Frames sampled per chunk. Rounded down to the 4k+1 grid, minimum 5.    |
 | `total_frames`             | 0              | Exact output length. 0 = the pose video's frame count.                  |
 | `shift`                    | see per node   | `ModelSamplingSD3` shift, applied before the schedule is built.          |
-| `sampler_name`             | see per node   | Any sampler ComfyUI has; list comes from `comfy.samplers`.               |
-| `scheduler`                | simple         | Any scheduler ComfyUI has.                                               |
+| `sampler_name`             | euler          | Any sampler ComfyUI has; list comes from `comfy.samplers`.               |
+| `scheduler`                | beta           | Any scheduler ComfyUI has.                                               |
 | `steps`, `denoise`         | 6, 1.0         | Schedule length (`BasicScheduler`).                                      |
 | `cfg`                      | 1.0            |                                                                          |
 | `seed`, `seed_mode`        | -, increment   | `increment`: chunk i uses `seed + i`. `fixed`: every chunk uses `seed`.  |
@@ -80,9 +80,10 @@ the patched model.
 
 ### Wan Animate Long Video Sampler (`WanAnimateToVideo`)
 
-Defaults follow the official Wan 2.2 Animate template: `frames_per_chunk`
-77, `shift` 8, `euler` / `simple`, 6 steps, cfg 1 (with the lightx2v distill
-LoRA on the model).
+Defaults: `frames_per_chunk` 77, `shift` 8, `euler` / `beta`, 6 steps, cfg 1
+(with the lightx2v distill LoRA on the model). Chunk length and shift follow
+the official Wan 2.2 Animate template; the template samples `euler` /
+`simple`, `beta` gave the better result in testing.
 
 | Input / widget                | Type                | Notes                                                              |
 |-------------------------------|---------------------|--------------------------------------------------------------------|
@@ -110,7 +111,8 @@ mask core's rows are already right and nothing is touched.
 
 ### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
 
-Defaults: `frames_per_chunk` 81, `shift` 5, `lcm` / `simple`, 6 steps, cfg 1.
+Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `beta`, 6 steps, cfg 1
+(the official template samples `lcm` / `simple`).
 
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|

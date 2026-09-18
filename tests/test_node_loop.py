@@ -279,7 +279,7 @@ def node_module(monkeypatch):
     comfy_mm.throw_exception_if_processing_interrupted = lambda: None
     comfy_samplers = types.ModuleType("comfy.samplers")
     comfy_samplers.SAMPLER_NAMES = ["euler", "lcm"]
-    comfy_samplers.SCHEDULER_NAMES = ["normal", "simple"]
+    comfy_samplers.SCHEDULER_NAMES = ["normal", "simple", "beta"]
     comfy_utils = types.ModuleType("comfy.utils")
     comfy_utils.ProgressBar = FakeProgressBar
     comfy.model_management = comfy_mm
@@ -361,7 +361,6 @@ def test_input_types_shared_widgets(node_module, node):
     spec = getattr(node_module, node).INPUT_TYPES()
     required = list(spec["required"])
     assert required[:len(ANIMATE2_REQUIRED_ORDER) - 4] == ANIMATE2_REQUIRED_ORDER[:-4]
-    assert spec["required"]["scheduler"][1]["default"] == "simple"
     assert spec["required"]["seed"][1]["control_after_generate"] is True
     assert list(spec["optional"])[-1] == "sigmas_override"
     assert node_module._combo_default(["a", "b"], "lcm") == "a"
@@ -421,7 +420,8 @@ def test_animate2_input_types(node_module):
     assert list(spec["optional"]) == ["positive_pose", "clip_vision_output", "clip_vision_output_pose", "sigmas_override"]
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["shift"][1]["default"] == 5.0
-    assert spec["required"]["sampler_name"][1]["default"] == "lcm"
+    assert spec["required"]["sampler_name"][1]["default"] == "euler"
+    assert spec["required"]["scheduler"][1]["default"] == "beta"
     assert spec["required"]["steps"][1]["default"] == 6
 
 
@@ -503,6 +503,7 @@ def test_animate1_input_types(node_module):
     assert spec["required"]["continue_motion_max_frames"][1] == {"default": 5, "min": 1, "max": 16384, "step": 4, "tooltip": spec["required"]["continue_motion_max_frames"][1]["tooltip"]}
     assert spec["required"]["shift"][1]["default"] == 8.0
     assert spec["required"]["sampler_name"][1]["default"] == "euler"
+    assert spec["required"]["scheduler"][1]["default"] == "beta"
     assert spec["required"]["steps"][1]["default"] == 6
     assert spec["optional"]["character_mask"][0] == "MASK"
 
@@ -629,6 +630,24 @@ def test_animate1_chunk_logging(node_module, caplog):
     assert "chunk 2/3 (frames 78-149/200): length 77, pose offset 77, seed 8" in caplog.text
     assert "chunk 3/3 (frames 150-200/200): length 57, pose offset 149, seed 9" in caplog.text
     assert "chunk 2/3 (frames 78-149/200) done: 72 new frames, 149/200 total" in caplog.text
+
+
+def test_step_logger_labels_the_live_tqdm_bar(node_module):
+    tqdm = pytest.importorskip("tqdm")
+    import io
+
+    class Inner:
+        def sample(self, model_wrap, sigmas, extra_args, callback, noise, latent_image=None, denoise_mask=None, disable_pbar=False):
+            # k-diffusion creates the bar inside the loop and drives the callback from it
+            with tqdm.tqdm(total=len(sigmas) - 1, file=io.StringIO()) as bar:
+                for i in range(len(sigmas) - 1):
+                    callback(i, "x0", "x", len(sigmas) - 1)
+                    bar.update(1)
+                return bar.desc
+
+    logger = node_module._StepLogger(Inner(), "[Node]")
+    logger.label = "chunk 2/3 (frames 82-161/200)"
+    assert logger.sample("wrap", [3, 2, 1, 0], {}, None, "noise") == "chunk 2/3 (frames 82-161/200): "
 
 
 def test_step_logger_wraps_callback_and_delegates(node_module, caplog):

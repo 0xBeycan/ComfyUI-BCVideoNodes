@@ -72,12 +72,43 @@ def _combo_default(options, preferred):
     return preferred if preferred in options else options[0]
 
 
+def _active_bar(total_steps):
+    """The console tqdm bar the k-diffusion sampler is driving right now.
+
+    It is created inside the sampler loop, so the only handle is tqdm's own
+    registry of live bars; match on the step count. None when tqdm is not
+    installed or the bar is disabled."""
+    try:
+        from tqdm import tqdm
+        bars = list(tqdm._instances)
+    except (ImportError, AttributeError):
+        return None
+    for bar in bars:
+        if getattr(bar, "total", None) == total_steps and not getattr(bar, "disable", False):
+            return bar
+    return None
+
+
+def _log_beside_bar(message, *args):
+    """logging.info that does not tear through a live tqdm bar: the bar is
+    cleared, the line printed, the bar redrawn on its next update."""
+    try:
+        from tqdm import tqdm
+        context = tqdm.external_write_mode()
+    except ImportError:
+        logging.info(message, *args)
+        return
+    with context:
+        logging.info(message, *args)
+
+
 class _StepLogger:
     """Wraps the KSamplerSelect sampler so every denoising step is logged with
-    its chunk. SamplerCustom builds its own callback (preview + progress bar)
-    and CFGGuider hands it to sampler.sample; that is the one point on the
-    core chain where the step is visible without re-implementing SamplerCustom.
-    Everything else is delegated to the real sampler."""
+    its chunk and the console bar carries the chunk label. SamplerCustom
+    builds its own callback (preview + progress bar) and CFGGuider hands it to
+    sampler.sample; that is the one point on the core chain where the step is
+    visible without re-implementing SamplerCustom. Everything else is
+    delegated to the real sampler."""
 
     def __init__(self, sampler, log_prefix):
         self._sampler = sampler
@@ -92,7 +123,11 @@ class _StepLogger:
         prefix = self._log_prefix
 
         def logged(step, x0, x, total_steps):
-            logging.info("%s %s step %d/%d", prefix, label, step + 1, total_steps)
+            if step == 0:
+                bar = _active_bar(total_steps)
+                if bar is not None:
+                    bar.set_description(label, refresh=False)
+            _log_beside_bar("%s %s step %d/%d", prefix, label, step + 1, total_steps)
             if callback is not None:
                 callback(step, x0, x, total_steps)
 
@@ -112,7 +147,8 @@ class _LongVideoSampler:
     MODEL_TOOLTIP = ""
     DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 5.0
-    DEFAULT_SAMPLER = "lcm"
+    DEFAULT_SAMPLER = "euler"
+    DEFAULT_SCHEDULER = "beta"
     DEFAULT_STEPS = 6
 
     RETURN_TYPES = ("IMAGE", "INT", "STRING")
@@ -157,7 +193,7 @@ class _LongVideoSampler:
                 "total_frames": ("INT", {"default": 0, "min": 0, "max": 100000, "tooltip": "Exact output length. 0 = the pose video's frame count."}),
                 "shift": ("FLOAT", {"default": cls.DEFAULT_SHIFT, "min": 0.0, "max": 100.0, "step": 0.01, "tooltip": "ModelSamplingSD3 shift, applied to the model before the schedule is built."}),
                 "sampler_name": (samplers, {"default": _combo_default(samplers, cls.DEFAULT_SAMPLER)}),
-                "scheduler": (schedulers, {"default": _combo_default(schedulers, "simple"), "tooltip": "Ignored when sigmas_override is connected."}),
+                "scheduler": (schedulers, {"default": _combo_default(schedulers, cls.DEFAULT_SCHEDULER), "tooltip": "Ignored when sigmas_override is connected."}),
                 "steps": ("INT", {"default": cls.DEFAULT_STEPS, "min": 1, "max": 10000, "tooltip": "Ignored when sigmas_override is connected."}),
                 "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Ignored when sigmas_override is connected."}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
@@ -342,6 +378,7 @@ class WanAnimateLongVideoSampler(_LongVideoSampler):
     DEFAULT_CHUNK = 77
     DEFAULT_SHIFT = 8.0
     DEFAULT_SAMPLER = "euler"
+    DEFAULT_SCHEDULER = "beta"
     DEFAULT_STEPS = 6
     DESCRIPTION = "Generates an arbitrarily long Wan 2.2 Animate video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 
@@ -386,7 +423,8 @@ class WanAnimate2LongVideoSampler(_LongVideoSampler):
     MODEL_TOOLTIP = "Wan Animate 2 model. LoRA, WanAnimate2Cache and context-window patches pass through unchanged; shift is applied here."
     DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 5.0
-    DEFAULT_SAMPLER = "lcm"
+    DEFAULT_SAMPLER = "euler"
+    DEFAULT_SCHEDULER = "beta"
     DEFAULT_STEPS = 6
     DESCRIPTION = "Generates an arbitrarily long Wan Animate 2 video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 
