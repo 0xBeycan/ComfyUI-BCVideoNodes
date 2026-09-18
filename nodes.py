@@ -190,7 +190,7 @@ class _LongVideoSampler:
                 "width": ("INT", {"default": 720, "min": 16, "max": max_res, "step": 2, "tooltip": "Multiples of 16 are ideal; the VAE crops to a multiple of 8."}),
                 "height": ("INT", {"default": 1280, "min": 16, "max": max_res, "step": 2, "tooltip": "Multiples of 16 are ideal; the VAE crops to a multiple of 8."}),
                 "frames_per_chunk": ("INT", {"default": cls.DEFAULT_CHUNK, "min": 5, "max": max_res, "step": 4, "tooltip": "Frames sampled per chunk, rounded down to 4k+1. 81 for 24 GB, 49 for 16 GB, 33 for 12 GB are sane starts."}),
-                "total_frames": ("INT", {"default": 0, "min": 0, "max": 100000, "tooltip": "Exact output length. 0 = the pose video's frame count."}),
+                "total_frames": ("INT", {"default": 81, "min": 0, "max": 100000, "tooltip": "Exact output length. 0 = the pose video's frame count."}),
                 "shift": ("FLOAT", {"default": cls.DEFAULT_SHIFT, "min": 0.0, "max": 100.0, "step": 0.01, "tooltip": "ModelSamplingSD3 shift, applied to the model before the schedule is built."}),
                 "sampler_name": (samplers, {"default": _combo_default(samplers, cls.DEFAULT_SAMPLER)}),
                 "scheduler": (schedulers, {"default": _combo_default(schedulers, cls.DEFAULT_SCHEDULER), "tooltip": "Ignored when sigmas_override is connected."}),
@@ -375,7 +375,7 @@ def _fix_replacement_mask(cond, seed_frames, seen):
 class WanAnimateLongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimateToVideo"
     MODEL_TOOLTIP = "Wan 2.2 Animate model. LoRA and model patches pass through unchanged; shift is applied here."
-    DEFAULT_CHUNK = 77
+    DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 8.0
     DEFAULT_SAMPLER = "euler"
     DEFAULT_SCHEDULER = "beta"

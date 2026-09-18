@@ -363,6 +363,9 @@ def test_input_types_shared_widgets(node_module, node):
     assert required[:len(ANIMATE2_REQUIRED_ORDER) - 4] == ANIMATE2_REQUIRED_ORDER[:-4]
     assert spec["required"]["seed"][1]["control_after_generate"] is True
     assert list(spec["optional"])[-1] == "sigmas_override"
+    assert spec["required"]["frames_per_chunk"][1]["default"] == 81
+    assert spec["required"]["total_frames"][1]["default"] == 81
+    assert spec["required"]["total_frames"][1]["min"] == 0  # 0 still means "pose video length"
     assert node_module._combo_default(["a", "b"], "lcm") == "a"
 
 
@@ -499,7 +502,7 @@ def test_animate1_input_types(node_module):
     assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER[:-4] + ["continue_motion_max_frames"]
     assert list(spec["optional"]) == ["clip_vision_output", "face_video", "background_video", "character_mask", "sigmas_override"]
     # core node + official template defaults
-    assert spec["required"]["frames_per_chunk"][1]["default"] == 77
+    assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["continue_motion_max_frames"][1] == {"default": 5, "min": 1, "max": 16384, "step": 4, "tooltip": spec["required"]["continue_motion_max_frames"][1]["tooltip"]}
     assert spec["required"]["shift"][1]["default"] == 8.0
     assert spec["required"]["sampler_name"][1]["default"] == "euler"

@@ -64,8 +64,8 @@ Shared widgets:
 | Widget                     | Default        | Meaning                                                                 |
 |----------------------------|----------------|-------------------------------------------------------------------------|
 | `width`, `height`          | 720 x 1280     | Output size. Multiples of 16 are ideal; the VAE crops to a multiple of 8. |
-| `frames_per_chunk`         | see per node   | Frames sampled per chunk. Rounded down to the 4k+1 grid, minimum 5.    |
-| `total_frames`             | 0              | Exact output length. 0 = the pose video's frame count.                  |
+| `frames_per_chunk`         | 81             | Frames sampled per chunk. Rounded down to the 4k+1 grid, minimum 5.    |
+| `total_frames`             | 81             | Exact output length. 0 = the pose video's frame count; normally linked. |
 | `shift`                    | see per node   | `ModelSamplingSD3` shift, applied before the schedule is built.          |
 | `sampler_name`             | euler          | Any sampler ComfyUI has; list comes from `comfy.samplers`.               |
 | `scheduler`                | beta           | Any scheduler ComfyUI has.                                               |
@@ -80,10 +80,10 @@ the patched model.
 
 ### Wan Animate Long Video Sampler (`WanAnimateToVideo`)
 
-Defaults: `frames_per_chunk` 77, `shift` 8, `euler` / `beta`, 6 steps, cfg 1
-(with the lightx2v distill LoRA on the model). Chunk length and shift follow
-the official Wan 2.2 Animate template; the template samples `euler` /
-`simple`, `beta` gave the better result in testing.
+Defaults: `frames_per_chunk` 81, `shift` 8, `euler` / `beta`, 6 steps, cfg 1
+(with the lightx2v distill LoRA on the model). Shift follows the official
+Wan 2.2 Animate template; the template samples 77-frame windows with
+`euler` / `simple`, 81 and `beta` gave the better result in testing.
 
 | Input / widget                | Type                | Notes                                                              |
 |-------------------------------|---------------------|--------------------------------------------------------------------|
