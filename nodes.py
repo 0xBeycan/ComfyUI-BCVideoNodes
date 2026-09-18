@@ -22,6 +22,7 @@ else:  # top-level import outside ComfyUI (pytest, tooling)
     from chunk_planner import format_plan, next_chunk_length, overlap_for_motion_frames, plan_chunks, produced_frames
 
 ANIMATE_OUTPUTS = 6  # positive, negative, latent, trim_latent, trim_image, video_frame_offset
+WAN_BETA = "wan_beta"
 UPDATE_HINT = "Update ComfyUI: this node needs the {} that returns trim_latent / trim_image / video_frame_offset."
 
 
@@ -70,6 +71,31 @@ def _call_node(node_id, **kwargs):
 
 def _combo_default(options, preferred):
     return preferred if preferred in options else options[0]
+
+
+def wan_beta_sigmas(steps, shift, denoise=1.0, alpha=0.6, beta=0.6):
+    """The sigmas WanVideoWrapper's 'euler/beta' scheduler samples with:
+    diffusers FlowMatchEulerDiscreteScheduler(shift, use_beta_sigmas=True).
+
+    Not ComfyUI's 'beta' scheduler. diffusers shifts first and then spreads
+    Beta(0.6, 0.6) quantiles between the shifted extremes, so shift only
+    moves sigma_min (1/1000 shifted twice: once in __init__, once in
+    set_timesteps) and the steps stay evenly spread. ComfyUI's beta takes
+    the quantiles on the timestep axis and reads them off the shifted table,
+    which at shift 5 and 4 steps gives 1 / .959 / .834 / .518 / 0 against
+    the wrapper's 1 / .731 / .293 / .024 / 0.
+    """
+    import numpy
+    import scipy.stats
+    import torch
+
+    total = int(steps / denoise) if 0.0 < denoise < 1.0 else int(steps)
+    sigma_min = 1.0 / 1000
+    for _ in range(2):
+        sigma_min = shift * sigma_min / (1 + (shift - 1) * sigma_min)
+    quantiles = scipy.stats.beta.ppf(1 - numpy.linspace(0, 1, total), alpha, beta)
+    sigmas = [float(sigma_min + q * (1.0 - sigma_min)) for q in quantiles] + [0.0]
+    return torch.FloatTensor(sigmas[-(int(steps) + 1):])
 
 
 def _active_bar(total_steps):
@@ -148,7 +174,7 @@ class _LongVideoSampler:
     DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 5.0
     DEFAULT_SAMPLER = "euler"
-    DEFAULT_SCHEDULER = "beta"
+    DEFAULT_SCHEDULER = WAN_BETA
     DEFAULT_STEPS = 6
 
     RETURN_TYPES = ("IMAGE", "INT", "STRING")
@@ -166,8 +192,9 @@ class _LongVideoSampler:
         return the frames the core node trims back off every chained chunk."""
         raise NotImplementedError
 
-    def _after_animate(self, positive, negative, trim_image, animate_inputs):
-        """Repairs on the core node's conditioning before it is sampled."""
+    def _after_animate(self, positive, negative, trim_image, length, offset, animate_inputs):
+        """Repairs on the core node's conditioning before it is sampled.
+        ``offset`` is the video_frame_offset the core node was called with."""
         return None
 
     @classmethod
@@ -176,7 +203,7 @@ class _LongVideoSampler:
         import nodes as comfy_nodes
 
         samplers = list(comfy.samplers.SAMPLER_NAMES)
-        schedulers = list(comfy.samplers.SCHEDULER_NAMES)
+        schedulers = list(comfy.samplers.SCHEDULER_NAMES) + [WAN_BETA]
         max_res = comfy_nodes.MAX_RESOLUTION
         required, optional = cls._animate_inputs(max_res)
         return {
@@ -193,7 +220,7 @@ class _LongVideoSampler:
                 "total_frames": ("INT", {"default": 81, "min": 0, "max": 100000, "tooltip": "Exact output length. 0 = the pose video's frame count."}),
                 "shift": ("FLOAT", {"default": cls.DEFAULT_SHIFT, "min": 0.0, "max": 100.0, "step": 0.01, "tooltip": "ModelSamplingSD3 shift, applied to the model before the schedule is built."}),
                 "sampler_name": (samplers, {"default": _combo_default(samplers, cls.DEFAULT_SAMPLER)}),
-                "scheduler": (schedulers, {"default": _combo_default(schedulers, cls.DEFAULT_SCHEDULER), "tooltip": "Ignored when sigmas_override is connected."}),
+                "scheduler": (schedulers, {"default": _combo_default(schedulers, cls.DEFAULT_SCHEDULER), "tooltip": "ComfyUI schedulers, plus wan_beta: the sigmas WanVideoWrapper's euler/beta samples with (diffusers beta sigmas), evenly spread with a small last step. Ignored when sigmas_override is connected."}),
                 "steps": ("INT", {"default": cls.DEFAULT_STEPS, "min": 1, "max": 10000, "tooltip": "Ignored when sigmas_override is connected."}),
                 "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Ignored when sigmas_override is connected."}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
@@ -262,10 +289,13 @@ class _LongVideoSampler:
         if sigmas_override is not None:
             sigmas = sigmas_override
             logging.info("%s sigmas_override connected: scheduler / steps / denoise widgets are ignored.", log_prefix)
+        elif scheduler == WAN_BETA:
+            sigmas = wan_beta_sigmas(steps, shift, denoise)
         else:
             sigmas = _call_node("BasicScheduler", model=patched, scheduler=scheduler, steps=steps, denoise=denoise)[0]
         if sigmas.numel() < 2:
             raise ValueError("The sigma schedule is empty (denoise too low, or an empty sigmas_override).")
+        logging.info("%s sigmas (%s): %s", log_prefix, "override" if sigmas_override is not None else scheduler, ", ".join("{:.4f}".format(float(v)) for v in sigmas))
         sampler = _StepLogger(_call_node("KSamplerSelect", sampler_name=sampler_name)[0], log_prefix)
 
         progress = comfy.utils.ProgressBar(len(plan))
@@ -299,7 +329,7 @@ class _LongVideoSampler:
             if len(animate) < ANIMATE_OUTPUTS:
                 raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), ANIMATE_OUTPUTS, update_hint))
             chunk_positive, chunk_negative, latent, trim_latent, trim_image, offset = animate[:ANIMATE_OUTPUTS]
-            self._after_animate(chunk_positive, chunk_negative, trim_image, animate_inputs)
+            self._after_animate(chunk_positive, chunk_negative, trim_image, length, pose_offset, animate_inputs)
 
             # 1-based frame span this chunk adds to the output, as the plan expects it.
             sampler.label = "chunk {}/{} (frames {}-{}/{})".format(index + 1, len(plan), produced + 1, min(total, produced + length - trim_image), total)
@@ -345,19 +375,42 @@ class _LongVideoSampler:
         return (images, int(images.shape[0]), plan_text)
 
 
-def _fix_replacement_mask(cond, seed_frames, seen):
-    """Put WanAnimateToVideo's character_mask rows where the model expects them.
+def _replacement_mask_rows(character_mask, offset, length, seed_frames, lat_h, lat_w):
+    """The concat-mask rows for one window, built the way the reference
+    implementation (wan/animate.py get_i2v_mask) builds them: one row per
+    pixel frame, frame 0 repeated four times, seed frames known (0), frames
+    the mask does not cover unknown (1). The pixel mask -> latent grid step
+    uses core's filter (nearest-exact). Returns None when the mask does not
+    reach this window, which is when core does not apply it either."""
+    import torch
 
-    The concat mask has 4 rows per latent frame; pixel frame 0 fills the 4
-    rows of latent 0 and pixel frame f (f >= 1) sits at row f + 3. Core's own
-    seed-frame zeroing (ref_motion_latent_length * 4 rows), its other Wan
-    nodes (``mask[:, :, :frames + 3]``) and the reference implementation
-    (``get_i2v_mask``: repeat_interleave of frame 0) all follow that. The
-    character mask alone is written at row f, three rows early: it lands on
-    the last three seed rows, so the seed latent is flagged "character
-    unknown" over real pixels, and every later frame's mask is shifted by
-    three sub-frames. This moves the character rows back by three and
-    restores the seed rows (or repeats frame 0 when there is no seed).
+    mask = character_mask
+    if mask.ndim == 2:
+        mask = mask.unsqueeze(0)
+    if mask.shape[0] == 1:
+        mask = mask.expand(length, -1, -1)
+    elif mask.shape[0] > offset:
+        mask = mask[offset:offset + length]
+    else:
+        return None
+    mask = torch.nn.functional.interpolate(mask.unsqueeze(1).float(), size=(lat_h, lat_w), mode="nearest-exact").squeeze(1)
+    frames = torch.ones((length, lat_h, lat_w), dtype=mask.dtype, device=mask.device)
+    frames[:mask.shape[0]] = mask
+    frames[:seed_frames] = 0.0
+    return torch.cat((frames[:1].expand(4, -1, -1), frames[1:]), dim=0)
+
+
+def _fix_replacement_mask(cond, rows, seen):
+    """Write ``rows`` (from _replacement_mask_rows) over the video part of
+    the concat mask WanAnimateToVideo returns; index 0 stays the reference
+    latent.
+
+    Why: the concat mask has 4 rows per latent frame and pixel frame f >= 1
+    belongs at row f + 3 (frame 0 fills latent 0). Core's own seed-frame
+    zeroing, its other Wan nodes (``mask[:, :, :frames + 3]``) and the
+    reference follow that; WanAnimateToVideo writes character_mask at row f,
+    three rows early, so the last three seed rows are overwritten and the
+    seed latent is flagged "character unknown" over real pixels.
     """
     for entry in cond:
         mask = entry[1].get("concat_mask") if len(entry) > 1 and isinstance(entry[1], dict) else None
@@ -365,11 +418,7 @@ def _fix_replacement_mask(cond, seed_frames, seen):
             continue
         seen.add(id(mask))
         height, width = mask.shape[-2], mask.shape[-1]
-        rows = mask[:, :, 1:].transpose(1, 2).reshape(1, -1, height, width)  # index 0 is the reference latent
-        fixed = rows.clone()
-        fixed[:, seed_frames + 3:] = rows[:, seed_frames:rows.shape[1] - 3]
-        fixed[:, :seed_frames + 3] = 0.0 if seed_frames > 0 else rows[:, :1]
-        mask[:, :, 1:] = fixed.view(1, -1, 4, height, width).transpose(1, 2)
+        mask[:, :, 1:] = rows.to(mask).view(1, -1, 4, height, width).transpose(1, 2)
 
 
 class WanAnimateLongVideoSampler(_LongVideoSampler):
@@ -378,7 +427,7 @@ class WanAnimateLongVideoSampler(_LongVideoSampler):
     DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 8.0
     DEFAULT_SAMPLER = "euler"
-    DEFAULT_SCHEDULER = "beta"
+    DEFAULT_SCHEDULER = WAN_BETA
     DEFAULT_STEPS = 6
     DESCRIPTION = "Generates an arbitrarily long Wan 2.2 Animate video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 
@@ -410,12 +459,20 @@ class WanAnimateLongVideoSampler(_LongVideoSampler):
             logging.info("[%s] character_mask connected: realigning the core node's mask rows (see _fix_replacement_mask).", type(self).__name__)
         return motion_frames
 
-    def _after_animate(self, positive, negative, trim_image, animate_inputs):
-        if animate_inputs.get("character_mask") is None:
+    def _after_animate(self, positive, negative, trim_image, length, offset, animate_inputs):
+        character_mask = animate_inputs.get("character_mask")
+        if character_mask is None:
             return None  # without a character mask core's rows are already right
+        mask = next((entry[1]["concat_mask"] for entry in positive if len(entry) > 1 and isinstance(entry[1], dict) and "concat_mask" in entry[1]), None)
+        if mask is None:
+            return None
+        # core moves the offset back by the seed frames before it seeks the mask
+        rows = _replacement_mask_rows(character_mask, max(0, offset - trim_image), length, trim_image, mask.shape[-2], mask.shape[-1])
+        if rows is None:
+            return None  # mask does not reach this window: core leaves its rows alone, so do we
         seen = set()
-        _fix_replacement_mask(positive, trim_image, seen)
-        _fix_replacement_mask(negative, trim_image, seen)
+        _fix_replacement_mask(positive, rows, seen)
+        _fix_replacement_mask(negative, rows, seen)
 
 
 class WanAnimate2LongVideoSampler(_LongVideoSampler):
@@ -424,7 +481,7 @@ class WanAnimate2LongVideoSampler(_LongVideoSampler):
     DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 5.0
     DEFAULT_SAMPLER = "euler"
-    DEFAULT_SCHEDULER = "beta"
+    DEFAULT_SCHEDULER = WAN_BETA
     DEFAULT_STEPS = 6
     DESCRIPTION = "Generates an arbitrarily long Wan Animate 2 video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 

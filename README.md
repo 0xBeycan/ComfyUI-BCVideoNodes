@@ -68,22 +68,37 @@ Shared widgets:
 | `total_frames`             | 81             | Exact output length. 0 = the pose video's frame count; normally linked. |
 | `shift`                    | see per node   | `ModelSamplingSD3` shift, applied before the schedule is built.          |
 | `sampler_name`             | euler          | Any sampler ComfyUI has; list comes from `comfy.samplers`.               |
-| `scheduler`                | beta           | Any scheduler ComfyUI has.                                               |
+| `scheduler`                | wan_beta       | Any scheduler ComfyUI has, plus `wan_beta` (see below).                  |
 | `steps`, `denoise`         | 6, 1.0         | Schedule length (`BasicScheduler`).                                      |
 | `cfg`                      | 1.0            |                                                                          |
 | `seed`, `seed_mode`        | -, increment   | `increment`: chunk i uses `seed + i`. `fixed`: every chunk uses `seed`.  |
 
 The sampling stack is built once per run in this order:
 `ModelSamplingSD3(model, shift)` -> `BasicScheduler(patched, ...)` (or
-`sigmas_override`) -> `KSamplerSelect(sampler_name)`; every chunk samples with
-the patched model.
+`wan_beta`, or `sigmas_override`) -> `KSamplerSelect(sampler_name)`;
+every chunk samples with the patched model. The sigma list is logged at the
+start of every run.
+
+`wan_beta` is the schedule WanVideoWrapper's `euler/beta` samples with:
+diffusers `FlowMatchEulerDiscreteScheduler(shift, use_beta_sigmas=True)`,
+reproduced exactly. It is not ComfyUI's `beta`. diffusers shifts first and
+then spreads Beta(0.6, 0.6) quantiles between the shifted extremes, so the
+steps stay evenly spread and `shift` only moves the last sigma; ComfyUI's
+`beta` takes the quantiles on the timestep axis and reads them off the
+shifted table, which bunches the steps at high noise and leaves one long
+final step. At shift 5, 4 steps:
+
+| scheduler        | sigmas                          |
+|------------------|---------------------------------|
+| `wan_beta`       | 1.000, 0.731, 0.293, 0.024, 0   |
+| ComfyUI `beta`   | 1.000, 0.959, 0.834, 0.518, 0   |
 
 ### Wan Animate Long Video Sampler (`WanAnimateToVideo`)
 
-Defaults: `frames_per_chunk` 81, `shift` 8, `euler` / `beta`, 6 steps, cfg 1
-(with the lightx2v distill LoRA on the model). Shift follows the official
-Wan 2.2 Animate template; the template samples 77-frame windows with
-`euler` / `simple`, 81 and `beta` gave the better result in testing.
+Defaults: `frames_per_chunk` 81, `shift` 8, `euler` / `wan_beta`, 6
+steps, cfg 1 (with the lightx2v distill LoRA on the model). Shift follows the
+official Wan 2.2 Animate template; the template samples 77-frame windows with
+`euler` / `simple`.
 
 | Input / widget                | Type                | Notes                                                              |
 |-------------------------------|---------------------|--------------------------------------------------------------------|
@@ -98,21 +113,24 @@ node seeks all of them by `video_frame_offset`, so they only need to be
 aligned with the pose video at frame 0. A face video shorter than the pose
 video is zero-padded by the model for the remaining frames.
 
-With `character_mask` connected the node realigns the concat mask that
-`WanAnimateToVideo` returns. The mask has 4 rows per latent frame and pixel
-frame `f >= 1` belongs at row `f + 3` (frame 0 fills latent 0), which is how
-core's own seed-frame rows, its other Wan nodes and the reference
-implementation (`get_i2v_mask`) place them; core writes the character mask at
-row `f`, three rows early, so it overwrites the last three seed rows and the
-seed latent is flagged "character unknown" over real pixels. The node shifts
-the character rows back and restores the seed rows; `tests/test_node_loop.py`
-checks the result against the reference construction. Without a character
-mask core's rows are already right and nothing is touched.
+With `character_mask` connected the node rebuilds the video part of the
+concat mask that `WanAnimateToVideo` returns. The mask has 4 rows per latent
+frame and pixel frame `f >= 1` belongs at row `f + 3` (frame 0 fills latent
+0), which is how core's own seed-frame rows, its other Wan nodes and the
+reference implementation (`get_i2v_mask`) place them; core writes the
+character mask at row `f`, three rows early, so it overwrites the last three
+seed rows and the seed latent is flagged "character unknown" over real
+pixels. The node builds the rows from the pixel mask the way the reference
+does (seed frames known, frame 0 repeated, frames past the mask unknown,
+core's `nearest-exact` as the filter) and writes them over core's;
+`tests/test_node_loop.py` checks the result against the reference
+construction. Without a character mask, or for a window the mask does not
+reach, core's rows are already right and nothing is touched.
 
 ### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
 
-Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `beta`, 6 steps, cfg 1
-(the official template samples `lcm` / `simple`).
+Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `wan_beta`, 6
+steps, cfg 1 (the official template samples `lcm` / `simple`).
 
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|

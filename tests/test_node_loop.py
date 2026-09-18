@@ -45,7 +45,10 @@ class FakeVAE:
         frames = (latents - 1) * 4 + 1
         h = latent.shape[3] * LATENT_DOWN
         w = latent.shape[4] * LATENT_DOWN
-        return torch.zeros(1, frames, h, w, 3)
+        return torch.full((1, frames, h, w, 3), 1.5)  # past the valid range on purpose, so the clamp is observable
+
+    # comfy/sd.py:510
+    process_output = staticmethod(lambda image: image.add_(1.0).div_(2.0).clamp_(0.0, 1.0))
 
 
 class FakeModel:
@@ -99,6 +102,7 @@ class FakeWanAnimateToVideo:
         Calls.animate.append({
             "length": length, "offset_in": video_frame_offset,
             "continue": None if continue_motion is None else continue_motion.shape[0],
+            "continue_max": None if continue_motion is None else float(continue_motion.max()),
             "max_frames": continue_motion_max_frames,
             "pose": None if pose_video is None else float(pose_video[0, 0, 0, 0]),
             "clip": clip_vision_output, "face": face_video, "background": background_video, "mask": character_mask,
@@ -254,7 +258,7 @@ class FakeVAEDecode:
         return {"required": {"samples": ("LATENT",), "vae": ("VAE",)}}
 
     def decode(self, vae, samples):
-        images = vae.decode(samples["samples"])
+        images = vae.process_output(vae.decode(samples["samples"]))
         if len(images.shape) == 5:
             images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
         return (images,)
@@ -424,7 +428,8 @@ def test_animate2_input_types(node_module):
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["shift"][1]["default"] == 5.0
     assert spec["required"]["sampler_name"][1]["default"] == "euler"
-    assert spec["required"]["scheduler"][1]["default"] == "beta"
+    assert spec["required"]["scheduler"][1]["default"] == "wan_beta"
+    assert spec["required"]["scheduler"][0][-1] == "wan_beta"
     assert spec["required"]["steps"][1]["default"] == 6
 
 
@@ -506,7 +511,7 @@ def test_animate1_input_types(node_module):
     assert spec["required"]["continue_motion_max_frames"][1] == {"default": 5, "min": 1, "max": 16384, "step": 4, "tooltip": spec["required"]["continue_motion_max_frames"][1]["tooltip"]}
     assert spec["required"]["shift"][1]["default"] == 8.0
     assert spec["required"]["sampler_name"][1]["default"] == "euler"
-    assert spec["required"]["scheduler"][1]["default"] == "beta"
+    assert spec["required"]["scheduler"][1]["default"] == "wan_beta"
     assert spec["required"]["steps"][1]["default"] == 6
     assert spec["optional"]["character_mask"][0] == "MASK"
 
@@ -598,9 +603,17 @@ def test_animate1_mask_repair_matches_reference_implementation(node_module, seed
         # the last seed latent has 3 of its 4 rows overwritten by the character mask
         assert core[:, 0, seed_latents].sum() == 0 and core[:, 1:, seed_latents].sum() > 0
         assert reference[:, :, 1:1 + seed_latents].sum() == 0
+    rows = node_module._replacement_mask_rows(character_mask, 0, frames, seed_frames, lat_h, lat_w)
+    assert rows.shape == (frames + 3, lat_h, lat_w)
     cond = [["c", {"concat_mask": core}], ["c2", {"concat_mask": core}]]
-    node_module._fix_replacement_mask(cond, seed_frames, set())
+    node_module._fix_replacement_mask(cond, rows, set())
     assert torch.equal(core, reference)
+
+
+def test_animate1_mask_beyond_offset_is_left_to_core(node_module):
+    assert node_module._replacement_mask_rows(torch.zeros(10, 4, 4), 10, 9, 1, 4, 4) is None
+    single = node_module._replacement_mask_rows(torch.ones(1, 4, 4), 500, 9, 1, 4, 4)  # one frame is repeated whatever the offset
+    assert single.shape == (12, 4, 4) and single[:4].sum() == 0 and single[4:].sum() == 8 * 16
 
 
 def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_module):
@@ -624,6 +637,15 @@ def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_modu
         seed_latents = 0 if seed == 0 else ((seed - 1) // 4) + 1
         assert torch.equal(sampled["positive"][0][1]["concat_mask"], core_concat_mask((call["length"] - 1) // 4 + 1, 8, 4, seed_latents, seed, None))
 
+    # a mask that ends before the last window: core skips it there and so do we
+    Calls.animate, Calls.sampler = [], []
+    short_mask = character_mask[:100]
+    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=short_mask, background_video=torch.zeros(frames, 64, 32, 3))
+    last = Calls.animate[-1]
+    assert last["offset_in"] >= 100
+    seed = last["continue"]
+    assert torch.equal(Calls.sampler[-1]["positive"][0][1]["concat_mask"], core_concat_mask((last["length"] - 1) // 4 + 1, 8, 4, ((seed - 1) // 4) + 1, seed, None))
+
 
 def test_animate1_chunk_logging(node_module, caplog):
     caplog.set_level("INFO")
@@ -633,6 +655,31 @@ def test_animate1_chunk_logging(node_module, caplog):
     assert "chunk 2/3 (frames 78-149/200): length 77, pose offset 77, seed 8" in caplog.text
     assert "chunk 3/3 (frames 150-200/200): length 57, pose offset 149, seed 9" in caplog.text
     assert "chunk 2/3 (frames 78-149/200) done: 72 new frames, 149/200 total" in caplog.text
+
+
+def test_wan_beta_sigmas_match_diffusers(node_module):
+    pytest.importorskip("scipy")
+    # diffusers FlowMatchEulerDiscreteScheduler(shift, use_beta_sigmas=True).set_timesteps(steps), recorded from diffusers 0.40
+    expected = {
+        (4, 5.0): [1.0, 0.7313, 0.2931, 0.0244, 0.0],
+        (6, 5.0): [1.0, 0.8801, 0.6462, 0.3783, 0.1443, 0.0244, 0.0],
+        (4, 8.0): [1.0, 0.7412, 0.3190, 0.0602, 0.0],
+        (4, 3.0): [1.0, 0.7270, 0.2819, 0.0089, 0.0],
+    }
+    for (steps, shift), sigmas in expected.items():
+        got = node_module.wan_beta_sigmas(steps, shift).tolist()
+        assert [round(v, 4) for v in got] == sigmas, (steps, shift, got)
+    # denoise < 1 keeps the tail of a longer schedule, like BasicScheduler
+    assert node_module.wan_beta_sigmas(2, 5.0, denoise=0.5).tolist() == node_module.wan_beta_sigmas(4, 5.0).tolist()[-3:]
+
+
+def test_wan_beta_is_used_without_basic_scheduler(node_module, caplog):
+    pytest.importorskip("scipy")
+    caplog.set_level("INFO")
+    run(node_module, pose_frames=81, scheduler="wan_beta", steps=4)
+    sigmas = Calls.sampler[0]["sigmas"].tolist()
+    assert [round(v, 4) for v in sigmas] == [1.0, 0.7313, 0.2931, 0.0244, 0.0]
+    assert "sigmas (wan_beta): 1.0000, 0.7313, 0.2931, 0.0244, 0.0000" in caplog.text
 
 
 def test_step_logger_labels_the_live_tqdm_bar(node_module):
