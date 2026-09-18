@@ -130,6 +130,10 @@ class _LongVideoSampler:
         return the frames the core node trims back off every chained chunk."""
         raise NotImplementedError
 
+    def _after_animate(self, positive, negative, trim_image, animate_inputs):
+        """Repairs on the core node's conditioning before it is sampled."""
+        return None
+
     @classmethod
     def INPUT_TYPES(cls):
         import comfy.samplers
@@ -259,6 +263,7 @@ class _LongVideoSampler:
             if len(animate) < ANIMATE_OUTPUTS:
                 raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), ANIMATE_OUTPUTS, update_hint))
             chunk_positive, chunk_negative, latent, trim_latent, trim_image, offset = animate[:ANIMATE_OUTPUTS]
+            self._after_animate(chunk_positive, chunk_negative, trim_image, animate_inputs)
 
             # 1-based frame span this chunk adds to the output, as the plan expects it.
             sampler.label = "chunk {}/{} (frames {}-{}/{})".format(index + 1, len(plan), produced + 1, min(total, produced + length - trim_image), total)
@@ -304,6 +309,33 @@ class _LongVideoSampler:
         return (images, int(images.shape[0]), plan_text)
 
 
+def _fix_replacement_mask(cond, seed_frames, seen):
+    """Put WanAnimateToVideo's character_mask rows where the model expects them.
+
+    The concat mask has 4 rows per latent frame; pixel frame 0 fills the 4
+    rows of latent 0 and pixel frame f (f >= 1) sits at row f + 3. Core's own
+    seed-frame zeroing (ref_motion_latent_length * 4 rows), its other Wan
+    nodes (``mask[:, :, :frames + 3]``) and the reference implementation
+    (``get_i2v_mask``: repeat_interleave of frame 0) all follow that. The
+    character mask alone is written at row f, three rows early: it lands on
+    the last three seed rows, so the seed latent is flagged "character
+    unknown" over real pixels, and every later frame's mask is shifted by
+    three sub-frames. This moves the character rows back by three and
+    restores the seed rows (or repeats frame 0 when there is no seed).
+    """
+    for entry in cond:
+        mask = entry[1].get("concat_mask") if len(entry) > 1 and isinstance(entry[1], dict) else None
+        if mask is None or id(mask) in seen:
+            continue
+        seen.add(id(mask))
+        height, width = mask.shape[-2], mask.shape[-1]
+        rows = mask[:, :, 1:].transpose(1, 2).reshape(1, -1, height, width)  # index 0 is the reference latent
+        fixed = rows.clone()
+        fixed[:, seed_frames + 3:] = rows[:, seed_frames:rows.shape[1] - 3]
+        fixed[:, :seed_frames + 3] = 0.0 if seed_frames > 0 else rows[:, :1]
+        mask[:, :, 1:] = fixed.view(1, -1, 4, height, width).transpose(1, 2)
+
+
 class WanAnimateLongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimateToVideo"
     MODEL_TOOLTIP = "Wan 2.2 Animate model. LoRA and model patches pass through unchanged; shift is applied here."
@@ -337,7 +369,16 @@ class WanAnimateLongVideoSampler(_LongVideoSampler):
         if motion_frames != wanted:
             logging.info("[%s] continue_motion_max_frames %d is not on the 4k+1 grid; using %d.", type(self).__name__, wanted, motion_frames)
             animate_inputs["continue_motion_max_frames"] = motion_frames
+        if animate_inputs.get("character_mask") is not None:
+            logging.info("[%s] character_mask connected: realigning the core node's mask rows (see _fix_replacement_mask).", type(self).__name__)
         return motion_frames
+
+    def _after_animate(self, positive, negative, trim_image, animate_inputs):
+        if animate_inputs.get("character_mask") is None:
+            return None  # without a character mask core's rows are already right
+        seen = set()
+        _fix_replacement_mask(positive, trim_image, seen)
+        _fix_replacement_mask(negative, trim_image, seen)
 
 
 class WanAnimate2LongVideoSampler(_LongVideoSampler):

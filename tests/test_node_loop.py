@@ -103,8 +103,44 @@ class FakeWanAnimateToVideo:
             "pose": None if pose_video is None else float(pose_video[0, 0, 0, 0]),
             "clip": clip_vision_output, "face": face_video, "background": background_video, "mask": character_mask,
         })
+        trim_image = max(0, ref_motion_latent_length * 4 - 3)
+        if character_mask is not None:  # core: a single frame is repeated, a video is seeked and resized to latent size
+            character_mask = character_mask.repeat(length, 1, 1) if character_mask.shape[0] == 1 else character_mask[video_frame_offset:][:length]
+            character_mask = torch.nn.functional.interpolate(character_mask.unsqueeze(1), size=(height // LATENT_DOWN, width // LATENT_DOWN), mode="nearest").squeeze(1)
+        mask = core_concat_mask(latent_length, height // LATENT_DOWN, width // LATENT_DOWN, ref_motion_latent_length, trim_image, character_mask)
+        positive = [[c[0], {**c[1], "concat_mask": mask}] for c in positive]
+        negative = [[c[0], {**c[1], "concat_mask": mask}] for c in negative]
         latent = {"samples": torch.zeros(batch_size, 16, latent_length + trim_latent, height // LATENT_DOWN, width // LATENT_DOWN)}
-        return FakeNodeOutput(positive, negative, latent, trim_latent, max(0, ref_motion_latent_length * 4 - 3), video_frame_offset + length)
+        return FakeNodeOutput(positive, negative, latent, trim_latent, trim_image, video_frame_offset + length)
+
+
+def core_concat_mask(latent_length, lat_h, lat_w, ref_motion_latent_length, ref_images_num, character_mask):
+    """comfy_extras/nodes_wan.py WanAnimateToVideo mask construction, verbatim
+    apart from the resize (the test masks are already latent sized).
+    0 == known; concat_cond inverts it for the model."""
+    mask = torch.zeros((1, 4, 1, lat_h, lat_w))
+    mask_refmotion = torch.ones((1, 1, latent_length * 4, lat_h, lat_w))
+    if ref_motion_latent_length > 0:
+        mask_refmotion[:, :, :ref_motion_latent_length * 4] = 0.0
+    if character_mask is not None:
+        character_mask = character_mask.unsqueeze(1).movedim(0, 1).unsqueeze(1)  # (1, 1, T, h, w)
+        if character_mask.shape[2] > ref_images_num:
+            mask_refmotion[:, :, ref_images_num:character_mask.shape[2]] = character_mask[:, :, ref_images_num:]
+    mask_refmotion = mask_refmotion.view(1, mask_refmotion.shape[2] // 4, 4, lat_h, lat_w).transpose(1, 2)
+    return torch.cat((mask, mask_refmotion), dim=2)
+
+
+def reference_concat_mask(latent_length, lat_h, lat_w, seed_frames, character_mask):
+    """Wan2.2 wan/animate.py get_i2v_mask + the ref latent, in core's
+    polarity (0 == known). mask_pixel_values there is 1 - character mask."""
+    if character_mask is None:
+        msk = torch.ones(1, (latent_length - 1) * 4 + 1, lat_h, lat_w)
+    else:
+        msk = character_mask.unsqueeze(0).clone()
+    msk[:, :seed_frames] = 0
+    msk = torch.cat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
+    msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w).transpose(1, 2)
+    return torch.cat((torch.zeros((1, 4, 1, lat_h, lat_w)), msk), dim=2)
 
 
 class FakeWanAnimate2ToVideo:
@@ -150,7 +186,7 @@ class FakeSamplerCustom:
 
     @classmethod
     def EXECUTE_NORMALIZED(cls, model, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image):
-        Calls.sampler.append({"seed": noise_seed, "model": model, "sigmas": sigmas})
+        Calls.sampler.append({"seed": noise_seed, "model": model, "sigmas": sigmas, "positive": positive, "negative": negative})
         return FakeNodeOutput(dict(latent_image), dict(latent_image))
 
 
@@ -542,6 +578,47 @@ def test_animate1_total_beyond_pose_keeps_pose_on_every_chunk(node_module, caplo
     assert plan.endswith("(pose 100, overlap 5)")
     assert all(c["pose"] is not None for c in Calls.animate)
     assert Calls.animate[-1]["pose"] == 99.0
+
+
+@pytest.mark.parametrize("seed_frames", [0, 1, 5])
+def test_animate1_mask_repair_matches_reference_implementation(node_module, seed_frames):
+    torch.manual_seed(0)
+    latent_length, lat_h, lat_w = 21, 6, 4
+    frames = (latent_length - 1) * 4 + 1
+    character_mask = (torch.rand(frames, lat_h, lat_w) > 0.5).float()  # changes every frame, so a 3-row shift is visible
+    seed_latents = 0 if seed_frames == 0 else ((seed_frames - 1) // 4) + 1
+    core = core_concat_mask(latent_length, lat_h, lat_w, seed_latents, seed_frames, character_mask)
+    reference = reference_concat_mask(latent_length, lat_h, lat_w, seed_frames, character_mask)
+    if seed_frames > 0:
+        assert not torch.equal(core, reference)  # the core bug this repairs
+        # the last seed latent has 3 of its 4 rows overwritten by the character mask
+        assert core[:, 0, seed_latents].sum() == 0 and core[:, 1:, seed_latents].sum() > 0
+        assert reference[:, :, 1:1 + seed_latents].sum() == 0
+    cond = [["c", {"concat_mask": core}], ["c2", {"concat_mask": core}]]
+    node_module._fix_replacement_mask(cond, seed_frames, set())
+    assert torch.equal(core, reference)
+
+
+def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_module):
+    torch.manual_seed(0)
+    frames = 200
+    # longer than the video so every chunk, including the short last one, is fully covered
+    character_mask = (torch.rand(frames + 80, 64 // LATENT_DOWN, 32 // LATENT_DOWN) > 0.5).float()
+    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask, background_video=torch.zeros(frames, 64, 32, 3))
+    assert [c["length"] for c in Calls.animate] == [77, 77, 57]
+    for call, sampled in zip(Calls.animate, Calls.sampler):
+        mask = sampled["positive"][0][1]["concat_mask"]
+        offset, length = call["offset_in"], call["length"]
+        seed = 0 if call["continue"] is None else call["continue"]
+        assert torch.equal(mask, reference_concat_mask((length - 1) // 4 + 1, 8, 4, seed, character_mask[offset:offset + length]))
+        assert sampled["negative"][0][1]["concat_mask"] is mask  # shared tensor, repaired once
+
+    Calls.animate, Calls.sampler = [], []
+    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77)
+    for call, sampled in zip(Calls.animate, Calls.sampler):
+        seed = 0 if call["continue"] is None else call["continue"]
+        seed_latents = 0 if seed == 0 else ((seed - 1) // 4) + 1
+        assert torch.equal(sampled["positive"][0][1]["concat_mask"], core_concat_mask((call["length"] - 1) // 4 + 1, 8, 4, seed_latents, seed, None))
 
 
 def test_animate1_chunk_logging(node_module, caplog):

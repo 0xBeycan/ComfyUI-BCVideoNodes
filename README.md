@@ -97,6 +97,17 @@ node seeks all of them by `video_frame_offset`, so they only need to be
 aligned with the pose video at frame 0. A face video shorter than the pose
 video is zero-padded by the model for the remaining frames.
 
+With `character_mask` connected the node realigns the concat mask that
+`WanAnimateToVideo` returns. The mask has 4 rows per latent frame and pixel
+frame `f >= 1` belongs at row `f + 3` (frame 0 fills latent 0), which is how
+core's own seed-frame rows, its other Wan nodes and the reference
+implementation (`get_i2v_mask`) place them; core writes the character mask at
+row `f`, three rows early, so it overwrites the last three seed rows and the
+seed latent is flagged "character unknown" over real pixels. The node shifts
+the character rows back and restores the seed rows; `tests/test_node_loop.py`
+checks the result against the reference construction. Without a character
+mask core's rows are already right and nothing is touched.
+
 ### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
 
 Defaults: `frames_per_chunk` 81, `shift` 5, `lcm` / `simple`, 6 steps, cfg 1.
