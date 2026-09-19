@@ -189,8 +189,18 @@ class _LongVideoSampler:
 
     def _prepare(self, animate_cls, animate_inputs):
         """Validate / normalize the pass-through inputs before the loop and
-        return the frames the core node trims back off every chained chunk."""
+        return the frames the core node trims back off every chained chunk.
+        Inputs that are the node's own (not the core node's) are popped here."""
         raise NotImplementedError
+
+    def _patch_model(self, patched, animate_inputs):
+        """Model-level patches applied once per run, after ModelSamplingSD3."""
+        return patched
+
+    def _chunk_inputs(self, index, offset, anchor, pose_video, animate_inputs):
+        """Core-node inputs that change per chunk beyond continue_motion /
+        video_frame_offset / length; merged over the pass-through inputs."""
+        return {}
 
     def _after_animate(self, positive, negative, trim_image, length, offset, animate_inputs):
         """Repairs on the core node's conditioning before it is sampled.
@@ -285,7 +295,7 @@ class _LongVideoSampler:
         plan = plan_chunks(total, frames_per_chunk, overlap)
         logging.info("%s chunk plan: %s", log_prefix, format_plan(plan, produced_frames(plan, overlap), total, pose_frames, overlap))
 
-        patched = _call_node("ModelSamplingSD3", model=model, shift=shift)[0]
+        patched = self._patch_model(_call_node("ModelSamplingSD3", model=model, shift=shift)[0], animate_inputs)
         if sigmas_override is not None:
             sigmas = sigmas_override
             logging.info("%s sigmas_override connected: scheduler / steps / denoise widgets are ignored.", log_prefix)
@@ -310,6 +320,7 @@ class _LongVideoSampler:
             length = next_chunk_length(produced, total, frames_per_chunk, overlap)
             chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
             pose_offset = offset
+            chunk_inputs = dict(animate_inputs, **self._chunk_inputs(index, offset, anchor, pose_video, animate_inputs))
 
             animate = _call_node(
                 animate_node,
@@ -324,7 +335,7 @@ class _LongVideoSampler:
                 pose_video=pose_video,
                 continue_motion=anchor,
                 video_frame_offset=offset,
-                **animate_inputs,
+                **chunk_inputs,
             )
             if len(animate) < ANIMATE_OUTPUTS:
                 raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), ANIMATE_OUTPUTS, update_hint))
@@ -475,6 +486,40 @@ class WanAnimateLongVideoSampler(_LongVideoSampler):
         _fix_replacement_mask(negative, rows, seen)
 
 
+def _seed_frame_attention_bias(log_scale):
+    """Wan Animate 2's ``log_scale`` (wanxiang/models/wan_animate_2_model.py
+    _score_mod_impl): in every generation self-attention the keys of latent
+    frame 1 - the previous chunk's last frame on chained chunks, grey fill on
+    the first - get ``log_scale`` added to their logits. The official distilled
+    checkpoint runs with -1.3 (infer/wan_animate_2_distillation.yaml), the
+    base one with 0.0; core has no equivalent, so distilled weights attend to
+    the seed frame e^1.3 = 3.7x harder than they were trained to.
+
+    Installed as transformer_options["optimized_attention_override"]. The
+    generation calls are told apart by shape: per frame (q = hw tokens, k =
+    all gen tokens, plus that frame's pose tokens) or the whole clip when the
+    pose branch is windowed out; cross-attention and the pose branch have
+    other shapes and pass through untouched."""
+
+    def override(func, q, k, v, **kwargs):
+        options = kwargs.get("transformer_options") or {}
+        grid = options.get("grid_sizes")
+        if options.get("block_type") == "double" and grid is not None:
+            frames, gh, gw = grid
+            hw = gh * gw
+            tokens = frames * hw
+            lq, lk = q.shape[1], k.shape[1]
+            if (lq == hw and lk in (tokens, tokens + hw)) or (lq == tokens and lk == tokens):
+                import comfy.ldm.modules.attention
+
+                bias = q.new_zeros(1, 1, 1, lk)
+                bias[..., hw:2 * hw] = log_scale
+                return comfy.ldm.modules.attention.attention_pytorch(q, k, v, mask=bias, **kwargs)
+        return func(q, k, v, **kwargs)
+
+    return override
+
+
 class WanAnimate2LongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimate2ToVideo"
     MODEL_TOOLTIP = "Wan Animate 2 model. LoRA, WanAnimate2Cache and context-window patches pass through unchanged; shift is applied here."
@@ -482,7 +527,7 @@ class WanAnimate2LongVideoSampler(_LongVideoSampler):
     DEFAULT_SHIFT = 5.0
     DEFAULT_SAMPLER = "euler"
     DEFAULT_SCHEDULER = WAN_BETA
-    DEFAULT_STEPS = 6
+    DEFAULT_STEPS = 10
     DESCRIPTION = "Generates an arbitrarily long Wan Animate 2 video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 
     @classmethod
@@ -492,11 +537,13 @@ class WanAnimate2LongVideoSampler(_LongVideoSampler):
             "pose_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
             "pose_start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             "pose_end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "attn_log_scale": ("FLOAT", {"default": -1.3, "min": -10.0, "max": 10.0, "step": 0.1, "tooltip": "Logit bias on attention to the seed frame (latent frame 1), the official log_scale. -1.3 is the distilled checkpoint's config; use 0.0 for the base checkpoint. Core has no equivalent (0.0 is core's behaviour)."}),
         }
         optional = {
-            "positive_pose": ("CONDITIONING", {"tooltip": "Prompt for the pose branch. Defaults to positive."}),
+            "positive_pose": ("CONDITIONING", {"tooltip": "Prompt for the pose branch. Defaults to positive. The official pipeline never leaves it empty (default: 人物动作的参考视频)."}),
             "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image."}),
-            "clip_vision_output_pose": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the pose video's first frame. Defaults to clip_vision_output."}),
+            "clip_vision_output_pose": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the pose video's first frame, used for every chunk. Defaults to clip_vision_output. Connect clip_vision instead to re-encode per chunk."}),
+            "clip_vision": ("CLIP_VISION", {"tooltip": "When connected, the pose CLIP embedding is re-encoded from the first frame of each chunk's pose window, as the official pipeline does; clip_vision_output_pose is then ignored."}),
         }
         return required, optional
 
@@ -504,10 +551,32 @@ class WanAnimate2LongVideoSampler(_LongVideoSampler):
         start, end = animate_inputs["pose_start_percent"], animate_inputs["pose_end_percent"]
         if start > end:
             raise ValueError("pose_start_percent ({}) must not be greater than pose_end_percent ({}).".format(start, end))
+        self._log_scale = float(animate_inputs.pop("attn_log_scale", -1.3))
+        self._clip_vision = animate_inputs.pop("clip_vision", None)
+        if self._clip_vision is not None:
+            animate_inputs.pop("clip_vision_output_pose", None)
+            logging.info("[%s] clip_vision connected: pose CLIP embedding is re-encoded per chunk.", type(self).__name__)
         # The node keeps the last CONTINUE_MOTION_FRAMES frames of continue_motion
         # and trims their decoded span back off every chained chunk; that span
         # is the overlap. Read from the class so a core change is picked up.
         return overlap_for_motion_frames(int(getattr(animate_cls, "CONTINUE_MOTION_FRAMES", 1)))
+
+    def _patch_model(self, patched, animate_inputs):
+        if self._log_scale == 0.0:
+            return patched
+        patched = patched.clone()
+        patched.model_options.setdefault("transformer_options", {})["optimized_attention_override"] = _seed_frame_attention_bias(self._log_scale)
+        logging.info("[%s] attn_log_scale %.2f on the seed frame (official distilled config: -1.3).", type(self).__name__, self._log_scale)
+        return patched
+
+    def _chunk_inputs(self, index, offset, anchor, pose_video, animate_inputs):
+        if self._clip_vision is None:
+            return {}
+        # the core node moves the offset back by the seed frame before it reads the pose video; encode that same first frame
+        seed = 0 if anchor is None else min(int(anchor.shape[0]), int(getattr(_node_class(self.ANIMATE_NODE), "CONTINUE_MOTION_FRAMES", 1)))
+        first = min(max(0, offset - seed), int(pose_video.shape[0]) - 1)
+        encoded = _call_node("CLIPVisionEncode", clip_vision=self._clip_vision, image=pose_video[first:first + 1], crop="none")[0]
+        return {"clip_vision_output_pose": encoded}
 
 
 NODE_CLASS_MAPPINGS = {

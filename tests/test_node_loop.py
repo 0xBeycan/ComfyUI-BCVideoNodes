@@ -56,7 +56,12 @@ class FakeModel:
         self.model_options = {"transformer_options": {}}
 
     def clone(self):
-        return FakeModel()
+        import copy
+        clone = FakeModel()
+        clone.model_options = copy.deepcopy(self.model_options)
+        if hasattr(self, "shift"):
+            clone.shift = self.shift
+        return clone
 
 
 class Calls:
@@ -176,9 +181,21 @@ class FakeWanAnimate2ToVideo:
             if pose_video.shape[0] <= video_frame_offset:
                 raise ValueError("pose_video has {} frames but video_frame_offset is {}".format(pose_video.shape[0], video_frame_offset))
         Calls.animate.append({"length": length, "offset_in": video_frame_offset, "continue": None if continue_motion is None else continue_motion.shape[0],
-                              "pose_strength": pose_strength, "positive_pose": positive_pose})
+                              "pose_strength": pose_strength, "positive_pose": positive_pose, "clip_pose": clip_vision_output_pose})
         latent = {"samples": torch.zeros(batch_size, 16, latent_length + trim_latent, height // LATENT_DOWN, width // LATENT_DOWN)}
         return FakeNodeOutput(positive, negative, latent, trim_latent, max(0, ref_motion_latent_length * 4 - 3), video_frame_offset + length)
+
+
+class FakeCLIPVisionEncode:
+    FUNCTION = "EXECUTE_NORMALIZED"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"crop": (["center", "none"], {"default": "center"})}}
+
+    @classmethod
+    def EXECUTE_NORMALIZED(cls, clip_vision, image, crop):
+        return FakeNodeOutput(("clip", clip_vision, float(image[0, 0, 0, 0]), crop))
 
 
 class FakeSamplerCustom:
@@ -296,6 +313,7 @@ def node_module(monkeypatch):
         "WanAnimateToVideo": FakeWanAnimateToVideo,
         "WanAnimate2ToVideo": FakeWanAnimate2ToVideo,
         "SamplerCustom": FakeSamplerCustom,
+        "CLIPVisionEncode": FakeCLIPVisionEncode,
         "KSamplerSelect": FakeKSamplerSelect,
         "BasicScheduler": FakeBasicScheduler,
         "TrimVideoLatent": FakeTrimVideoLatent,
@@ -328,7 +346,7 @@ def node_module(monkeypatch):
 
 NODE_DEFAULTS = {
     ANIMATE1: dict(continue_motion_max_frames=5),
-    ANIMATE2: dict(reference_image_strength=1.0, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0),
+    ANIMATE2: dict(reference_image_strength=1.0, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=0.0),
 }
 
 
@@ -423,14 +441,16 @@ def test_log_prefix_names_the_node(node_module, caplog, node):
 
 def test_animate2_input_types(node_module):
     spec = node_module.WanAnimate2LongVideoSampler.INPUT_TYPES()
-    assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER
-    assert list(spec["optional"]) == ["positive_pose", "clip_vision_output", "clip_vision_output_pose", "sigmas_override"]
+    assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER + ["attn_log_scale"]
+    assert list(spec["optional"]) == ["positive_pose", "clip_vision_output", "clip_vision_output_pose", "clip_vision", "sigmas_override"]
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["shift"][1]["default"] == 5.0
     assert spec["required"]["sampler_name"][1]["default"] == "euler"
+    # 10 steps as the official distilled config; wan_beta because it won the user's A/B against beta and simple is one click away
     assert spec["required"]["scheduler"][1]["default"] == "wan_beta"
     assert spec["required"]["scheduler"][0][-1] == "wan_beta"
-    assert spec["required"]["steps"][1]["default"] == 6
+    assert spec["required"]["steps"][1]["default"] == 10
+    assert spec["required"]["attn_log_scale"][1]["default"] == -1.3
 
 
 def test_animate2_exact_length_from_pose(node_module):
@@ -473,6 +493,68 @@ def test_animate2_pass_through_inputs_reach_core(node_module):
     run(node_module, pose_frames=81, pose_strength=0.5, positive_pose=[["motion", {}]])
     assert Calls.animate[0]["pose_strength"] == 0.5
     assert Calls.animate[0]["positive_pose"] == [["motion", {}]]
+
+
+def test_animate2_pose_clip_reencoded_per_chunk_when_clip_vision_connected(node_module, caplog):
+    caplog.set_level("INFO")
+    run(node_module, pose_frames=200, clip_vision_output_pose="static", clip_vision="cv")
+    # the first frame of each chunk's pose window: 0, then 80k (offset moved back by the 1 seed frame)
+    assert [c["clip_pose"] for c in Calls.animate] == [("clip", "cv", 0.0, "none"), ("clip", "cv", 80.0, "none"), ("clip", "cv", 160.0, "none")]
+    assert "re-encoded per chunk" in caplog.text
+
+    Calls.animate, Calls.sampler = [], []
+    run(node_module, pose_frames=200, clip_vision_output_pose="static")
+    assert [c["clip_pose"] for c in Calls.animate] == ["static", "static", "static"]
+
+
+def test_animate2_attn_log_scale_installs_the_attention_override(node_module, caplog):
+    caplog.set_level("INFO")
+    run(node_module, pose_frames=81)
+    assert "optimized_attention_override" not in Calls.sampler[0]["model"].model_options["transformer_options"]
+
+    Calls.animate, Calls.sampler = [], []
+    run(node_module, pose_frames=81, attn_log_scale=-1.3, shift=5.0)
+    model = Calls.sampler[0]["model"]
+    assert callable(model.model_options["transformer_options"]["optimized_attention_override"])
+    assert model.shift == 5.0  # the clone keeps ModelSamplingSD3's patch
+    assert "attn_log_scale -1.30" in caplog.text
+
+
+def test_seed_frame_attention_bias_targets_generation_attention_only(node_module, monkeypatch):
+    seen = []
+    attention = types.ModuleType("comfy.ldm.modules.attention")
+
+    def attention_pytorch(q, k, v, heads, mask=None, **kwargs):
+        seen.append(mask.clone())
+        return "biased"
+
+    attention.attention_pytorch = attention_pytorch
+    ldm = types.ModuleType("comfy.ldm"); modules = types.ModuleType("comfy.ldm.modules")
+    for name, module in {"comfy.ldm": ldm, "comfy.ldm.modules": modules, "comfy.ldm.modules.attention": attention}.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    sys.modules["comfy"].ldm = ldm; ldm.modules = modules; modules.attention = attention
+
+    override = node_module._seed_frame_attention_bias(-1.3)
+    frames, gh, gw = 4, 3, 2
+    hw, tokens = gh * gw, 4 * gh * gw
+    options = {"block_type": "double", "grid_sizes": (frames, gh, gw)}
+    func = lambda q, k, v, **kw: "plain"
+    q = torch.zeros(1, hw, 8, dtype=torch.float16)
+    # per-frame generation call: q = one frame, k = all gen tokens + that frame's pose tokens
+    assert override(func, q, torch.zeros(1, tokens + hw, 8), torch.zeros(1, tokens + hw, 8), heads=2, transformer_options=options) == "biased"
+    mask = seen[-1]
+    assert mask.shape == (1, 1, 1, tokens + hw) and mask.dtype == torch.float16
+    assert torch.allclose(mask[..., hw:2 * hw].float(), torch.full((hw,), -1.3), atol=1e-3)
+    assert (mask[..., :hw] == 0).all() and (mask[..., 2 * hw:] == 0).all()
+    # frame 0's call has no pose tail
+    assert override(func, q, torch.zeros(1, tokens, 8), torch.zeros(1, tokens, 8), heads=2, transformer_options=options) == "biased"
+    # whole-clip self-attention when the pose branch is windowed out
+    assert override(func, torch.zeros(1, tokens, 8), torch.zeros(1, tokens, 8), torch.zeros(1, tokens, 8), heads=2, transformer_options=options) == "biased"
+    # cross-attention (769 text + image tokens), the pose branch ((f-1)*hw), and blocks without grid info pass through
+    assert override(func, torch.zeros(1, tokens, 8), torch.zeros(1, 769, 8), torch.zeros(1, 769, 8), heads=2, transformer_options=options) == "plain"
+    assert override(func, torch.zeros(1, 3 * hw, 8), torch.zeros(1, 3 * hw, 8), torch.zeros(1, 3 * hw, 8), heads=2, transformer_options=options) == "plain"
+    assert override(func, q, torch.zeros(1, tokens, 8), torch.zeros(1, tokens, 8), heads=2, transformer_options={}) == "plain"
+    assert len(seen) == 3
 
 
 def test_animate2_pose_percent_validation(node_module):

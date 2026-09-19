@@ -129,20 +129,38 @@ reach, core's rows are already right and nothing is touched.
 
 ### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
 
-Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `wan_beta`, 6
-steps, cfg 1 (the official template samples `lcm` / `simple`).
+Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `wan_beta`, 10 steps,
+cfg 1, `attn_log_scale` -1.3, i.e. the official distilled configuration
+(`Wan-Video/Wan-Animate-2`, `infer/wan_animate_2_gradio_distillation.py`)
+except for the scheduler: the official sigma list (`linspace(1, 0)` then
+shift) is exactly ComfyUI's `simple` at the same shift, `wan_beta` looked
+better in testing. Both are one click apart.
 
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|
 | `reference_image_strength`  | FLOAT, default 1.0  | Passed to `WanAnimate2ToVideo`.                                       |
 | `pose_strength`             | FLOAT, default 1.0  | Passed to `WanAnimate2ToVideo`.                                       |
 | `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Sampling window for the pose branch. start > end is an error. |
-| `positive_pose`             | CONDITIONING (optional) | Prompt for the pose branch (motion, not character). Defaults to `positive`. |
+| `attn_log_scale`            | FLOAT, default -1.3 | The official `log_scale`: a logit bias on every generation self-attention's keys of latent frame 1, the seed frame. -1.3 is the distilled checkpoint's config (`infer/wan_animate_2_distillation.yaml`); set 0.0 for the base checkpoint. Core has no equivalent; 0.0 is core's behaviour. |
+| `positive_pose`             | CONDITIONING (optional) | Prompt for the pose branch (motion, not character). Defaults to `positive`. The official pipeline never sends it empty; its default is `人物动作的参考视频`. |
 | `clip_vision_output`        | CLIP_VISION_OUTPUT (optional) | CLIP vision of the reference image.                         |
-| `clip_vision_output_pose`   | CLIP_VISION_OUTPUT (optional) | CLIP vision of the pose video's first frame. Defaults to `clip_vision_output`. |
+| `clip_vision_output_pose`   | CLIP_VISION_OUTPUT (optional) | CLIP vision of the pose video's first frame, used for every chunk. Defaults to `clip_vision_output`. |
+| `clip_vision`               | CLIP_VISION (optional) | When connected, the pose CLIP embedding is re-encoded from the first frame of each chunk's pose window (crop `none`), as the official pipeline does per clip; `clip_vision_output_pose` is then ignored. |
 
 The overlap is the core node's `CONTINUE_MOTION_FRAMES` (1 in current core),
 read from the class at run time.
+
+`attn_log_scale` is applied as an attention override
+(`transformer_options["optimized_attention_override"]`): generation
+self-attention calls are recognised by shape and run through PyTorch SDPA
+with an additive mask on the seed frame's keys; cross-attention and the pose
+branch pass through untouched. Without it the distilled
+model attends to the previous chunk's last frame e^1.3 = 3.7x harder than it
+was trained to, which is what made chained chunks drift soft.
+
+The base Animate 2 checkpoint with a Wan 2.1 I2V distill LoRA (lightx2v) is
+not a combination the official repository runs; its fast path is the
+distilled checkpoint.
 
 ## frames_per_chunk by VRAM
 
