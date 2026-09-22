@@ -1,13 +1,19 @@
-"""Wan Animate long video in one node: chained fixed-size chunks.
+"""Every node of the pack; pure wiring, the work is in chunk_planner.py and preprocess/.
 
-One node per core conditioning node: WanAnimateLongVideoSampler wraps
-WanAnimateToVideo (Wan 2.2 Animate) and WanAnimate2LongVideoSampler wraps
+Wan Animate long video in one node: chained fixed-size chunks.
+
+One node per core conditioning node: BCVWanAnimateLongVideoSampler wraps
+WanAnimateToVideo (Wan 2.2 Animate) and BCVWanAnimate2LongVideoSampler wraps
 WanAnimate2ToVideo. Every chunk after the first is seeded with the previous
 chunk's last frames (continue_motion) and the driving videos are read from
 the returned video_frame_offset, so they stay aligned across the whole run.
 The sampling stack (ModelSamplingSD3 -> BasicScheduler -> KSamplerSelect ->
 SamplerCustom -> TrimVideoLatent -> VAEDecode) is called node-by-node from
 ComfyUI's own registry, so this stays in step with core.
+
+The preprocess nodes (pose, SAM 3.1 mask, face crop, guards) each call one
+function of preprocess/; the two WanAnimate wrappers call the individual
+nodes, so a wrapper computes exactly what the chained nodes compute.
 """
 
 import inspect
@@ -180,7 +186,7 @@ class _LongVideoSampler:
     RETURN_TYPES = ("IMAGE", "INT", "STRING")
     RETURN_NAMES = ("images", "frame_count", "chunk_plan")
     FUNCTION = "generate"
-    CATEGORY = "WanAnimate"
+    CATEGORY = "BCVideoNodes/Wan/Animate"
 
     @classmethod
     def _animate_inputs(cls, max_res):
@@ -432,7 +438,7 @@ def _fix_replacement_mask(cond, rows, seen):
         mask[:, :, 1:] = rows.to(mask).view(1, -1, 4, height, width).transpose(1, 2)
 
 
-class WanAnimateLongVideoSampler(_LongVideoSampler):
+class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimateToVideo"
     MODEL_TOOLTIP = "Wan 2.2 Animate model. LoRA and model patches pass through unchanged; shift is applied here."
     DEFAULT_CHUNK = 81
@@ -520,7 +526,7 @@ def _seed_frame_attention_bias(log_scale):
     return override
 
 
-class WanAnimate2LongVideoSampler(_LongVideoSampler):
+class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimate2ToVideo"
     MODEL_TOOLTIP = "Wan Animate 2 model. LoRA, WanAnimate2Cache and context-window patches pass through unchanged; shift is applied here."
     DEFAULT_CHUNK = 81
@@ -579,12 +585,335 @@ class WanAnimate2LongVideoSampler(_LongVideoSampler):
         return {"clip_vision_output_pose": encoded}
 
 
+# --- preprocess nodes ----------------------------------------------------------------------
+# preprocess/ imports torch, cv2 and comfy at module level, so every node imports it on first
+# use, the same way the samplers import torch.
+
+PREPROCESS = "BCVideoNodes"
+
+
+def _preprocess(module):
+    """preprocess.<module>, imported on first use."""
+    import importlib
+
+    if __package__:
+        return importlib.import_module(".preprocess." + module, __package__)
+    return importlib.import_module("preprocess." + module)
+
+
+_WIDGET_TYPES = {bool: "BOOLEAN", int: "INT", float: "FLOAT", str: "STRING"}
+
+
+def _config_inputs(config_cls):
+    """Widgets for every field of the config dataclass `config_cls`, in field order: the
+    field's default, and its range and description from the field metadata ("min", "max",
+    "step", "tooltip" or "doc"). A field of any other type than bool / int / float / str
+    raises; a str field with "choices" in its metadata is a combo."""
+    import dataclasses
+
+    inputs = {}
+    for f in dataclasses.fields(config_cls):
+        if f.default is not dataclasses.MISSING:
+            default = f.default
+        elif f.default_factory is not dataclasses.MISSING:
+            default = f.default_factory()
+        else:
+            raise TypeError("{}.{} has no default; a config node needs one for every field".format(config_cls.__name__, f.name))
+        kind = f.type if isinstance(f.type, type) else {"bool": bool, "int": int, "float": float, "str": str}.get(f.type, type(default))
+        if kind not in _WIDGET_TYPES:
+            raise TypeError("{}.{} is a {}; a config node can only show bool, int, float and str fields".format(config_cls.__name__, f.name, kind))
+        meta = f.metadata
+        options = {"default": kind(default)}
+        for key in ("min", "max", "step"):
+            if key in meta and kind in (int, float):
+                options[key] = kind(meta[key])
+        tooltip = meta.get("tooltip") or meta.get("doc")
+        if tooltip:
+            options["tooltip"] = tooltip
+        if kind is str and "choices" in meta:
+            inputs[f.name] = (list(meta["choices"]), options)
+        else:
+            inputs[f.name] = (_WIDGET_TYPES[kind], options)
+    return inputs
+
+
+def _config(config_cls, values):
+    """`config_cls` built from the widget values that are its fields; the rest are left out."""
+    import dataclasses
+
+    names = {f.name for f in dataclasses.fields(config_cls)}
+    return config_cls(**{k: v for k, v in values.items() if k in names})
+
+
+class _ConfigNode:
+    """A node that builds a config dataclass from its widgets; the widgets are generated from
+    the dataclass, so a new field shows up here without touching this file."""
+
+    MODULE = ""
+    CONFIG = ""
+    FUNCTION = "build"
+    CATEGORY = PREPROCESS
+
+    @classmethod
+    def _config_class(cls):
+        return getattr(_preprocess(cls.MODULE), cls.CONFIG)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": _config_inputs(cls._config_class())}
+
+    def build(self, **values):
+        return (self._config_class()(**values),)
+
+
+class BCVPoseConfig(_ConfigNode):
+    MODULE = "pose"
+    CONFIG = "PoseConfig"
+    RETURN_TYPES = ("POSE_CONFIG",)
+    RETURN_NAMES = ("pose_config",)
+    DESCRIPTION = "Overrides the Pose Detection tunables. Without it Pose Detection runs with the measured defaults, which are the values shown here. min_keypoint_conf is carried in pose_data and is the only keypoint threshold SAM3 box_keypoint mode and the guards use."
+
+
+class BCVSAM3Config(_ConfigNode):
+    MODULE = "sam3"
+    CONFIG = "SAM3Config"
+    RETURN_TYPES = ("SAM3_CONFIG",)
+    RETURN_NAMES = ("sam3_config",)
+    DESCRIPTION = "Overrides the SAM 3.1 Video Track tunables. Without it the node runs with the measured defaults, which are the values shown here. Each tooltip starts with the mode that reads the field; a changed field the run does not read is named in the console."
+
+
+class BCVPoseDetection:
+    @classmethod
+    def INPUT_TYPES(cls):
+        loader = _preprocess("models.loader")
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "pose_model": (list(loader.POSE_MODELS), {"tooltip": "The wholebody pose model (133 keypoints). Its file is downloaded into models/detection on first use."}),
+                "body_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the body sticks in the pose images; 0 leaves the body out, -1 picks it from the frame size"}),
+                "hand_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the hand sticks in the pose images; 0 leaves the hands out, -1 picks it from the frame size"}),
+                "draw_head": ("BOOLEAN", {"default": True, "tooltip": "Whether to draw head keypoints"}),
+                "draw_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "A limb is drawn when both its ends reach this confidence; key_frame_body_points uses the same threshold. Drawing only: SAM3 box_keypoint mode and the guards read pose_config.min_keypoint_conf"}),
+            },
+            "optional": {
+                "bboxes": ("BBOX", {"tooltip": "Person boxes (x1, y1, x2, y2), one per frame or one for all. When connected the detector does not run and pose_config.detection_threshold is ignored; box_window and the edge snap still apply."}),
+                "pose_config": ("POSE_CONFIG", {"tooltip": "Overrides from Pose Config; the measured defaults without it. Its min_keypoint_conf travels in pose_data to SAM3 and the guards."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "POSEDATA", "BBOX", "STRING")
+    RETURN_NAMES = ("pose_images", "pose_data", "bboxes", "key_frame_body_points")
+    FUNCTION = "detect"
+    CATEGORY = PREPROCESS
+    DESCRIPTION = "Wholebody pose on every frame: YOLOv10x finds the person (skipped when bboxes are connected), ViTPose-H or RTMW-l gives the 133 keypoints, which are read against the frames around them, and the pose images are drawn at the frame size. key_frame_body_points is frame 0's confident body keypoints as a points JSON string (KJNodes PointsEditor format). The models are downloaded on first use."
+
+    def detect(self, images, pose_model, body_stick_width, hand_stick_width, draw_head, draw_threshold, bboxes=None, pose_config=None):
+        # supplied boxes skip the detector, so it is not loaded either
+        detector, model = _preprocess("models.loader").load_pose_models(pose_model, detector=bboxes is None)
+        return tuple(_preprocess("pose").pose_detection(images, detector, model, bboxes=bboxes, config=pose_config,
+                                                        body_stick_width=body_stick_width, hand_stick_width=hand_stick_width,
+                                                        draw_head=draw_head, draw_threshold=draw_threshold))
+
+
+class BCVSAM3VideoTrack:
+    @classmethod
+    def INPUT_TYPES(cls):
+        sam3 = _preprocess("sam3")
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "mode": (list(sam3.MODES), {"default": sam3.MODE_PROMPT, "tooltip": "prompt: SAM 3.1 finds the person from the text prompt alone. box_keypoint: the person is described by pose_data's box and body keypoints (needs pose_data); the v1 behaviour. Inputs the mode does not read are ignored with one console line, so switching needs no rewiring."}),
+                "prompt": ("STRING", {"default": sam3.PROMPT, "tooltip": "[prompt] what to segment. The thresholds were measured with the default. Ignored in box_keypoint mode."}),
+                "max_objects": ("INT", {"default": 1, "min": 1, "max": 16, "step": 1, "tooltip": "[prompt] how many tracks may be born and kept; above 1 the [prompt, max_objects > 1] config fields apply. Ignored in box_keypoint mode, which tracks the one person the pose describes."}),
+                "object_index": ("INT", {"default": -1, "min": -1, "max": 15, "step": 1, "tooltip": "[prompt] which tracked object the mask is: -1 the union of every tracked object, k object k (numbered from 0). Ignored in box_keypoint mode."}),
+            },
+            "optional": {
+                "pose_data": ("POSEDATA", {"tooltip": "[box_keypoint] the boxes and keypoints the prompt is built from, and the keypoint threshold (Pose Config's min_keypoint_conf). Ignored in prompt mode."}),
+                "bboxes": ("BBOX", {"tooltip": "[box_keypoint] replaces pose_data's person boxes, used as given (every frame counts as detected). Ignored in prompt mode. If the boxes come from Pose Detection, connect pose_data instead: its bboxes output marks frames with no detected person as full-frame boxes."}),
+                "positive_coords": ("STRING", {"forceInput": True, "tooltip": "[box_keypoint] extra positive points on frame 0, points JSON (KJNodes PointsEditor / easy-sam3). They win: a derived negative within 4% of the box diagonal is dropped. Ignored in prompt mode. In box_keypoint mode, connecting key_frame_body_points here only repeats the automatic points."}),
+                "negative_coords": ("STRING", {"forceInput": True, "tooltip": "[box_keypoint] extra negative points on frame 0, same format. They win: a keypoint or body point within 4% of the box diagonal is dropped. Ignored in prompt mode."}),
+                "sam3_config": ("SAM3_CONFIG", {"tooltip": "Overrides from SAM 3 Config; the measured defaults without it. Only the fields tagged with the current mode are read."}),
+            },
+        }
+
+    RETURN_TYPES = ("MASK",)
+    RETURN_NAMES = ("mask",)
+    FUNCTION = "track"
+    CATEGORY = PREPROCESS
+    DESCRIPTION = "Segments the person on every frame with SAM 3.1 and its tracker memory, from a text prompt or from Pose Detection's boxes and keypoints. The mask covers every frame, including the ones before the person was found. The checkpoint is ComfyUI's own SAM 3.1, downloaded into models/checkpoints on first use."
+
+    def track(self, images, mode, prompt, max_objects, object_index, pose_data=None, bboxes=None, positive_coords=None,
+              negative_coords=None, sam3_config=None):
+        sam3 = _preprocess("sam3")
+        mask = sam3.track(sam3.load_sam3(), images, pose_data=pose_data, bboxes=bboxes, positive_coords=positive_coords,
+                          negative_coords=negative_coords, mode=mode, prompt=prompt, max_objects=max_objects,
+                          object_index=object_index, config=sam3_config)
+        return (mask,)
+
+
+class BCVFaceCrop:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "pose_data": ("POSEDATA",),
+                "face_padding": ("INT", {"default": 0, "min": 0, "max": 512, "step": 1, "tooltip": "Pixels added on every side of the face box before it is cut and resized to 512x512. Ignored when face_bboxes is connected"}),
+            },
+            "optional": {
+                "face_bboxes": ("BBOX", {"tooltip": "Face boxes (x1, y1, x2, y2), one per frame or one for all, cut as they are: pose_data's face keypoints and face_padding are then not used."}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "BBOX")
+    RETURN_NAMES = ("face_images", "face_bboxes")
+    FUNCTION = "crop"
+    CATEGORY = PREPROCESS
+    DESCRIPTION = "Cuts the face out of every frame, from the face keypoints in pose_data or from face_bboxes, as 512x512 images (Wan Animate's face_video)."
+
+    def crop(self, images, pose_data, face_padding, face_bboxes=None):
+        return tuple(_preprocess("face").crop_faces(images, pose_data, face_padding=face_padding, face_bboxes=face_bboxes))
+
+
+def _guard_inputs(config_name, switch, tooltip):
+    guard = _preprocess("guard")
+    return {switch: ("BOOLEAN", {"default": True, "tooltip": tooltip}), **_config_inputs(getattr(guard, config_name))}
+
+
+POSE_GUARD_TOOLTIP = "Stop the workflow when a pose check fails (incomplete skeleton, torso jump, subject switch). Off still measures and reports every check."
+MASK_GUARD_TOOLTIP = "Stop the workflow when a mask check fails (empty, leaking, fragmented, keypoints outside, unstable). Off still measures and reports every check."
+
+
+class BCVPoseGuard:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"pose_data": ("POSEDATA",), **_guard_inputs("PoseGuardConfig", "pose_guard", POSE_GUARD_TOOLTIP)}}
+
+    RETURN_TYPES = ("POSEDATA", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("pose_data", "report", "metrics", "timeline")
+    FUNCTION = "check"
+    CATEGORY = PREPROCESS
+    DESCRIPTION = "Checks the pose frame by frame (missing detections, incomplete skeletons, torso jumps, subject switches, a second person). A failed check stops the workflow with the report when pose_guard is on; 'metrics' has every measurement per frame and 'timeline' plots them. pose_data passes through."
+
+    def check(self, pose_data, pose_guard, **thresholds):
+        guard = _preprocess("guard")
+        return tuple(guard.check_pose(pose_data, _config(guard.PoseGuardConfig, thresholds), enabled=pose_guard))
+
+
+class BCVMaskGuard:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"mask": ("MASK",), "pose_data": ("POSEDATA",),
+                             **_guard_inputs("MaskGuardConfig", "mask_guard", MASK_GUARD_TOOLTIP)}}
+
+    RETURN_TYPES = ("MASK", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("mask", "report", "metrics", "timeline")
+    FUNCTION = "check"
+    CATEGORY = PREPROCESS
+    DESCRIPTION = "Checks the mask frame by frame against the pose it belongs to (empty, leaking, fragmented, keypoints outside the mask, unstable). A failed check stops the workflow with the report when mask_guard is on; 'metrics' has every measurement per frame and 'timeline' plots them. The mask passes through."
+
+    def check(self, mask, pose_data, mask_guard, **thresholds):
+        guard = _preprocess("guard")
+        return tuple(guard.check_mask(mask, pose_data, _config(guard.MaskGuardConfig, thresholds), enabled=mask_guard))
+
+
+# --- Wan Animate wrappers ------------------------------------------------------------------
+
+
+class BCVWanAnimatePreprocess:
+    @classmethod
+    def INPUT_TYPES(cls):
+        pose = BCVPoseDetection.INPUT_TYPES()["required"]
+        sam3 = BCVSAM3VideoTrack.INPUT_TYPES()["required"]
+        face = BCVFaceCrop.INPUT_TYPES()["required"]
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                **{name: pose[name] for name in ("pose_model", "body_stick_width", "hand_stick_width", "draw_head", "draw_threshold")},
+                "face_padding": face["face_padding"],
+                **{name: sam3[name] for name in ("mode", "prompt")},
+            },
+            "optional": {
+                "pose_config": BCVPoseDetection.INPUT_TYPES()["optional"]["pose_config"],
+                "sam3_config": BCVSAM3VideoTrack.INPUT_TYPES()["optional"]["sam3_config"],
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE", "MASK", "POSEDATA", "BBOX", "STRING", "BBOX")
+    RETURN_NAMES = ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes")
+    FUNCTION = "process"
+    CATEGORY = "BCVideoNodes/Wan/Animate"
+    DESCRIPTION = "The whole WanAnimate preprocess in one node: Pose Detection, SAM 3.1 Video Track and Face Crop chained, computing exactly what the three nodes compute when wired by hand. In prompt mode the mask comes from the text prompt alone (one track, the union mask); in box_keypoint mode from the pose, with no extra boxes or points. The models are downloaded on first use. Feed it frames already at the generation size."
+
+    def process(self, images, pose_model, body_stick_width, hand_stick_width, draw_head, draw_threshold, face_padding,
+                mode, prompt, pose_config=None, sam3_config=None):
+        pose_images, pose_data, bboxes, key_points = BCVPoseDetection().detect(
+            images, pose_model, body_stick_width, hand_stick_width, draw_head, draw_threshold, pose_config=pose_config)
+        # prompt mode segments from the text alone; pose_data is connected only where it is read
+        box_keypoint = mode == _preprocess("sam3").MODE_BOX_KEYPOINT
+        (mask,) = BCVSAM3VideoTrack().track(images, mode, prompt, 1, -1, pose_data=pose_data if box_keypoint else None,
+                                            sam3_config=sam3_config)
+        face_images, face_bboxes = BCVFaceCrop().crop(images, pose_data, face_padding)
+        return (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes)
+
+
+class BCVWanAnimatePreprocessGuard:
+    @classmethod
+    def INPUT_TYPES(cls):
+        pose = BCVPoseGuard.INPUT_TYPES()["required"]
+        mask = BCVMaskGuard.INPUT_TYPES()["required"]
+        return {
+            "required": {
+                "mask": mask["mask"],
+                "pose_data": pose["pose_data"],
+                "pose_guard": pose["pose_guard"],
+                "mask_guard": mask["mask_guard"],
+                **{k: v for k, v in pose.items() if k not in ("pose_data", "pose_guard")},
+                **{k: v for k, v in mask.items() if k not in ("mask", "pose_data", "mask_guard")},
+            },
+        }
+
+    RETURN_TYPES = ("MASK", "POSEDATA", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("mask", "pose_data", "report", "metrics", "timeline")
+    FUNCTION = "check"
+    CATEGORY = "BCVideoNodes/Wan/Animate"
+    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler: a failed check of an enabled guard stops the workflow with the report; 'metrics' has every measurement per frame and 'timeline' plots them."
+
+    def check(self, mask, pose_data, pose_guard, mask_guard, **thresholds):
+        guard = _preprocess("guard")
+        # each group measures without stopping; the combined report decides
+        _, _, pose_metrics, _ = guard.check_pose(pose_data, _config(guard.PoseGuardConfig, thresholds), enabled=pose_guard,
+                                                 stop_on_fail=False)
+        _, _, mask_metrics, _ = guard.check_mask(mask, pose_data, _config(guard.MaskGuardConfig, thresholds), enabled=mask_guard,
+                                                 stop_on_fail=False)
+        report, metrics, timeline = guard.combine_guards(pose_metrics, mask_metrics)
+        return (mask, pose_data, report, metrics, timeline)
+
+
 NODE_CLASS_MAPPINGS = {
-    "WanAnimateLongVideoSampler": WanAnimateLongVideoSampler,
-    "WanAnimate2LongVideoSampler": WanAnimate2LongVideoSampler,
+    "BCVWanAnimateLongVideoSampler": BCVWanAnimateLongVideoSampler,
+    "BCVWanAnimate2LongVideoSampler": BCVWanAnimate2LongVideoSampler,
+    "BCVPoseDetection": BCVPoseDetection,
+    "BCVPoseConfig": BCVPoseConfig,
+    "BCVSAM3VideoTrack": BCVSAM3VideoTrack,
+    "BCVSAM3Config": BCVSAM3Config,
+    "BCVFaceCrop": BCVFaceCrop,
+    "BCVPoseGuard": BCVPoseGuard,
+    "BCVMaskGuard": BCVMaskGuard,
+    "BCVWanAnimatePreprocess": BCVWanAnimatePreprocess,
+    "BCVWanAnimatePreprocessGuard": BCVWanAnimatePreprocessGuard,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "WanAnimateLongVideoSampler": "Wan Animate Long Video Sampler",
-    "WanAnimate2LongVideoSampler": "Wan Animate 2 Long Video Sampler",
+    "BCVWanAnimateLongVideoSampler": "Wan Animate Long Video Sampler",
+    "BCVWanAnimate2LongVideoSampler": "Wan Animate 2 Long Video Sampler",
+    "BCVPoseDetection": "Pose Detection",
+    "BCVPoseConfig": "Pose Config",
+    "BCVSAM3VideoTrack": "SAM 3.1 Video Track",
+    "BCVSAM3Config": "SAM 3 Config",
+    "BCVFaceCrop": "Face Crop",
+    "BCVPoseGuard": "Pose Guard",
+    "BCVMaskGuard": "Mask Guard",
+    "BCVWanAnimatePreprocess": "WanAnimate Preprocess",
+    "BCVWanAnimatePreprocessGuard": "WanAnimate Preprocess Guard",
 }

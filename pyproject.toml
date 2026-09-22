@@ -1,29 +1,30 @@
 [project]
-name = "comfyui-wananimatelongvideosampler"
+name = "comfyui-bcvideonodes"
 version = "0.2.0"
-description = "ComfyUI nodes that generate arbitrarily long Wan Animate and Wan Animate 2 videos by chaining fixed-size chunks internally, with exact output length."
+description = "ComfyUI video nodes: wholebody pose detection (ViTPose-H / RTMW-l), SAM 3.1 person tracking, face crops and pose/mask guards for Wan Animate preprocessing, plus Wan Animate / Wan Animate 2 samplers that generate arbitrarily long videos by chaining fixed-size chunks."
 authors = [{ name = "0xBeycan" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
 
-# No dependencies: torch comes from the ComfyUI runtime and every node this
-# package calls is ComfyUI core. Pinning torch here would risk conflicting
-# with ComfyUI's own version.
-dependencies = []
+# torch, numpy, scipy, safetensors and tqdm come from the ComfyUI runtime (its own
+# requirements.txt); pinning them here would risk conflicting with ComfyUI's versions.
+# The models are native torch modules loaded from safetensors: onnx is not needed at runtime.
+dependencies = ["opencv-python"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+# offline model conversion and upload (scripts/), and the tests
+dev = ["pytest>=7.0", "onnx", "huggingface_hub"]
 
 [project.urls]
-Homepage = "https://github.com/0xBeycan/ComfyUI-WanAnimateLongVideoSampler"
-Repository = "https://github.com/0xBeycan/ComfyUI-WanAnimateLongVideoSampler"
-"Bug Tracker" = "https://github.com/0xBeycan/ComfyUI-WanAnimateLongVideoSampler/issues"
+Homepage = "https://github.com/0xBeycan/ComfyUI-BCVideoNodes"
+Repository = "https://github.com/0xBeycan/ComfyUI-BCVideoNodes"
+"Bug Tracker" = "https://github.com/0xBeycan/ComfyUI-BCVideoNodes/issues"
 
 # ComfyUI Registry metadata (https://docs.comfy.org/registry/overview).
 [tool.comfy]
-PublisherId = "0xbeycan"
-DisplayName = "ComfyUI-WanAnimateLongVideoSampler"
+PublisherId = "beycanai"
+DisplayName = "ComfyUI-BCVideoNodes"
 Icon = ""
 
 [tool.pytest.ini_options]

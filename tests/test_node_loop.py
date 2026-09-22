@@ -16,8 +16,8 @@ torch = pytest.importorskip("torch")
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-ANIMATE1 = "WanAnimateLongVideoSampler"
-ANIMATE2 = "WanAnimate2LongVideoSampler"
+ANIMATE1 = "BCVWanAnimateLongVideoSampler"
+ANIMATE2 = "BCVWanAnimate2LongVideoSampler"
 CONTINUE_MOTION_FRAMES = 1  # WanAnimate2ToVideo's class constant
 LATENT_DOWN = 8
 
@@ -440,7 +440,7 @@ def test_log_prefix_names_the_node(node_module, caplog, node):
 # --- Wan Animate 2 node ---
 
 def test_animate2_input_types(node_module):
-    spec = node_module.WanAnimate2LongVideoSampler.INPUT_TYPES()
+    spec = node_module.BCVWanAnimate2LongVideoSampler.INPUT_TYPES()
     assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER + ["attn_log_scale"]
     assert list(spec["optional"]) == ["positive_pose", "clip_vision_output", "clip_vision_output_pose", "clip_vision", "sigmas_override"]
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
@@ -585,7 +585,7 @@ def test_animate2_chunk_and_step_logging(node_module, caplog):
 # --- Wan Animate (1) node ---
 
 def test_animate1_input_types(node_module):
-    spec = node_module.WanAnimateLongVideoSampler.INPUT_TYPES()
+    spec = node_module.BCVWanAnimateLongVideoSampler.INPUT_TYPES()
     assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER[:-4] + ["continue_motion_max_frames"]
     assert list(spec["optional"]) == ["clip_vision_output", "face_video", "background_video", "character_mask", "sigmas_override"]
     # core node + official template defaults

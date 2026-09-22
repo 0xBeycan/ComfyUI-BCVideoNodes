@@ -1,15 +1,166 @@
-# ComfyUI-WanAnimateLongVideoSampler
+# ComfyUI-BCVideoNodes
 
-Two nodes that turn a reference image plus a pose video of any length into a
-Wan Animate video of exactly that length, one for each core conditioning
-node:
+Video nodes for ComfyUI: a Wan Animate preprocess built from small nodes that
+are usable in any video pipeline (wholebody pose, SAM 3.1 person tracking,
+face crops, pose and mask checks), and two samplers that turn a reference
+image plus a pose video of any length into a Wan Animate video of exactly
+that length.
+
+| Node | Id | Category |
+|------|----|----------|
+| **Pose Detection** | `BCVPoseDetection` | `BCVideoNodes` |
+| **Pose Config** | `BCVPoseConfig` | `BCVideoNodes` |
+| **SAM 3.1 Video Track** | `BCVSAM3VideoTrack` | `BCVideoNodes` |
+| **SAM 3 Config** | `BCVSAM3Config` | `BCVideoNodes` |
+| **Face Crop** | `BCVFaceCrop` | `BCVideoNodes` |
+| **Pose Guard** | `BCVPoseGuard` | `BCVideoNodes` |
+| **Mask Guard** | `BCVMaskGuard` | `BCVideoNodes` |
+| **WanAnimate Preprocess** | `BCVWanAnimatePreprocess` | `BCVideoNodes/Wan/Animate` |
+| **WanAnimate Preprocess Guard** | `BCVWanAnimatePreprocessGuard` | `BCVideoNodes/Wan/Animate` |
+| **Wan Animate Long Video Sampler** | `BCVWanAnimateLongVideoSampler` | `BCVideoNodes/Wan/Animate` |
+| **Wan Animate 2 Long Video Sampler** | `BCVWanAnimate2LongVideoSampler` | `BCVideoNodes/Wan/Animate` |
+
+## Preprocess nodes
+
+Feed them frames already at the generation size; the pose images, masks and
+boxes come out at the size of the frames that went in.
+
+### Pose Detection
+
+YOLOv10x finds the person, the pose model gives the 133 COCO-WholeBody
+keypoints, the keypoints are read against the frames around them (short gaps
+bridged, glitches replaced, every filled keypoint labelled as such in
+`pose_data`), and the pose images are drawn.
+
+- in: `images`; optional `bboxes` (BBOX, one `(x1, y1, x2, y2)` per frame or
+  one for all: the detector is then skipped), `pose_config` (POSE_CONFIG)
+- widgets: `pose_model` (`ViTPose-H` | `RTMW-l`), `body_stick_width` -1,
+  `hand_stick_width` -1 (0 leaves that part out, -1 sizes it from the frame),
+  `draw_head` true, `draw_threshold` 0.5
+- out: `pose_images` (IMAGE), `pose_data` (POSEDATA), `bboxes` (BBOX, the
+  person box per frame as everything downstream sees it),
+  `key_frame_body_points` (STRING: frame 0's confident body keypoints in the
+  KJNodes PointsEditor / easy-sam3 `positive_coords` JSON format)
+
+### Pose Config
+
+Optional; without it Pose Detection runs with the measured defaults, which are
+the values the node shows. Its widgets are generated from `PoseConfig` in
+`preprocess/pose.py`: `confidence_scale` (RTMW only: the divisor of its raw
+SimCC score, 0 keeps the default 4.6; ignored with ViTPose, with one console
+line saying so), `min_keypoint_conf`, `detection_threshold`, `temporal`,
+`temporal_max_gap`, `temporal_max_step`, `temporal_max_residual`,
+`box_window`. `min_keypoint_conf` is also the threshold both guards judge by:
+they read it from `pose_data`.
+
+### SAM 3.1 Video Track
+
+The person's mask on every frame, from ComfyUI's own SAM 3.1 and its tracker
+memory. The mask covers every frame, including those before the person was
+first found.
+
+- in: `images`; optional `pose_data`, `bboxes`, `positive_coords`,
+  `negative_coords` (points JSON), `sam3_config` (SAM3_CONFIG)
+- widgets: `mode`, `prompt`, `max_objects` 1, `object_index` -1
+- out: `mask` (MASK)
+
+`mode` stays a widget even though it could be inferred from what is
+connected, so the behaviour can be switched without rewiring:
+
+- `prompt` (default): SAM finds the person from the text `prompt` alone
+  (`main person in the foreground`); nothing else goes in. `max_objects`
+  lets more than one track be born; `object_index` -1 is the union of every
+  tracked object, `k` is object `k`.
+- `box_keypoint`: the person is described by `pose_data`'s box and body
+  keypoints (required), with `bboxes` replacing the boxes and the coords
+  adding hand-placed points on frame 0. `max_objects` applies to `prompt`
+  mode only; `box_keypoint` mode tracks one person, ignores it and logs one
+  line.
+
+### SAM 3 Config
+
+Optional; generated from `SAM3Config` in `preprocess/sam3.py`. Each tooltip
+starts with the mode it affects.
+
+### Input precedence
+
+- A connected input beats the config node, and the config node beats the
+  defaults: connected `bboxes` skip the detector, so
+  `pose_config.detection_threshold` is not read.
+- Anything the current mode or setting does not read (a widget off its
+  default, a connected input, a changed config field) is ignored with one
+  console line naming it; an unused setting never raises, so switching needs
+  no rewiring.
+- Hand-placed `positive_coords` / `negative_coords` beat automatic points: an
+  automatic point of the other label within 4% of the box diagonal of a
+  hand-placed one is dropped.
+- In `box_keypoint` mode, connected `bboxes` replace `pose_data`'s person
+  boxes and count as detections on every frame.
+- `face_bboxes` on Face Crop are cut as given; `pose_data`'s face keypoints
+  and `face_padding` are then not used.
+- A keypoint at exactly `min_keypoint_conf` counts as found.
+
+### Face Crop
+
+- in: `images`, `pose_data`; optional `face_bboxes` (BBOX, cut as they are)
+- widget: `face_padding` 0 (pixels added around the keypoint face box)
+- out: `face_images` (512 x 512, Wan Animate's `face_video`), `face_bboxes`
+
+### Pose Guard and Mask Guard
+
+Frame-by-frame checks of the pose (no detection, incomplete skeleton, torso
+jump, subject switch, a second person) and of the mask against that pose
+(empty, leaking outside the box, fragmented, keypoints outside the mask,
+unstable). Every measurement is always reported and plotted; with the switch
+(`pose_guard` / `mask_guard`) on, a failed check stops the workflow with the
+report, since sampling on a wrong pose or mask is wasted. The thresholds are
+widgets generated from `PoseGuardConfig` / `MaskGuardConfig` in
+`preprocess/guard.py`.
+
+- Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
+  `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
+- Mask Guard: in `mask`, `pose_data`; out `mask` (unchanged), `report`,
+  `metrics`, `timeline`
+
+### WanAnimate Preprocess and WanAnimate Preprocess Guard
+
+The wrappers call the individual nodes, so a wrapper produces exactly what
+the chained nodes produce with the same settings.
+
+- **WanAnimate Preprocess** = Pose Detection -> SAM 3.1 Video Track -> Face
+  Crop. Widgets: `pose_model`, the drawing widgets, `face_padding`, `mode`,
+  `prompt`; optional `pose_config`, `sam3_config`. In `box_keypoint` mode the
+  mask is prompted from the pose. Outputs: `pose_images`, `face_images`,
+  `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
+- **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
+  report. Inputs `mask`, `pose_data`, both switches and all thresholds;
+  outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`.
+
+### Models
+
+Everything is downloaded on first use; nothing has to be fetched by hand.
+
+- Detection and pose models: from
+  [huggingface.co/beycanai/BCVideoNodes-models](https://huggingface.co/beycanai/BCVideoNodes-models)
+  into `ComfyUI/models/detection/` (`yolov10x_fp32.safetensors`,
+  `vitpose_h_wholebody_fp16.safetensors`,
+  `rtmw_l_wholebody_384x288_fp32.safetensors`; a model is fetched when a node
+  first needs it). They are native torch modules stored as safetensors and
+  loaded and offloaded by ComfyUI's model management; `onnx` is not needed.
+  `scripts/convert_models.py` rebuilds them from the upstream ONNX exports.
+- SAM 3.1: ComfyUI's own `sam3.1_multiplex_fp16.safetensors`, from
+  `Comfy-Org/sam3.1` into `ComfyUI/models/checkpoints/` when it is missing.
+
+## Long video samplers
+
+The two samplers, one for each core conditioning node:
 
 | Node                              | Wraps                | Model             |
 |-----------------------------------|----------------------|-------------------|
-| **Wan Animate Long Video Sampler** (`WanAnimateLongVideoSampler`)   | `WanAnimateToVideo`  | Wan 2.2 Animate   |
-| **Wan Animate 2 Long Video Sampler** (`WanAnimate2LongVideoSampler`) | `WanAnimate2ToVideo` | Wan Animate 2     |
+| **Wan Animate Long Video Sampler** (`BCVWanAnimateLongVideoSampler`)   | `WanAnimateToVideo`  | Wan 2.2 Animate   |
+| **Wan Animate 2 Long Video Sampler** (`BCVWanAnimate2LongVideoSampler`) | `WanAnimate2ToVideo` | Wan Animate 2     |
 
-Both live in category `WanAnimate` and depend on ComfyUI core and torch only.
+Both depend on ComfyUI core and torch only.
 
 Internally each node samples fixed-size chunks and chains them: every chunk
 after the first is seeded with the last frames of the previous one
@@ -18,7 +169,7 @@ chunk stopped (`video_frame_offset`). This is the "original long generation"
 method from the official templates, wrapped so you place one node instead of
 copying the template's subgraph once per 5 seconds.
 
-## How it differs from the official templates
+### How it differs from the official templates
 
 The official workflows go long by copying the subgraph per segment:
 `WanAnimateToVideo` / `WanAnimate2ToVideo` -> sampler -> `TrimVideoLatent` ->
@@ -41,7 +192,7 @@ What they do not do, on purpose: no colour matching between chunks (it
 degraded output on earlier Wan Animate models), no `continue_video` input,
 no external `SAMPLER` / `total_frames` links.
 
-## Wiring
+### Wiring
 
 Shared by both nodes:
 
@@ -93,7 +244,7 @@ final step. At shift 5, 4 steps:
 | `wan_beta`       | 1.000, 0.731, 0.293, 0.024, 0   |
 | ComfyUI `beta`   | 1.000, 0.959, 0.834, 0.518, 0   |
 
-### Wan Animate Long Video Sampler (`WanAnimateToVideo`)
+#### Wan Animate Long Video Sampler (`WanAnimateToVideo`)
 
 Defaults: `frames_per_chunk` 81, `shift` 8, `euler` / `wan_beta`, 6
 steps, cfg 1 (with the lightx2v distill LoRA on the model). Shift follows the
@@ -127,7 +278,7 @@ core's `nearest-exact` as the filter) and writes them over core's;
 construction. Without a character mask, or for a window the mask does not
 reach, core's rows are already right and nothing is touched.
 
-### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
+#### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
 
 Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `wan_beta`, 10 steps,
 cfg 1, `attn_log_scale` -1.3, i.e. the official distilled configuration
@@ -162,7 +313,7 @@ The base Animate 2 checkpoint with a Wan 2.1 I2V distill LoRA (lightx2v) is
 not a combination the official repository runs; its fast path is the
 distilled checkpoint.
 
-## frames_per_chunk by VRAM
+### frames_per_chunk by VRAM
 
 Per-chunk VRAM is what one plain core-node -> `SamplerCustom` run of that
 many frames needs at your resolution; the chunk count does not add to it.
@@ -181,7 +332,7 @@ value snaps down to the 4k+1 grid. For the Animate node remember that
 `continue_motion_max_frames` of every chunk after the first are re-generated,
 not new.
 
-## Length math
+### Length math
 
 - Chunk lengths are always 4k+1 and at least 5.
 - The first chunk yields its full length; every later chunk yields
@@ -202,8 +353,17 @@ not new.
 
 ## Install
 
-Clone into `ComfyUI/custom_nodes/` and restart. No `requirements.txt`: torch
-comes with ComfyUI and every node this package calls is core.
+Clone into `ComfyUI/custom_nodes/`, install the requirements into ComfyUI's
+Python and restart:
+
+```
+pip install -r requirements.txt
+```
+
+The only runtime dependency beyond ComfyUI is `opencv-python`; torch, numpy,
+scipy, safetensors and tqdm come with ComfyUI. `onnx` and `huggingface_hub`
+are needed only for the offline conversion and upload scripts
+(`pip install .[dev]`).
 
 ## Tests
 
@@ -212,6 +372,40 @@ pytest
 ```
 
 `tests/test_planner.py` covers the length math and `tests/test_package.py`
-the node contract, both without torch or ComfyUI. `tests/test_node_loop.py`
-runs both nodes' chunk loop against stubbed core nodes with real CPU tensors;
-it is skipped when torch is not installed.
+the node contract of all eleven nodes, both without torch or ComfyUI.
+`tests/test_node_loop.py` runs both samplers' chunk loop against stubbed core
+nodes with real CPU tensors; it is skipped when torch is not installed. The
+preprocess tests (`tests/test_nodes.py`, `test_pose.py`, `test_sam3.py`,
+`test_guard*.py`, `test_models_*.py`, ...) need torch and, for most, ComfyUI
+on the path: `PYTHONPATH=/path/to/ComfyUI pytest`.
+
+## Licences
+
+The code is MIT (`LICENSE`), except the files vendored from the Alibaba Wan
+team's WanAnimate preprocess, which are Apache-2.0 and keep their copyright
+header (`preprocess/pose_utils/LICENSE`):
+
+- `preprocess/pose_utils/pose2d_utils.py`
+- `preprocess/pose_utils/human_visualization.py`
+- `preprocess/face.py`
+- `preprocess/models/wrappers.py`
+- `preprocess/models/decode.py`
+
+The model weights keep their own licences:
+
+| Model | File | Licence |
+|-------|------|---------|
+| ViTPose-H wholebody | `vitpose_h_wholebody_fp16.safetensors` | Apache-2.0 |
+| RTMW-l wholebody | `rtmw_l_wholebody_384x288_fp32.safetensors` | Apache-2.0 |
+| YOLOv10x | `yolov10x_fp32.safetensors` | AGPL-3.0 |
+| SAM 3.1 | `sam3.1_multiplex_fp16.safetensors` | Meta's SAM License |
+
+The person detector's weights (YOLOv10x) are AGPL-3.0. Running them locally
+is unaffected; offering a service over a network that runs them (a hosted
+workflow, a SaaS) brings AGPL-3.0's network clause into play, which requires
+making the corresponding source available to that service's users. With
+`bboxes` connected, Pose Detection neither downloads, loads nor runs the
+detector.
+
+SAM 3.1 is fetched by ComfyUI from `Comfy-Org/sam3.1` under Meta's SAM
+License; this package does not redistribute it.
