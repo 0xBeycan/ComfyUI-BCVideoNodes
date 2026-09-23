@@ -14,10 +14,11 @@ import torch
 from preprocess import guard
 
 N, H, W = 40, 320, 240
-POSE_CONFIG = {"min_keypoint_conf": 0.3}   # the part of Pose Detection's config the guards read
-POSE = guard.PoseGuardConfig(min_pose_completeness=0.6, max_torso_jump=0.25)
-MASK = guard.MaskGuardConfig(min_mask_to_box=0.15, max_mask_outside_box=0.10,
-                             min_keypoint_recall=0.9, min_mask_iou=0.6)
+POSE_CONFIG = {"min_keypoint_conf": 0.3}   # Pose Detection's config; the guards do not read it
+DRAW_THRESHOLD = 0.5                       # what the guards count: the keypoints the pose images draw
+POSE = guard.PoseGuardConfig(min_pose_completeness=0.6, max_torso_jump=0.25, max_limb_spike=0.08)
+MASK = guard.MaskGuardConfig(min_mask_to_box=0.15, max_mask_outside_box=0.10, max_attached_leak=0.03,
+                             min_keypoint_recall=0.9, max_body_not_drawn=0.25, min_mask_iou=0.6)
 
 
 def clip():
@@ -36,15 +37,24 @@ def clip():
         pts[:, 1] /= H
         metas.append({"width": W, "height": H, "keypoints_body": pts})
         detections.append({"bbox": [float(x1), float(y1), float(x2), float(y2)], "score": 0.95, "persons": 1})
-    return masks, {"pose_metas_original": metas, "detections": detections, "pose_config": dict(POSE_CONFIG)}
+    return masks, {"pose_metas_original": metas, "detections": detections, "pose_config": dict(POSE_CONFIG),
+                   "draw_threshold": DRAW_THRESHOLD}
 
 
-def drop_keypoints(pose_data, frames, indices):
+def drop_keypoints(pose_data, frames, indices, conf=0.05):
     """Make the named body keypoints unconfident on `frames`, as a pose model losing them."""
     for i in frames:
         pts = pose_data["pose_metas_original"][i]["keypoints_body"].copy()
-        pts[indices, 2] = 0.05
+        pts[indices, 2] = conf
         pose_data["pose_metas_original"][i]["keypoints_body"] = pts
+
+
+def move_keypoint(pose_data, i, index, dx=0.0, dy=0.0):
+    """Shift one body keypoint on frame `i` by (dx, dy) of the frame size."""
+    pts = pose_data["pose_metas_original"][i]["keypoints_body"].copy()
+    pts[index, 0] += dx
+    pts[index, 1] += dy
+    pose_data["pose_metas_original"][i]["keypoints_body"] = pts
 
 
 def guard_run(masks, pose_data, pose_guard=True, mask_guard=True):
@@ -151,23 +161,26 @@ def test_leak_outside_box():
     assert not passed and 30 in flags["mask_leak"] and 30 in flags["mask_fragmented"]
 
 
-def test_missing_detection_is_only_a_warning():
+def test_a_missed_detection_is_data_not_a_check():
     masks, pose_data = clip()
     pose_data["detections"][5] = {"bbox": [0.0, 0.0, float(W), float(H)], "score": -1.0, "persons": 0}
     passed, flags, report = run(masks, pose_data)
-    # the tracker carries the mask through a frame the detector missed, so it is reported
-    # and measured but stops nothing
-    assert flags["no_detection"] == [5] and passed, report
-    assert "no_detection (warning)" in report
+    # the tracker carries the mask through a frame the detector missed: the guard judges the
+    # pose and the mask, and the detector's miss is only in the metrics
+    assert passed and not {k for k in flags if k not in guard.WARNINGS}, report
+    _, _, metrics, _ = guard_run(masks, pose_data)
+    assert json.loads(metrics)["frames"][5]["detected"] is False
 
 
-def test_second_person_is_only_a_warning():
+def test_a_second_person_is_data_not_a_check():
+    # the pipeline draws one person by design; the detector's count is kept as data
     masks, pose_data = clip()
     for i in (12, 13, 14):
         pose_data["detections"][i]["persons"] = 2
     passed, flags, report = run(masks, pose_data)
-    assert flags["multi_person"] == [12, 13, 14] and passed, report
-    assert "multi_person (warning)" in report
+    assert passed and not flags, report
+    _, _, metrics, _ = guard_run(masks, pose_data)
+    assert [row["persons"] for row in json.loads(metrics)["frames"][11:15]] == [1, 2, 2, 2]
 
 
 def test_subject_switch():
@@ -208,14 +221,86 @@ def test_a_pose_the_whole_clip_lacks_is_not_incomplete():
 
 
 def test_completeness_does_not_move_with_the_confidence_scale():
-    # a pose model whose scores are uniformly lower is not a broken pose model
+    # a pose model whose scores are uniformly lower is not a broken pose model, as long as
+    # its skeleton is still drawn
     masks, pose_data = clip()
-    for i in range(N):
-        pts = pose_data["pose_metas_original"][i]["keypoints_body"].copy()
-        pts[:, 2] = 0.31
-        pose_data["pose_metas_original"][i]["keypoints_body"] = pts
+    drop_keypoints(pose_data, range(N), list(range(20)), conf=DRAW_THRESHOLD + 0.01)
     passed, flags, report = run(masks, pose_data)
     assert passed and "pose_incomplete" not in flags, report
+
+
+def test_the_guard_counts_what_is_drawn_not_what_min_keypoint_conf_finds():
+    # legs at 0.4 are found at min_keypoint_conf 0.3 but not drawn at 0.5: the diffusion model
+    # never sees them, so the frame lost them
+    masks, pose_data = clip()
+    drop_keypoints(pose_data, range(18, 24), LEGS, conf=0.4)
+    passed, flags, report = run(masks, pose_data)
+    assert not passed and flags["pose_incomplete"] == list(range(18, 24)), report
+
+
+def test_a_limb_spike_is_a_pose_fault():
+    masks, pose_data = clip()
+    move_keypoint(pose_data, 20, 4, dy=-0.2)   # the right wrist jumps a fifth of the frame and comes back
+    passed, flags, report = run(masks, pose_data)
+    assert not passed and flags["pose_spike"] == [20], report
+    assert "r_wrist" in report
+
+
+def test_a_limb_that_moves_there_and_stays_is_not_a_spike():
+    masks, pose_data = clip()
+    for i in range(20, N):
+        move_keypoint(pose_data, i, 4, dy=-0.1)
+    passed, flags, report = run(masks, pose_data)
+    assert "pose_spike" not in flags, report
+
+
+def test_a_limb_missing_for_a_stretch_is_a_warning():
+    masks, pose_data = clip()
+    drop_keypoints(pose_data, range(15, 25), [4])   # the right forearm is gone for 10 frames
+    passed, flags, report = run(masks, pose_data)
+    assert passed and flags["pose_limb_gap"] == list(range(15, 25)), report
+    assert "pose_limb_gap (warning)" in report and "r_elbow-r_wrist" in report
+
+
+def test_a_body_the_pose_lost_for_longer_than_the_window_is_body_not_drawn():
+    # the lower half of the skeleton is gone for 30 frames: completeness only sees the edges of
+    # the stretch, since its middle is expected by neighbours that lost it too; the mask still
+    # shows the body there
+    masks, pose_data = clip()
+    drop_keypoints(pose_data, range(5, 35), list(range(10, 20)))
+    passed, flags, report = run(masks, pose_data)
+    assert not passed and flags["body_not_drawn"] == list(range(5, 35)), report
+    assert set(flags.get("pose_incomplete", [])) < set(range(5, 35))
+
+
+def test_one_limb_end_outside_the_mask_is_a_warning():
+    masks, pose_data = clip()
+    move_keypoint(pose_data, 20, 4, dx=0.2)   # the right wrist off the body, alone
+    move_keypoint(pose_data, 21, 4, dx=0.2)
+    passed, flags, report = run(masks, pose_data)
+    assert flags["mask_missed_limb"] == [20, 21] and "mask_missing_keypoints" not in flags, report
+    assert "mask_missed_limb (warning)" in report
+
+
+def test_background_attached_to_the_body_on_one_frame_is_a_warning():
+    masks, pose_data = clip()
+    x2 = 60 + 20 + 100
+    masks[20, 200:280, x2:x2 + 40] = 1.0   # a patch of background joined to her side
+    passed, flags, report = run(masks, pose_data)
+    assert passed and flags["mask_attached_leak"] == [20], report
+
+
+def test_a_hand_holds_its_piece_of_mask():
+    # the hand the text banner cut off the arm: no body keypoint in it, but her hand keypoints
+    masks, pose_data = clip()
+    masks[30, 40:, 90:190] = 1.0
+    masks[30, 0:20, W - 30:] = 1.0
+    passed, flags, _ = run(masks, pose_data)
+    assert 30 in flags.get("mask_fragmented", []) + flags.get("mask_specks", [])
+    hand = np.tile([(W - 15) / W, 10 / H, 0.9], (21, 1))
+    pose_data["pose_metas_original"][30]["keypoints_right_hand"] = hand
+    passed, flags, report = run(masks, pose_data)
+    assert 30 not in flags.get("mask_fragmented", []) + flags.get("mask_specks", []), report
 
 
 def test_guards_off_never_raise_but_still_report():
@@ -238,12 +323,11 @@ def test_flags_are_listed_in_the_order_they_first_fired_across_both_groups():
     masks, pose_data = clip()
     masks[3] = 0                                       # mask_empty first, on frame 3
     pose_data["detections"][15]["bbox"] = [0.0, 0.0, 40.0, 40.0]   # subject_switch on 15
-    for i in (3, 20):
-        pose_data["detections"][i]["persons"] = 2      # multi_person also on 3, a pose check
+    move_keypoint(pose_data, 3, 4, dy=-0.2)            # pose_spike also on 3, a pose check
     _, flags, report = run(masks, pose_data)
     names = list(flags)
     # on frame 3 the pose checks come first, as a single guard over both would test them
-    assert names.index("multi_person") < names.index("mask_empty") < names.index("subject_switch"), names
+    assert names.index("pose_spike") < names.index("mask_empty") < names.index("subject_switch"), names
 
 
 def test_combined_rows_hold_every_measurement_in_one_order():
@@ -251,8 +335,9 @@ def test_combined_rows_hold_every_measurement_in_one_order():
     _, _, metrics, _ = guard_run(masks, pose_data)
     record = json.loads(metrics)
     assert list(record) == ["thresholds", "enabled", "flags", "frames"]
-    assert list(record["thresholds"]) == ["min_keypoint_conf", "min_pose_completeness", "max_torso_jump",
-                                          "min_mask_to_box", "max_mask_outside_box", "min_keypoint_recall",
+    assert list(record["thresholds"]) == ["draw_threshold", "min_pose_completeness", "max_torso_jump",
+                                          "max_limb_spike", "min_mask_to_box", "max_mask_outside_box",
+                                          "max_attached_leak", "min_keypoint_recall", "max_body_not_drawn",
                                           "min_mask_iou"]
     assert all(tuple(row) == guard.PREPROCESS_ROW for row in record["frames"])
 
@@ -281,6 +366,6 @@ def test_resized_mask_is_an_error():
 def test_single_frame_2d_mask_is_accepted():
     masks, pose_data = clip()
     pose_data = {"pose_metas_original": pose_data["pose_metas_original"][:1], "detections": pose_data["detections"][:1],
-                 "pose_config": pose_data["pose_config"]}
+                 "pose_config": pose_data["pose_config"], "draw_threshold": DRAW_THRESHOLD}
     passed, flags, _ = run(masks[0], pose_data)
     assert passed

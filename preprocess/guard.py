@@ -1,16 +1,21 @@
 """Checks on the preprocess output: is the pose plausible and does the mask agree with it?
 
-Every check is normalised by the person's size (the detector box) and, where possible,
+Every check is normalised - by the person's size where it can be - and, where possible,
 crosses one signal with another that was produced independently: the SAM mask against the
 pose model's keypoints, the mask's motion against the box's motion. Pure geometry on the mask
 cannot tell a stable wrong mask from a right one; the pose can.
 
-A pose check has to judge the drawn skeleton, not whether a component hiccuped. A detector
-that missed a box or saw a second person changes nothing about what comes out - the mask is
-carried by the tracker and the pose model poses the foreground person either way - so those
-are warnings. A confidence threshold is worse than useless: it is calibrated to one model's
-heatmap maxima, and on a different pose model a skeleton that visibly collapsed still read as
-confident. What survives a change of model is the skeleton against its own neighbours.
+A pose check has to judge the drawn skeleton, not whether a component hiccuped. The guard
+judges the pose and the mask only, never the detector: a missed box or a second person in
+shot changes nothing about what comes out - the mask is carried by the tracker and the pose
+model poses the foreground person either way - so those are data in the metrics, not checks.
+A confidence threshold is worse than useless: it is calibrated to one model's heatmap maxima,
+and on a different pose model a skeleton that visibly collapsed still read as confident. What
+survives a change of model is the skeleton against its own neighbours and against the mask.
+
+Every check counts what the pose images draw: a keypoint is drawn when it reaches the
+`draw_threshold` Pose Detection drew with (carried in pose_data), and a limb when both its
+ends do. Counting at any other threshold judges a skeleton the diffusion model never sees.
 
 The checks come in two groups that run on their own: `check_pose` needs only `pose_data`,
 `check_mask` needs the mask and the `pose_data` it is checked against (the keypoints and
@@ -19,17 +24,17 @@ report, metrics and timeline of the whole preprocess.
 
 Pose checks, per frame, from `pose_data` (keypoints, detections):
 
-  no_detection        the detector found nobody, the whole frame was used as the box; the
-                      mask is unaffected, so this is a warning
   pose_incomplete     the frame draws less than `min_pose_completeness` of the limbs the
                       frames around it draw (a collapsed or half-missing skeleton); the
                       report names the limbs it lost
   pose_jump           torso keypoints moved more than `max_torso_jump` box diagonals in
                       one frame while the box hardly moved (pose glitch, not motion)
+  pose_spike          a limb keypoint jumped more than `max_limb_spike` of the frame height
+                      and came back within a few frames; the report names the keypoints
+  pose_limb_gap       a limb drawn before and after is missing for a stretch of frames
+                      (warning: a limb the body or the frame really hides looks the same)
   subject_switch      box IoU with the previous frame below 0.3 (the detector picked
                       someone / something else)
-  multi_person        the detector saw more than one person at 30% or more; a second person
-                      in shot is scene content, so this is a warning
 
 Mask checks, per frame, from the mask against `pose_data`:
 
@@ -40,21 +45,32 @@ Mask checks, per frame, from the mask against `pose_data`:
                       the frames around it, grown by 10% (background or a neighbour pulled
                       in); only checked on a frame whose box the detector and the pose model
                       agree on
+  mask_attached_leak  the person's region grew by more than `max_attached_leak` of its size
+                      where neither the neighbouring frames' masks nor the drawn skeleton
+                      are (background taken in against the body; warning)
   mask_fragmented     a second region at least 5% of the largest one (a ghost, a second
                       person, a split body); smaller detached pieces such as a shadow
                       blob are reported as mask_specks (warning only). A piece holding the
-                      person's own confident keypoints is that same person - a hand the frame
-                      edge cut away from the body - and counts as neither
+                      person's own drawn keypoints - body, hands or face - is that same
+                      person, a hand the frame edge cut away from the body, and counts as
+                      neither
   mask_missing_keypoints
-                      fewer than `min_keypoint_recall` of the confident keypoints fall
-                      inside the mask (a missed limb, hand or foot); the report names them
+                      fewer than `min_keypoint_recall` of the drawn keypoints inside the
+                      frame fall inside the mask (a missed limb, hand or foot); the report
+                      names them
+  mask_missed_limb    a drawn elbow, wrist, knee, ankle or foot outside the mask: either the
+                      mask lost the limb or the pose put it off the body (warning)
+  body_not_drawn      more than `max_body_not_drawn` of the person's mask lies away from the
+                      drawn skeleton: the mask shows a body the pose image does not draw
   mask_unstable       mask IoU with the previous frame below `min_mask_iou` while the box
                       IoU is above 0.7 (the mask changed, the person did not)
 
 Each group is switched on separately. Everything measured is always reported and plotted; a
 failed check of an enabled group stops the workflow, since sampling on a wrong mask or pose is
-wasted. Thresholds are starting points: run with the switches off on clips known to be good
-and bad and read `metrics` before trusting them.
+wasted. Only a detached mask (mask_fragmented) and real pose or mask defects stop; a check that
+cannot tell a defect from something the scene really does is a warning. Thresholds were
+measured on the test clips; run with the switches off on clips known to be good and bad and
+read `metrics` before changing them.
 """
 import json
 from dataclasses import asdict, dataclass, field
@@ -69,25 +85,54 @@ BODY_NAMES = ["nose", "neck", "r_shoulder", "r_elbow", "r_wrist", "l_shoulder", 
               "r_hip", "r_knee", "r_ankle", "l_hip", "l_knee", "l_ankle", "r_eye", "l_eye", "r_ear", "l_ear",
               "l_foot", "r_foot"]
 TORSO = [0, 1, 2, 5, 8, 11]  # nose, neck, shoulders, hips: cannot jump a quarter of the body in one frame
+LIMB_ENDS = [3, 6, 4, 7, 9, 12, 10, 13, 18, 19]  # elbows, wrists, knees, ankles, feet
 # The limbs the pose images are drawn from, as pairs of body keypoints: the same list as
-# human_visualization.draw_aapose_new's limbSeq, zero-based. A limb is drawn when the pose
-# model is sure of both its ends, so counting them counts what ends up on screen.
+# human_visualization.draw_aapose_new's limbSeq, zero-based. A limb is drawn when both its
+# ends reach the draw threshold, so counting them counts what ends up on screen.
 LIMBS = [(1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9), (9, 10), (1, 11),
          (11, 12), (12, 13), (1, 0), (0, 14), (14, 16), (0, 15), (15, 17), (13, 18), (10, 19)]
-WARNINGS = {"no_detection", "multi_person", "mask_specks"}
+HEAD_LIMBS = {(1, 0), (0, 14), (14, 16), (0, 15), (15, 17)}
+# The keypoint sets of pose_metas_original beside the body; a piece of mask holding any of
+# them belongs to the person.
+WHOLE_BODY = ("keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face")
+# Checks that cannot tell a defect from something the scene really does: reported, never stop.
+WARNINGS = {"pose_limb_gap", "mask_attached_leak", "mask_specks", "mask_missed_limb"}
 # In the order each group tests them on a frame; the report lists the checks in the order
 # they first fired, and this order breaks the tie between two that first fire on one frame.
-POSE_CHECKS = ("no_detection", "pose_incomplete", "pose_jump", "subject_switch", "multi_person")
-MASK_CHECKS = ("mask_empty", "mask_leak", "mask_fragmented", "mask_specks", "mask_missing_keypoints", "mask_unstable")
+POSE_CHECKS = ("pose_incomplete", "pose_jump", "pose_spike", "pose_limb_gap", "subject_switch")
+MASK_CHECKS = ("mask_empty", "mask_leak", "mask_attached_leak", "mask_fragmented", "mask_specks",
+               "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable")
 BOX_MARGIN = 0.10
 # Completeness is measured against the frames within this many either side. A limb that at
 # least this share of them draw is one the pipeline can find on this material, so losing it
 # is a defect; a limb the whole neighbourhood is missing is the person being framed that way
 # (a close-up has no legs) and is not expected of this frame. Both numbers are about how fast
 # a shot changes, not about any model: +/-8 frames is about a quarter of a second, and a
-# quarter of the window is enough for a limb that is only visible part of the time.
+# quarter of the window is enough for a limb that is only visible part of the time. A loss
+# longer than the window is expected by its own neighbours; body_not_drawn catches it.
 COMPLETENESS_WINDOW = 8
 COMPLETENESS_SHARE = 0.25
+# A spike is out and back: the keypoint returns within this many frames to within half the
+# jump threshold of where it left.
+SPIKE_RETURN = 3
+# pose_limb_gap: a limb missing for this many frames or more (a sixth of a second), and at
+# most GAP_MAX (a second - a limb gone longer is the framing or the body hiding it, and a body
+# the pose really lost for that long is body_not_drawn), that at least GAP_SHARE of the
+# GAP_CONTEXT frames either side draw. Head limbs are left out: a head turned away from the
+# camera draws no face, which is right.
+GAP_MIN, GAP_MAX, GAP_CONTEXT, GAP_SHARE = 5, 30, 15, 0.8
+# The zone around the drawn skeleton that is the body it accounts for: this many body scales
+# either side of every drawn limb and keypoint (hands included). The body scale is the widest
+# of the shoulders, the hips and 1.5 x neck-to-nose, whichever are drawn - the size of the
+# person on this frame, which the detector box is not in a close-up.
+SKELETON_REACH = 0.5
+# mask_attached_leak compares the frame's mask with the union of the masks this many frames
+# either side, grown by 2% of the person's size, and leaves out LEAK_REACH body scales around
+# the drawn skeleton: a limb in motion falls inside one or the other, a patch of background
+# that joins the mask for a frame does not. The full SKELETON_REACH would excuse background
+# taken in against the body as well.
+LEAK_WINDOW = 2
+LEAK_REACH = 0.25
 # The box-based checks compare the mask with the detector's box, so they only mean anything
 # on a frame the detector and the pose model agree on. On a motion-blurred frame the box
 # shrinks around the blurred body while the mask (carried by the tracker) still covers the
@@ -103,35 +148,40 @@ FRAGMENT_FRACTION = 0.05  # and above this one they count as a second object
 
 # The per-frame measurements of each group, and of both together in the order `metrics`
 # lists them. `frame` and `box_iou_prev` are in both: the mask checks need the box motion.
-POSE_ROW = ("frame", "detected", "persons", "pose_conf", "confident_keypoints", "drawn_limbs",
-            "box_iou_prev", "torso_jump", "pose_completeness", "lost_limbs")
-MASK_ROW = ("frame", "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "fragments",
-            "keypoint_recall", "missed_keypoints", "box_iou_prev", "mask_iou_prev")
-PREPROCESS_ROW = ("frame", "detected", "persons", "pose_conf", "confident_keypoints", "drawn_limbs",
-                  "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "fragments",
-                  "keypoint_recall", "missed_keypoints", "box_iou_prev", "mask_iou_prev", "torso_jump",
-                  "pose_completeness", "lost_limbs")
+# `detected` and `persons` are the detector's, kept as data: the guard does not judge it.
+POSE_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints", "drawn_limbs",
+            "box_iou_prev", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
+MASK_ROW = ("frame", "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak",
+            "fragments", "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn",
+            "box_iou_prev", "mask_iou_prev")
+PREPROCESS_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints", "drawn_limbs",
+                  "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak", "fragments",
+                  "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn", "box_iou_prev",
+                  "mask_iou_prev", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
 
 
-def _threshold(default, low, high, tooltip):
-    return field(default=default, metadata={"min": low, "max": high, "step": 0.05, "tooltip": tooltip})
+def _threshold(default, low, high, tooltip, step=0.05):
+    return field(default=default, metadata={"min": low, "max": high, "step": step, "tooltip": tooltip})
 
 
 @dataclass
 class PoseGuardConfig:
-    """Thresholds of the pose checks. Which keypoints count as found is PoseConfig.min_keypoint_conf,
-    read from pose_data."""
+    """Thresholds of the pose checks. Which keypoints count is the draw_threshold the pose
+    images were drawn with, read from pose_data."""
     min_pose_completeness: float = _threshold(0.6, 0.0, 1.0, "pose_incomplete: the frame draws less than this share of the limbs the frames around it draw")
     max_torso_jump: float = _threshold(0.25, 0.0, 2.0, "pose_jump: torso keypoints moving more than this fraction of the box diagonal in one frame while the box stays")
+    max_limb_spike: float = _threshold(0.08, 0.0, 1.0, "pose_spike: a limb keypoint jumping more than this fraction of the frame height and coming back within 3 frames", 0.01)
 
 
 @dataclass
 class MaskGuardConfig:
-    """Thresholds of the mask checks. Which keypoints count as found is PoseConfig.min_keypoint_conf,
-    read from pose_data."""
+    """Thresholds of the mask checks. Which keypoints count is the draw_threshold the pose
+    images were drawn with, read from pose_data."""
     min_mask_to_box: float = _threshold(0.15, 0.0, 1.0, "mask_empty: mask area below this fraction of the box area")
     max_mask_outside_box: float = _threshold(0.10, 0.0, 1.0, "mask_leak: more than this fraction of the mask outside the box grown by 10%")
-    min_keypoint_recall: float = _threshold(0.9, 0.0, 1.0, "mask_missing_keypoints: fewer than this fraction of the confident keypoints inside the mask")
+    max_attached_leak: float = _threshold(0.03, 0.0, 1.0, "mask_attached_leak (warning): the person's mask grown by more than this fraction of its size where neither the neighbouring frames' masks nor the drawn skeleton are", 0.01)
+    min_keypoint_recall: float = _threshold(0.9, 0.0, 1.0, "mask_missing_keypoints: fewer than this fraction of the drawn keypoints inside the mask")
+    max_body_not_drawn: float = _threshold(0.25, 0.0, 1.0, "body_not_drawn: more than this fraction of the person's mask away from the drawn skeleton (a body the pose image does not draw)")
     min_mask_iou: float = _threshold(0.6, 0.0, 1.0, "mask_unstable: mask IoU with the previous frame below this while the box IoU is above 0.7")
 
 
@@ -181,14 +231,13 @@ def _pose_inputs(pose_data):
     return pose_metas, detections
 
 
-def _min_keypoint_conf(pose_data):
-    """The keypoint confidence the pose was made with: one threshold for every node that reads
-    pose_data, so the guards judge the same keypoints the pose images draw."""
-    pose_config = pose_data.get("pose_config") if isinstance(pose_data, dict) else None
-    if not isinstance(pose_config, dict) or "min_keypoint_conf" not in pose_config:
-        raise ValueError("pose_data has no pose_config.min_keypoint_conf; it must come from Pose Detection "
-                         "or WanAnimate Preprocess")
-    return pose_config["min_keypoint_conf"]
+def _draw_threshold(pose_data):
+    """The keypoint confidence the pose images were drawn with: the guards judge the skeleton
+    the diffusion model sees, so they count the keypoints and limbs that are drawn."""
+    threshold = pose_data.get("draw_threshold") if isinstance(pose_data, dict) else None
+    if threshold is None:
+        raise ValueError("pose_data has no draw_threshold; it must come from Pose Detection or WanAnimate Preprocess")
+    return threshold
 
 
 def _mask_inputs(mask, pose_data):
@@ -209,16 +258,28 @@ def _mask_inputs(mask, pose_data):
     return masks, pose_metas, detections
 
 
-def _frame_pose(meta, det, W, H, min_keypoint_conf):
-    """One frame's box size and diagonal, its body keypoints in pixels and which are confident."""
+def _in_frame(kps, W, H):
+    return (kps[:, 0] >= 0) & (kps[:, 0] < W) & (kps[:, 1] >= 0) & (kps[:, 1] < H)
+
+
+def _frame_pose(meta, det, W, H, draw_threshold):
+    """One frame's box size and diagonal, its body keypoints in pixels, which are drawn, and
+    which of those lie inside the frame (a keypoint off the canvas is not seen)."""
     x1, y1, x2, y2 = det["bbox"]
     bw, bh = max(x2 - x1, 1.0), max(y2 - y1, 1.0)
     diag = float(np.hypot(bw, bh))
     kps = np.asarray(meta["keypoints_body"], dtype=np.float64).copy()
     kps[:, 0] *= W
     kps[:, 1] *= H
-    confident = kps[:, 2] >= min_keypoint_conf
-    return bw, bh, diag, kps, confident
+    drawn = kps[:, 2] >= draw_threshold
+    return bw, bh, diag, kps, drawn, drawn & _in_frame(kps, W, H)
+
+
+def _whole_body(meta, W, H, draw_threshold):
+    """Every drawn keypoint of the person inside the frame - body, hands and face - in pixels."""
+    parts = [np.asarray(meta[key], dtype=np.float64).reshape(-1, 3) for key in WHOLE_BODY if key in meta]
+    kps = np.concatenate(parts) * np.array([W, H, 1.0])
+    return kps[(kps[:, 2] >= draw_threshold) & _in_frame(kps, W, H)]
 
 
 def _box_iou_prev(detections, i):
@@ -252,27 +313,62 @@ def box_envelopes(detections, N, W, H):
     return out
 
 
-def detached_fractions(mask, kps, confident):
-    """The regions of `mask` detached from its largest one, as fractions of that one.
+def mask_regions(mask, person_kps):
+    """The person's part of `mask` and the regions detached from it, as fractions of its
+    largest region.
 
-    A piece holding the person's own confident keypoints is not a second object: it is a part
-    of them the frame edge or a gap in the mask has split off - a hand that leaves the shot and
-    comes back at the corner is still her hand. Nothing else is excused. Asking only whether a
-    piece touches the frame border is not enough to say the border is what separates it: on a
-    clip where the body runs off the bottom of every frame, that excuses anything at any edge,
-    including the objects beside her that the decoder took in."""
+    The person is the largest region and every region holding one of her own drawn keypoints
+    (`person_kps`, [K, 2+] pixels inside the frame): a piece the frame edge or a gap in the
+    mask has split off - a hand that leaves the shot and comes back at the corner, a hand the
+    burned-in text cuts off the arm - is still her. Nothing else is excused. Asking only
+    whether a piece touches the frame border is not enough to say the border is what
+    separates it: on a clip where the body runs off the bottom of every frame, that excuses
+    anything at any edge, including the objects beside her that the decoder took in."""
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
     if count <= 2:
-        return []
-    H, W = mask.shape
+        return mask, []
     areas = stats[1:, cv2.CC_STAT_AREA]
     main = int(np.argmax(areas)) + 1
-    xs = np.clip(kps[confident, 0].round().astype(int), 0, W - 1)
-    ys = np.clip(kps[confident, 1].round().astype(int), 0, H - 1)
-    person = set(labels[ys, xs].tolist()) if len(xs) else set()
+    xs = person_kps[:, 0].astype(int)
+    ys = person_kps[:, 1].astype(int)
+    person = (set(labels[ys, xs].tolist()) - {0}) | {main}
     out = [round(float(stats[i, cv2.CC_STAT_AREA] / areas[main - 1]), 4)
-           for i in range(1, count) if i != main and i not in person]
-    return sorted((f for f in out if f >= SPECK_FRACTION), reverse=True)
+           for i in range(1, count) if i not in person]
+    return np.isin(labels, list(person)), sorted((f for f in out if f >= SPECK_FRACTION), reverse=True)
+
+
+def detached_fractions(mask, person_kps):
+    """The regions of `mask` detached from the person, as fractions of its largest region
+    (see `mask_regions`)."""
+    return mask_regions(mask, person_kps)[1]
+
+
+def skeleton_zone(meta, shape, draw_threshold, reach_scales=None):
+    """The pixels the drawn skeleton accounts for: `reach_scales` body scales (SKELETON_REACH
+    when None) around every drawn body limb and keypoint and every drawn hand keypoint."""
+    H, W = shape
+    zone = np.zeros(shape, np.uint8)
+    kps = np.asarray(meta["keypoints_body"], dtype=np.float64) * np.array([W, H, 1.0])
+    drawn = kps[:, 2] >= draw_threshold
+    if not drawn.any():
+        return zone.astype(bool)
+
+    def length(a, b):
+        return float(np.hypot(*(kps[a, :2] - kps[b, :2]))) if drawn[a] and drawn[b] else 0.0
+
+    scale = max(length(2, 5), length(8, 11), 1.5 * length(1, 0), 1.0)
+    reach = max(3, int((SKELETON_REACH if reach_scales is None else reach_scales) * scale))
+    points = [kps[j, :2] for j in np.flatnonzero(drawn)]
+    for key in ("keypoints_left_hand", "keypoints_right_hand"):
+        if key in meta:
+            hand = np.asarray(meta[key], dtype=np.float64).reshape(-1, 3) * np.array([W, H, 1.0])
+            points += [p[:2] for p in hand if p[2] >= draw_threshold]
+    for a, b in LIMBS:
+        if drawn[a] and drawn[b]:
+            cv2.line(zone, tuple(int(v) for v in kps[a, :2]), tuple(int(v) for v in kps[b, :2]), 1, 2 * reach)
+    for x, y in points:
+        cv2.circle(zone, (int(x), int(y)), reach, 1, -1)
+    return zone.astype(bool)
 
 
 def pose_completeness(drawn):
@@ -290,71 +386,140 @@ def pose_completeness(drawn):
     return shares, lost
 
 
-def pose_frame_metrics(pose_metas, detections, W, H, min_keypoint_conf):
+def limb_gaps(drawn):
+    """Per frame, the limbs (outside the head) missing on it inside a stretch of GAP_MIN to
+    GAP_MAX frames that the GAP_CONTEXT frames on both sides draw. `drawn` is [N, len(LIMBS)]."""
+    N = len(drawn)
+    out = [[] for _ in range(N)]
+    for j, (a, b) in enumerate(LIMBS):
+        if (a, b) in HEAD_LIMBS:
+            continue
+        col = drawn[:, j]
+        i = 0
+        while i < N:
+            if col[i]:
+                i += 1
+                continue
+            start = i
+            while i < N and not col[i]:
+                i += 1
+            before, after = col[max(0, start - GAP_CONTEXT):start], col[i:i + GAP_CONTEXT]
+            if (GAP_MIN <= i - start <= GAP_MAX and len(before) == GAP_CONTEXT and len(after) == GAP_CONTEXT
+                    and before.mean() >= GAP_SHARE and after.mean() >= GAP_SHARE):
+                for f in range(start, i):
+                    out[f].append(f"{BODY_NAMES[a]}-{BODY_NAMES[b]}")
+    return out
+
+
+def limb_spikes(kps, drawn, H, max_jump):
+    """Per frame, the limb keypoints away from where they were: jumped more than `max_jump`
+    frame heights from the previous frame and back within SPIKE_RETURN frames to within half
+    of that. `kps` is [N, 20, 2] pixels, `drawn` [N, 20]."""
+    N = len(kps)
+    out = [[] for _ in range(N)]
+    for j in LIMB_ENDS:
+        for i in range(1, N):
+            if not (drawn[i - 1, j] and drawn[i, j]) or np.hypot(*(kps[i, j] - kps[i - 1, j])) <= max_jump * H:
+                continue
+            for k in range(1, SPIKE_RETURN + 1):
+                if i + k < N and drawn[i + k, j] and np.hypot(*(kps[i + k, j] - kps[i - 1, j])) < max_jump * H / 2:
+                    for f in range(i, i + k):
+                        if BODY_NAMES[j] not in out[f]:
+                            out[f].append(BODY_NAMES[j])
+                    break
+    return out
+
+
+def pose_frame_metrics(pose_metas, detections, W, H, draw_threshold, max_limb_spike):
     """One dict of raw pose measurements per frame (keys POSE_ROW); thresholds are applied
-    afterwards. W and H are the size of the frames the pose was found on."""
+    afterwards, except the spike's, which decides what counts as one. W and H are the size of
+    the frames the pose was found on."""
     N = len(pose_metas)
-    rows = []
-    drawn = []
+    rows, drawn, all_kps, all_drawn = [], [], [], []
     prev = None
     for i in range(N):
         det = detections[i]
-        _, _, diag, kps, confident = _frame_pose(pose_metas[i], det, W, H, min_keypoint_conf)
-        drawn.append([bool(confident[a] and confident[b]) for a, b in LIMBS])
+        _, _, diag, kps, on, _ = _frame_pose(pose_metas[i], det, W, H, draw_threshold)
+        drawn.append([bool(on[a] and on[b]) for a, b in LIMBS])
+        all_kps.append(kps[:, :2])
+        all_drawn.append(on)
         m = {"frame": i, "detected": det["score"] > 0, "persons": det["persons"],
-             "pose_conf": float(kps[:, 2].mean()), "confident_keypoints": int(confident.sum()),
+             "pose_conf": float(kps[:, 2].mean()), "drawn_keypoints": int(on.sum()),
              "drawn_limbs": int(sum(drawn[-1])), "box_iou_prev": _box_iou_prev(detections, i)}
         # torso motion against the previous frame
         if prev is not None:
-            both = confident & prev["confident"]
+            both = on & prev["drawn"]
             torso = [j for j in TORSO if both[j]]
             m["torso_jump"] = float(np.linalg.norm(kps[torso, :2] - prev["kps"][torso, :2], axis=1).max() / diag) if torso else 0.0
         else:
             m["torso_jump"] = 0.0
         rows.append(m)
-        prev = {"kps": kps, "confident": confident}
-    shares, lost = pose_completeness(np.array(drawn, dtype=bool).reshape(N, len(LIMBS)))
-    for m, share, limbs in zip(rows, shares, lost):
-        m["pose_completeness"], m["lost_limbs"] = share, limbs
+        prev = {"kps": kps, "drawn": on}
+    drawn = np.array(drawn, dtype=bool).reshape(N, len(LIMBS))
+    shares, lost = pose_completeness(drawn)
+    gaps = limb_gaps(drawn)
+    spikes = limb_spikes(np.array(all_kps).reshape(N, len(BODY_NAMES), 2),
+                         np.array(all_drawn).reshape(N, len(BODY_NAMES)), H, max_limb_spike)
+    for m, share, limbs, gap, spike in zip(rows, shares, lost, gaps, spikes):
+        m["pose_completeness"], m["lost_limbs"], m["limb_spikes"], m["limb_gaps"] = share, limbs, spike, gap
     return rows
 
 
-def mask_frame_metrics(masks, pose_metas, detections, min_keypoint_conf):
+def mask_frame_metrics(masks, pose_metas, detections, draw_threshold):
     """One dict of raw mask measurements per frame (keys MASK_ROW); thresholds are applied
     afterwards. `masks` is [N, H, W] booleans on the frames the pose was found on."""
     N, H, W = masks.shape
     envelopes = box_envelopes(detections, N, W, H)
+    areas = masks.reshape(N, H * W).sum(axis=1)
     rows = []
     prev_mask = None
     for i in range(N):
-        det = detections[i]
-        bw, bh, diag, kps, confident = _frame_pose(pose_metas[i], det, W, H, min_keypoint_conf)
+        det, meta = detections[i], pose_metas[i]
+        bw, bh, diag, kps, drawn, visible = _frame_pose(meta, det, W, H, draw_threshold)
         mask = masks[i]
-        area = int(mask.sum())
+        area = int(areas[i])
 
         m = {"frame": i, "mask_area": area / (H * W), "mask_to_box": area / (bw * bh)}
-        m["box_reliable"] = bool(det["score"] > 0 and confident.sum() >= RELIABLE_KEYPOINTS
-                                 and (kps[confident, 2].mean() if confident.any() else 0) >= RELIABLE_CONF)
+        m["box_reliable"] = bool(det["score"] > 0 and drawn.sum() >= RELIABLE_KEYPOINTS
+                                 and (kps[drawn, 2].mean() if drawn.any() else 0) >= RELIABLE_CONF)
 
         gx1, gy1, gx2, gy2 = envelopes[i]
         inside = int(mask[int(gy1):int(gy2), int(gx1):int(gx2)].sum())
         m["mask_outside_box"] = (area - inside) / area if area else 0.0
 
-        # detached regions, as fractions of the largest one
-        m["fragments"] = detached_fractions(mask, kps, confident) if area else []
+        # the person's part of the mask and the regions detached from it
+        person, fragments = mask_regions(mask, _whole_body(meta, W, H, draw_threshold)) if area else (mask, [])
 
-        # keypoints inside the (slightly grown) mask
-        if area and confident.any():
-            k = max(3, int(0.02 * diag) | 1)
-            grown = cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8))
-            xs = np.clip(kps[:, 0].round().astype(int), 0, W - 1)
-            ys = np.clip(kps[:, 1].round().astype(int), 0, H - 1)
-            hit = grown[ys, xs].astype(bool) & confident
-            m["keypoint_recall"] = float(hit.sum() / confident.sum())
-            m["missed_keypoints"] = [BODY_NAMES[j] for j in np.flatnonzero(confident & ~hit)]
+        # the person's region grown where neither the neighbours' masks nor the skeleton are
+        near = [j for j in range(max(0, i - LEAK_WINDOW), min(N, i + LEAK_WINDOW + 1)) if j != i]
+        if area and near:
+            reference = masks[near].any(axis=0)
+            k = max(3, int(0.02 * np.sqrt(np.median(areas[near]))) | 1)
+            grown = cv2.dilate(reference.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+            excess = person & ~grown & ~skeleton_zone(meta, (H, W), draw_threshold, LEAK_REACH)
+            m["attached_leak"] = float(excess.sum() / max(np.median(areas[near]), 1))
         else:
-            m["keypoint_recall"] = 0.0 if confident.any() else 1.0
-            m["missed_keypoints"] = [BODY_NAMES[j] for j in np.flatnonzero(confident)] if area == 0 else []
+            m["attached_leak"] = 0.0
+        m["fragments"] = fragments
+
+        # drawn keypoints inside the (slightly grown) mask
+        if area and visible.any():
+            k = max(3, int(0.02 * diag) | 1)
+            grown = cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+            xs = np.clip(kps[:, 0].astype(int), 0, W - 1)
+            ys = np.clip(kps[:, 1].astype(int), 0, H - 1)
+            hit = grown[ys, xs] & visible
+            m["keypoint_recall"] = float(hit.sum() / visible.sum())
+            m["missed_keypoints"] = [BODY_NAMES[j] for j in np.flatnonzero(visible & ~hit)]
+        else:
+            m["keypoint_recall"] = 0.0 if visible.any() else 1.0
+            m["missed_keypoints"] = [BODY_NAMES[j] for j in np.flatnonzero(visible)] if area == 0 else []
+        m["missed_limbs"] = [name for name in m["missed_keypoints"] if BODY_NAMES.index(name) in LIMB_ENDS]
+
+        # the person's mask the drawn skeleton does not account for
+        person_area = int(person.sum())
+        m["body_not_drawn"] = (float((person & ~skeleton_zone(meta, (H, W), draw_threshold)).sum() / person_area)
+                               if person_area else 0.0)
 
         # motion against the previous frame
         m["box_iou_prev"] = _box_iou_prev(detections, i)
@@ -374,16 +539,16 @@ def pose_flags(rows, t):
 
     for m in rows:
         i = m["frame"]
-        if not m["detected"]:
-            flag("no_detection", i)
         if m["pose_completeness"] < t["min_pose_completeness"]:
             flag("pose_incomplete", i)
         if m["box_iou_prev"] is not None and m["box_iou_prev"] > 0.5 and m["torso_jump"] > t["max_torso_jump"]:
             flag("pose_jump", i)
+        if m["limb_spikes"]:
+            flag("pose_spike", i)
+        if m["limb_gaps"]:
+            flag("pose_limb_gap", i)
         if m["box_iou_prev"] is not None and m["box_iou_prev"] < 0.3:
             flag("subject_switch", i)
-        if m["persons"] > 1:
-            flag("multi_person", i)
     return flags
 
 
@@ -398,19 +563,25 @@ def mask_flags(rows, t):
         i = m["frame"]
         if m["mask_area"] == 0 and m["box_reliable"]:
             # an empty mask on a frame the pose pipeline could not describe is a pose
-            # failure, already flagged as no_detection / pose_incomplete
+            # failure, left to the pose checks
             flag("mask_empty", i)
         elif m["box_reliable"]:
             if m["mask_to_box"] < t["min_mask_to_box"]:
                 flag("mask_empty", i)
             elif m["mask_outside_box"] > t["max_mask_outside_box"]:
                 flag("mask_leak", i)
+        if m["attached_leak"] > t["max_attached_leak"]:
+            flag("mask_attached_leak", i)
         if any(f >= FRAGMENT_FRACTION for f in m["fragments"]):
             flag("mask_fragmented", i)
         elif m["fragments"]:
             flag("mask_specks", i)
         if m["keypoint_recall"] < t["min_keypoint_recall"] and m["mask_area"] > 0:
             flag("mask_missing_keypoints", i)
+        if m["missed_limbs"]:
+            flag("mask_missed_limb", i)
+        if m["body_not_drawn"] > t["max_body_not_drawn"]:
+            flag("body_not_drawn", i)
         if (m["mask_iou_prev"] is not None and m["box_iou_prev"] is not None
                 and m["box_iou_prev"] > 0.7 and m["mask_iou_prev"] < t["min_mask_iou"]):
             flag("mask_unstable", i)
@@ -428,6 +599,11 @@ def longest_run(frames):
     return longest
 
 
+# The per-frame list a check's report line counts the names of.
+REPORT_NAMES = {"pose_incomplete": "lost_limbs", "pose_spike": "limb_spikes", "pose_limb_gap": "limb_gaps",
+                "mask_missing_keypoints": "missed_keypoints", "mask_missed_limb": "missed_limbs"}
+
+
 def write_report(title, rows, flags, enabled):
     """The report text and whether the enabled checks all passed."""
     n = len(rows)
@@ -437,7 +613,7 @@ def write_report(title, rows, flags, enabled):
     for name, frames in flags.items():
         kind = "warning" if name in WARNINGS else ("fail" if name in enabled else "off")
         line = f"- {name} ({kind}): {len(frames)} frame(s), longest run {longest_run(frames)}: {_ranges(frames)}"
-        key = {"mask_missing_keypoints": "missed_keypoints", "pose_incomplete": "lost_limbs"}.get(name)
+        key = REPORT_NAMES.get(name)
         if key:
             missed = {}
             for i in frames:
@@ -458,13 +634,13 @@ POSE_PANELS = [
 ]
 MASK_PANELS = [
     ("mask", [("mask / box area", "mask_to_box", "blue"), ("mask outside box", "mask_outside_box", "orange")]),
-    ("mask vs pose", [("keypoints inside mask", "keypoint_recall", "blue")]),
+    ("mask vs pose", [("keypoints inside mask", "keypoint_recall", "blue"), ("body not drawn", "body_not_drawn", "red")]),
     ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue"), ("box IoU vs previous", "box_iou_prev", "orange")]),
 ]
 PREPROCESS_PANELS = [
     ("mask", [("mask / box area", "mask_to_box", "blue"), ("mask outside box", "mask_outside_box", "orange")]),
     ("pose", [("keypoints inside mask", "keypoint_recall", "blue"), ("mean keypoint confidence", "pose_conf", "orange"),
-              ("limbs vs neighbours", "pose_completeness", "green")]),
+              ("limbs vs neighbours", "pose_completeness", "green"), ("body not drawn", "body_not_drawn", "red")]),
     ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue"), ("box IoU vs previous", "box_iou_prev", "orange"),
                 ("torso jump / box diagonal", "torso_jump", "green")]),
 ]
@@ -553,8 +729,8 @@ def _config(config, cls):
 def check_pose(pose_data, config=None, enabled=True, stop_on_fail=True):
     """The pose checks on `pose_data` alone.
 
-    `config` is a PoseGuardConfig (None = defaults); the keypoint confidence threshold is the
-    one the pose was made with, from `pose_data["pose_config"]`. `enabled` False still measures
+    `config` is a PoseGuardConfig (None = defaults); the keypoints and limbs counted are the
+    ones drawn, at `pose_data["draw_threshold"]`. `enabled` False still measures
     and reports every check but marks them off, so none can fail. With `stop_on_fail` a failed
     enabled check raises GuardFailed with the report; the wrapper that combines both groups
     passes False and lets `combine_guards` decide.
@@ -563,9 +739,9 @@ def check_pose(pose_data, config=None, enabled=True, stop_on_fail=True):
     config = _config(config, PoseGuardConfig)
     pose_metas, detections = _pose_inputs(pose_data)
     W, H = (pose_metas[0]["width"], pose_metas[0]["height"]) if pose_metas else (0, 0)
-    thresholds = {"min_keypoint_conf": _min_keypoint_conf(pose_data), **asdict(config)}
+    thresholds = {"draw_threshold": _draw_threshold(pose_data), **asdict(config)}
     with log.step(f"pose guard: checking {len(pose_metas)} frames ({'on' if enabled else 'off'})"):
-        rows = pose_frame_metrics(pose_metas, detections, W, H, thresholds["min_keypoint_conf"])
+        rows = pose_frame_metrics(pose_metas, detections, W, H, thresholds["draw_threshold"], config.max_limb_spike)
         flags = pose_flags(rows, thresholds)
     report, metrics, timeline = _finish("Pose guard", "pose", rows, flags, thresholds,
                                         set(POSE_CHECKS if enabled else ()), POSE_PANELS, stop_on_fail)
@@ -580,9 +756,9 @@ def check_mask(mask, pose_data, config=None, enabled=True, stop_on_fail=True):
     `check_pose`. Returns (mask unchanged, report, metrics JSON, timeline IMAGE)."""
     config = _config(config, MaskGuardConfig)
     masks, pose_metas, detections = _mask_inputs(mask, pose_data)
-    thresholds = {"min_keypoint_conf": _min_keypoint_conf(pose_data), **asdict(config)}
+    thresholds = {"draw_threshold": _draw_threshold(pose_data), **asdict(config)}
     with log.step(f"mask guard: checking {len(masks)} frames ({'on' if enabled else 'off'})"):
-        rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["min_keypoint_conf"])
+        rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["draw_threshold"])
         flags = mask_flags(rows, thresholds)
     report, metrics, timeline = _finish("Mask guard", "mask", rows, flags, thresholds,
                                         set(MASK_CHECKS if enabled else ()), MASK_PANELS, stop_on_fail)

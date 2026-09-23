@@ -484,15 +484,32 @@ def test_config_fields_carry_a_mode_tagged_tooltip_and_a_range():
     for f in dataclasses.fields(sam3.SAM3Config):
         tip = f.metadata["tooltip"]
         tag = tip[:tip.index("]") + 1]
-        assert tag in ("[prompt]", "[prompt, max_objects > 1]", "[box_keypoint]"), f.name
+        assert tag in ("[prompt]", "[prompt, max_objects > 1]", "[box_keypoint]", "[all modes]"), f.name
         tags.setdefault(tag, []).append(f.name)
-        if not isinstance(f.default, bool):
+        if isinstance(f.default, str):
+            assert f.default in f.metadata["choices"], f.name
+        elif not isinstance(f.default, bool):
             assert f.metadata["min"] <= f.default <= f.metadata["max"], f.name
     assert tags["[prompt]"] == ["birth_threshold", "detection_threshold", "nms_iou", "match_iou", "hotstart_frames",
                                 "hotstart_unmatched", "recondition_every", "recondition_score", "recondition_iou",
-                                "fill_hole_area", "memory_gap"]
+                                "fill_hole_area", "memory_gap", "anchor_memory", "anchor_output",
+                                "conditioning_frames", "memory_selection", "anchor_score_gate", "anchor_matching",
+                                "unmatched_counting", "seed_cleaning", "m4_anchor_frames"]
     assert tags["[prompt, max_objects > 1]"] == ["new_object_threshold", "assoc_iou", "duplicate_frames",
                                                  "occlusion_iou", "shrink_keep"]
+    assert tags["[all modes]"] == ["uniform_mask_threshold"]
+
+
+def test_config_ab_switches_default_to_ours_and_reject_other_values():
+    c = sam3.SAM3Config()
+    for name in ("anchor_memory", "anchor_output", "conditioning_frames", "memory_selection", "anchor_score_gate",
+                 "anchor_matching", "unmatched_counting", "seed_cleaning"):
+        assert getattr(c, name) == sam3.OURS, name
+        sam3.SAM3Config(**{name: sam3.META})
+        with pytest.raises(ValueError, match=name):
+            sam3.SAM3Config(**{name: "theirs"})
+    assert sam3.SAM3Config(anchor_memory="clear_past").anchor_memory == "clear_past"
+    assert c.uniform_mask_threshold is False and c.mask_threshold == -1.0
 
 
 # --- multi-object helpers ------------------------------------------------------------------

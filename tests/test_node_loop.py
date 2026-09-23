@@ -115,7 +115,7 @@ class FakeWanAnimateToVideo:
         trim_image = max(0, ref_motion_latent_length * 4 - 3)
         if character_mask is not None:  # core: a single frame is repeated, a video is seeked and resized to latent size
             character_mask = character_mask.repeat(length, 1, 1) if character_mask.shape[0] == 1 else character_mask[video_frame_offset:][:length]
-            character_mask = torch.nn.functional.interpolate(character_mask.unsqueeze(1), size=(height // LATENT_DOWN, width // LATENT_DOWN), mode="nearest").squeeze(1)
+            character_mask = fake_common_upscale(character_mask.unsqueeze(1), width // LATENT_DOWN, height // LATENT_DOWN, "nearest-exact", "center").squeeze(1)
         mask = core_concat_mask(latent_length, height // LATENT_DOWN, width // LATENT_DOWN, ref_motion_latent_length, trim_image, character_mask)
         positive = [[c[0], {**c[1], "concat_mask": mask}] for c in positive]
         negative = [[c[0], {**c[1], "concat_mask": mask}] for c in negative]
@@ -293,6 +293,20 @@ class FakeProgressBar:
         self.current += value
 
 
+def fake_common_upscale(samples, width, height, upscale_method, crop):
+    """comfy/utils.py common_upscale for 4-D input: "center" crops to the target aspect first."""
+    if crop == "center":
+        old_width, old_height = samples.shape[-1], samples.shape[-2]
+        old_aspect, new_aspect = old_width / old_height, width / height
+        x = y = 0
+        if old_aspect > new_aspect:
+            x = round((old_width - old_width * (new_aspect / old_aspect)) / 2)
+        elif old_aspect < new_aspect:
+            y = round((old_height - old_height * (old_aspect / new_aspect)) / 2)
+        samples = samples.narrow(-2, y, old_height - y * 2).narrow(-1, x, old_width - x * 2)
+    return torch.nn.functional.interpolate(samples, size=(height, width), mode=upscale_method)
+
+
 @pytest.fixture
 def node_module(monkeypatch):
     comfy = types.ModuleType("comfy")
@@ -303,6 +317,7 @@ def node_module(monkeypatch):
     comfy_samplers.SCHEDULER_NAMES = ["normal", "simple", "beta"]
     comfy_utils = types.ModuleType("comfy.utils")
     comfy_utils.ProgressBar = FakeProgressBar
+    comfy_utils.common_upscale = fake_common_upscale
     comfy.model_management = comfy_mm
     comfy.samplers = comfy_samplers
     comfy.utils = comfy_utils
@@ -630,6 +645,17 @@ def test_animate1_larger_overlap_widget(node_module):
     assert all(c["continue"] == 9 for c in Calls.animate[1:])
 
 
+def test_animate1_overlap_above_half_the_chunk_keeps_the_full_seed(node_module, caplog):
+    # a middle chunk adds 17 - 13 = 4 new frames; the next chunk must still be seeded with 13,
+    # or core moves the offset back by 4, trims only 1 and the pose falls behind the output
+    caplog.set_level("WARNING")
+    images, count, plan = run(node_module, pose_frames=60, node=ANIMATE1, frames_per_chunk=17, continue_motion_max_frames=13)
+    assert count == 60
+    assert all(c["continue"] == 13 for c in Calls.animate[1:])
+    assert [c["offset_in"] for c in Calls.animate] == [4 * k for k in range(len(Calls.animate))]
+    assert "planner assumed" not in caplog.text
+
+
 def test_animate1_snaps_continue_motion_max_frames_to_grid(node_module, caplog):
     caplog.set_level("INFO")
     images, count, plan = run(node_module, pose_frames=200, node=ANIMATE1, frames_per_chunk=77, continue_motion_max_frames=7)
@@ -671,6 +697,78 @@ def test_animate1_total_beyond_pose_keeps_pose_on_every_chunk(node_module, caplo
     assert Calls.animate[-1]["pose"] == 99.0
 
 
+def _videos(frames):
+    """face / background / multi-frame mask whose content is the frame index, so a held frame is visible."""
+    index = torch.arange(frames, dtype=torch.float32)
+    return dict(face_video=index.view(-1, 1, 1, 1).expand(-1, 8, 8, 3).contiguous(),
+                background_video=index.view(-1, 1, 1, 1).expand(-1, 64, 32, 3).contiguous(),
+                character_mask=index.view(-1, 1, 1).expand(-1, 64, 32).contiguous())
+
+
+@pytest.mark.parametrize("frames, produced", [(150, 153), (152, 153)])
+def test_animate1_overshooting_last_chunk_holds_every_video(node_module, caplog, frames, produced):
+    # off the 4k+1 grid the last chunk is snapped up and runs past the source: pose, face and
+    # background must reach that far, or core zero-pads the face and greys the background. The
+    # mask is not held: past its end core leaves its rows unknown
+    caplog.set_level("INFO")
+    images, count, plan = run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=81, **_videos(frames))
+    assert count == frames
+    assert plan.startswith("81 + 77 -> {} produced".format(produced))
+    last = Calls.animate[-1]
+    assert last["offset_in"] + last["length"] == produced
+    for key in ("face", "background"):
+        video = last[key]
+        assert video.shape[0] == produced
+        assert torch.equal(video[:frames], _videos(frames)[{"face": "face_video", "background": "background_video"}[key]])
+        assert (video[frames:] == frames - 1).all()  # the last frame, held
+    assert last["mask"].shape[0] == frames
+    padded = [line for line in caplog.text.splitlines() if "held" in line]
+    assert len(padded) == 1 and "character_mask" not in padded[0]
+    for name in ("pose_video", "face_video", "background_video"):
+        assert "{} +{}".format(name, produced - frames) in padded[0]
+
+
+def test_animate1_total_beyond_inputs_holds_every_video_but_the_mask(node_module, caplog):
+    # total_frames past the input length: once the offset passes a video's end core drops it
+    # (face driving and, in replacement mode, the scene), so they are held like the pose; the
+    # mask is not, past its end the character may be anywhere
+    caplog.set_level("WARNING")
+    images, count, plan = run(node_module, pose_frames=100, node=ANIMATE1, total_frames=250, frames_per_chunk=49, **_videos(100))
+    assert count == 250
+    for call in Calls.animate:
+        for key in ("face", "background"):
+            assert call[key].shape[0] > call["offset_in"] + call["length"] - 1
+            assert (call[key][100:] == 99).all()
+        assert call["mask"].shape[0] == 100
+    assert "total_frames (250) exceeds" in caplog.text
+
+
+def test_animate1_single_frame_mask_is_not_padded(node_module):
+    mask = torch.ones(1, 64, 32)
+    run(node_module, pose_frames=150, node=ANIMATE1, character_mask=mask)
+    assert all(call["mask"] is mask for call in Calls.animate)
+
+
+def test_animate1_grid_inputs_reach_core_unchanged(node_module, caplog):
+    # 4k+1 past the seed: the plan ends exactly on the last frame, nothing is padded or logged
+    caplog.set_level("INFO")
+    videos = _videos(161)
+    images, count, plan = run(node_module, pose_frames=161, node=ANIMATE1, frames_per_chunk=81, **videos)
+    assert plan.startswith("81 + 81 + 9 -> 161 produced")
+    for call in Calls.animate:
+        assert call["face"] is videos["face_video"]
+        assert call["background"] is videos["background_video"]
+        assert call["mask"] is videos["character_mask"]
+    assert "held" not in caplog.text
+
+
+def test_animate2_overshooting_last_chunk_is_logged(node_module, caplog):
+    caplog.set_level("INFO")
+    run(node_module, pose_frames=150)
+    padded = [line for line in caplog.text.splitlines() if "held" in line]
+    assert len(padded) == 1 and "pose_video +3" in padded[0] and "153" in padded[0]
+
+
 @pytest.mark.parametrize("seed_frames", [0, 1, 5])
 def test_animate1_mask_repair_matches_reference_implementation(node_module, seed_frames):
     torch.manual_seed(0)
@@ -692,6 +790,16 @@ def test_animate1_mask_repair_matches_reference_implementation(node_module, seed
     assert torch.equal(core, reference)
 
 
+def test_animate1_mask_rows_center_crop_like_core(node_module):
+    # a square mask onto a 1:2 latent grid: core crops the sides off before resizing (as it does
+    # the pose and background videos), so a stripe in the cropped-off column must not survive
+    mask = torch.zeros(5, 8, 8)
+    mask[:, :, 2] = 1.0
+    rows = node_module._replacement_mask_rows(mask, 0, 5, 0, 4, 2)
+    expected = torch.nn.functional.interpolate(mask[:, None, :, 2:6], size=(4, 2), mode="nearest-exact")[:, 0]
+    assert torch.equal(rows[3:], expected)
+
+
 def test_animate1_mask_beyond_offset_is_left_to_core(node_module):
     assert node_module._replacement_mask_rows(torch.zeros(10, 4, 4), 10, 9, 1, 4, 4) is None
     single = node_module._replacement_mask_rows(torch.ones(1, 4, 4), 500, 9, 1, 4, 4)  # one frame is repeated whatever the offset
@@ -703,7 +811,7 @@ def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_modu
     frames = 200
     # longer than the video so every chunk, including the short last one, is fully covered
     character_mask = (torch.rand(frames + 80, 64 // LATENT_DOWN, 32 // LATENT_DOWN) > 0.5).float()
-    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask, background_video=torch.zeros(frames, 64, 32, 3))
+    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask, background_video=torch.zeros(frames + 80, 64, 32, 3))
     assert [c["length"] for c in Calls.animate] == [77, 77, 57]
     for call, sampled in zip(Calls.animate, Calls.sampler):
         mask = sampled["positive"][0][1]["concat_mask"]
@@ -719,14 +827,13 @@ def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_modu
         seed_latents = 0 if seed == 0 else ((seed - 1) // 4) + 1
         assert torch.equal(sampled["positive"][0][1]["concat_mask"], core_concat_mask((call["length"] - 1) // 4 + 1, 8, 4, seed_latents, seed, None))
 
-    # a mask that ends before the last window: core skips it there and so do we
+    # the mask marks where the character goes in each background frame: a mask video of
+    # another length than the background is an error, before anything is sampled
     Calls.animate, Calls.sampler = [], []
-    short_mask = character_mask[:100]
-    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=short_mask, background_video=torch.zeros(frames, 64, 32, 3))
-    last = Calls.animate[-1]
-    assert last["offset_in"] >= 100
-    seed = last["continue"]
-    assert torch.equal(Calls.sampler[-1]["positive"][0][1]["concat_mask"], core_concat_mask((last["length"] - 1) // 4 + 1, 8, 4, ((seed - 1) // 4) + 1, seed, None))
+    with pytest.raises(ValueError, match="character_mask has 100 frames but background_video has 200"):
+        run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask[:100],
+            background_video=torch.zeros(frames, 64, 32, 3))
+    assert Calls.animate == []  # it stops before anything is sampled
 
 
 def test_animate1_chunk_logging(node_module, caplog):

@@ -183,6 +183,12 @@ def test_draw_threshold_decides_what_is_drawn():
     assert pose.draw(pose_data, draw_threshold=0.7, draw_head=False).sum() == 0
 
 
+def test_the_draw_threshold_travels_in_pose_data():
+    # the guards count what the pose images draw, so they need the threshold they were drawn at
+    _, pose_data, _, _ = pose.pose_detection(frames(), FakeDetector(), FakePose(0.6), draw_threshold=0.65)
+    assert pose_data["draw_threshold"] == 0.65
+
+
 # --- precedence: config fields a run does not read ------------------------------------------
 
 def not_used_lines(caplog):

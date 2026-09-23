@@ -18,6 +18,8 @@ from tqdm import tqdm
 
 from . import log
 from .bbox import parse_bboxes
+from .models.decode import decode_heatmaps
+from .models.vitpose import flip_back
 from .pose_utils.human_visualization import draw_aapose_by_meta_new
 from .pose_utils.pose2d_utils import AAPoseMeta, bbox_from_detector, crop, load_pose_metas_from_kp2ds_seq
 from .temporal import (BOX_WINDOW, DROPPED, MAX_GAP, MAX_RESIDUAL, MAX_STEP, MEASURED, RECOVERED, REPLACED,
@@ -60,7 +62,9 @@ class PoseConfig:
         "doc": "RTMW only: divisor of its raw SimCC keypoint score; 0 keeps the default 4.6. Ignored with ViTPose, whose confidences are its heatmap maxima"})
     min_keypoint_conf: float = field(default=0.3, metadata={
         "min": 0.0, "max": 1.0, "step": 0.05,
-        "doc": "Keypoints below this confidence count as not found. Carried in pose_data, it is the one threshold SAM3 box_keypoint mode, Pose Guard and Mask Guard read; the drawing uses the draw_threshold widget"})
+        "doc": "Keypoints below this confidence count as not found by SAM3 box_keypoint mode, which reads it from pose_data. The drawing and the guards use Pose Detection's draw_threshold"})
+    flip_test: bool = field(default=False, metadata={
+        "doc": "ViTPose only: also run the mirrored crop and average the two heatmaps, as ViTPose's published accuracy is measured; about doubles the pose time. Ignored with RTMW"})
     detection_threshold: float = field(default=0.05, metadata={
         "min": 0.0, "max": 1.0, "step": 0.01,
         "doc": "Person detector (YOLO) score below which a box is discarded. Ignored when bboxes is connected (YOLO does not run)"})
@@ -175,6 +179,14 @@ def _supplied_boxes(bboxes, frames):
     return [np.array([*b, 1.0]) for b in parse_bboxes(bboxes, frames)], [1] * frames
 
 
+def flip_test_keypoints(pose_model, x, center, scale):
+    """ViTPose's keypoints from the crop `x` [1, 3, h, w] and its mirror: the mirror's heatmaps
+    flipped back with left and right swapped (`vitpose.flip_back`), the two averaged and decoded
+    as the model decodes one pass."""
+    heatmaps = (pose_model.run(x) + flip_back(pose_model.run(x[..., ::-1]))) * 0.5
+    return decode_heatmaps(heatmaps, center, scale)
+
+
 def detect(detector, pose_model, images, bboxes=None, config=None):
     """Runs the detector and the pose model on every frame of `images` [B, H, W, 3].
 
@@ -229,12 +241,19 @@ def detect(detector, pose_model, images, bboxes=None, config=None):
                      f"{type(pose_model).__name__} confidences are used as they are")
         else:
             scale_override = _overridden(pose_model, "conf_scale", config.confidence_scale)
-    with log.step(f"extracting keypoints on {B} frames"), scale_override:
+    flip = config.flip_test and getattr(pose_model, "architecture", None) == "vitpose"
+    if config.flip_test and not flip:
+        log.info(f"flip_test ignored: it applies to ViTPose only, {type(pose_model).__name__} runs once per crop")
+    with log.step(f"extracting keypoints on {B} frames" + (" (flip test)" if flip else "")), scale_override:
         for i, (img, bbox) in enumerate(tqdm(zip(images_np, boxes), total=B, desc="Extracting keypoints")):
             center, scale = bbox_from_detector(bbox, resolution, rescale=POSE_CROP_RESCALE)
             img = crop(img, center, scale, resolution)[0]
             img_norm = ((img - IMG_NORM_MEAN) / IMG_NORM_STD).transpose(2, 0, 1).astype(np.float32)
-            kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
+            if flip:
+                kp2ds.append(flip_test_keypoints(pose_model, img_norm[None], np.array(center)[None],
+                                                 np.array(scale)[None]))
+            else:
+                kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
             pbar.update_absolute(B + i + 1)
     kp2ds = np.concatenate(kp2ds, 0)
 
@@ -298,7 +317,9 @@ def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_
                    hand_stick_width=-1, draw_head=True, draw_threshold=0.5):
     """The Pose Detection node: `images` [B, H, W, 3] in, and out
     (pose_images [B, H, W, 3], pose_data, bboxes, key_frame_body_points) - see `detect`,
-    `draw` and `key_frame_body_points`."""
+    `draw` and `key_frame_body_points`. pose_data also carries `draw_threshold`: the guards
+    count the keypoints and limbs the pose images draw."""
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
+    pose_data["draw_threshold"] = draw_threshold
     pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold)
     return pose_images, pose_data, boxes, key_frame_body_points(pose_data, draw_threshold)

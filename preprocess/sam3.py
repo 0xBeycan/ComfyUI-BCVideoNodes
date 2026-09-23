@@ -82,6 +82,15 @@ def _field(default, lo, hi, step, doc):
     return field(default=default, metadata={"min": lo, "max": hi, "step": step, "tooltip": doc})
 
 
+# The two sides of each A/B switch below: "ours" is the policy this module has always run,
+# "meta" is Meta's (easy-sam3 @ 88fe578) ported onto core's primitives.
+OURS, META = "ours", "meta"
+
+
+def _choice(default, choices, doc):
+    return field(default=default, metadata={"choices": tuple(choices), "tooltip": doc})
+
+
 @dataclass
 class SAM3Config:
     """The tunables of both modes. Each tooltip starts with the mode it affects, and a field is
@@ -91,10 +100,12 @@ class SAM3Config:
 
     `[prompt]` defaults are measured on SAM 3.1 with PROMPT (1116 frames across eight clips):
     the person's presence-corrected score never fell below 0.62, and the best detection that
-    was not the person never passed 0.29 after NMS. The query score alone carries no
-    information here - it never left 0.96-0.995 - so Meta's score thresholds, set against it on
-    SAM 3.0, do not transfer. The multi-object fields are Meta's own values (the IoU and
-    frame-count thresholds of its video policy, as vendored by easy-sam3): they compare masks
+    was not the person never passed 0.29 after NMS. (The query score alone carries no
+    information here - it never left 0.96-0.995.) Meta thresholds the same presence-corrected
+    score (sam3_image.py joins them into pred_logits), but its values were set on SAM 3.0, and
+    SAM 3.1's scores sit on a different scale, so they do not transfer. The multi-object fields
+    are Meta's own values (the IoU and frame-count thresholds of its video policy, as vendored
+    by easy-sam3): they compare masks
     with masks, not scores, so they carry over. `[box_keypoint]` defaults are the swept values
     of the box+keypoint branch."""
 
@@ -124,6 +135,18 @@ class SAM3Config:
     # The tracker reads the last num_maskmem - 1 frames of non-conditioning memory; clearing
     # that many frames either side of a fresh anchor is what makes it an anchor.
     memory_gap: int = _field(7, 0, 64, 1, "[prompt] frames of non-conditioning memory cleared either side of a fresh anchor")
+    # --- [prompt] A/B against Meta's policy (specs/mask-process.md, A1-A9) ---
+    # Each switch defaults to ours; "meta" is Meta's behaviour ported onto core's primitives.
+    # Which side wins is decided by the A/B on the test clips, not here. A6 and A7 are read with
+    # any max_objects, the others with max_objects 1 only.
+    anchor_memory: str = _choice(OURS, (OURS, "clear_past", META), "[prompt] A1, memory around a re-anchor. ours: the stored non-conditioning memory is cleared and none is encoded for memory_gap frames after; clear_past: cleared, then encoded as usual; meta: neither (Meta clears only its per-object copies, which propagation does not read)")
+    anchor_output: str = _choice(OURS, (OURS, META), "[prompt] A2, a re-anchor frame. ours: outputs the detection and stores it as conditioning memory; meta: outputs the propagated mask and stores that mask's memory in the conditioning entry")
+    conditioning_frames: str = _choice(OURS, (OURS, META), "[prompt] A3, conditioning frames attended. ours: the birth frame and the newest anchor; meta: the 4 newest, the birth frame not kept")
+    memory_selection: str = _choice(OURS, (OURS, META), "[prompt] A4, spatial memory read. ours: the last 6 frames; meta: the last 6 frames whose object score says the person was there (Meta's memory selection, by object score alone: core does not return the decoder's IoU)")
+    anchor_score_gate: str = _choice(OURS, (OURS, META), "[prompt] A5, re-anchoring. ours: any agreeing detection; meta: only while the tracker's own object-score logit is above 0.8")
+    anchor_matching: str = _choice(OURS, (OURS, META), "[prompt] A6, which detection re-anchors which track. ours: each track takes the best-scoring detection agreeing with it; meta: each detection goes to the one track it overlaps most (the last such detection wins)")
+    unmatched_counting: str = _choice(OURS, (OURS, META), "[prompt] A7, probation. ours: a frame the detector misses counts as unmatched even when the track's mask is empty; meta: only when the mask is not empty")
+    seed_cleaning: str = _choice(OURS, (OURS, META), "[prompt] A9, a detection that starts or re-anchors a track. ours: its specks and pinholes are removed before it conditions the tracker; meta: the tracker gets it raw and only the birth frame's output is cleaned")
     # --- [prompt, max_objects > 1]: only read when several objects are tracked ---
     # Every track runs the single-object policy above unchanged; these decide between tracks.
     # A further person is born from a detection this confident while another track is live
@@ -191,7 +214,7 @@ class SAM3Config:
     # Where the mask logits are cut. Slightly below zero because the boundary is soft exactly
     # where the thin parts are - loose hair, fingers, the edge of a foot - and they were left
     # a few pixels outside the mask, which the block mask downstream then makes obvious.
-    mask_threshold: float = _field(-1.0, -10.0, 10.0, 0.1, "[box_keypoint] the prompted mask's logits are cut here")
+    mask_threshold: float = _field(-1.0, -10.0, 10.0, 0.1, "[box_keypoint] the prompted mask's logits are cut here; with uniform_mask_threshold on, every frame of both modes")
     # Islands smaller than this fraction of the largest region are decoder noise (specks in
     # shadows and edges), not the person; downstream block masks would blow them up.
     min_island_fraction: float = _field(0.01, 0.0, 1.0, 0.005, "[box_keypoint] regions smaller than this share of the largest one are removed")
@@ -204,10 +227,30 @@ class SAM3Config:
     refine: bool = field(default=True, metadata={"tooltip": "[box_keypoint] feed the prompted mask back to the decoder once to refine it"})
     temporal: bool = field(default=True, metadata={"tooltip": "[box_keypoint] propagate with the tracker between prompts; off prompts every frame on its own (not Pose Config's temporal)"})
 
+    # --- [all modes] (specs/mask-process.md M4) ---
+    # Off keeps each mode's own cuts: prompt mode at 0 everywhere, box_keypoint at
+    # mask_threshold on the frames it prompts and at 0 on the frames the tracker propagates -
+    # which is why its mask gains area at every re-seed. On, one threshold cuts everything.
+    uniform_mask_threshold: bool = field(default=False, metadata={"tooltip": "[all modes] M4, on: mask_threshold cuts every frame's mask logits in both modes (prompted, propagated, tracked backwards, every object); off: prompt mode cuts at 0, box_keypoint cuts its prompted frames at mask_threshold and its propagated frames at 0"})
+    # Prompt mode's birth frame and every re-anchor frame show the mask the tracker is
+    # conditioned with, binarised at 0 to +/-10, so with M4 on mask_threshold does not move
+    # their boundary and the area steps every recondition_every frames. Last, after the M4
+    # switch it depends on, so saved workflows keep their widget positions.
+    m4_anchor_frames: str = _choice("mask", ("mask", "output"), "[prompt] M4, with uniform_mask_threshold on and max_objects 1: what the birth and re-anchor frames show. mask: the binarised mask the tracker is conditioned with, which mask_threshold does not move; output: the detection's logits cut at mask_threshold like every other frame (a birth with seed_cleaning meta and an anchor with anchor_output meta already show that). The tracker is conditioned the same either way")
+
+    def __post_init__(self):
+        for f in fields(self):
+            choices = f.metadata.get("choices")
+            if choices and getattr(self, f.name) not in choices:
+                raise ValueError(f"SAM3Config.{f.name} is {getattr(self, f.name)!r}; it must be one of {choices}")
+
 
 # The [box_keypoint] fields only the tracker reads: with `temporal` off nothing is propagated.
 TRACKER_FIELDS = ("reseed_interval", "max_propagate", "min_anchor_keypoints", "min_anchor_conf",
                   "min_anchor_completeness", "min_tracked_recall")
+# The [prompt] A/B switches the single-object policy reads and segment_by_prompt_multi does not.
+SINGLE_OBJECT_FIELDS = ("anchor_memory", "anchor_output", "conditioning_frames", "memory_selection",
+                        "anchor_score_gate", "seed_cleaning", "m4_anchor_frames")
 
 
 def changed_fields(config, tag=None, names=()):
@@ -222,6 +265,12 @@ def changed_fields(config, tag=None, names=()):
 # grow the memory attention without bound. Two is what the policy needs: the birth frame,
 # which says which person this is, and the newest anchor, which says where they are now.
 MAX_CONDITIONING_FRAMES = 2
+# Meta's side of the switches: max_cond_frames_in_attn (A3), the tracker object-score logit a
+# re-anchored track must have (A5, HIGH_CONF_THRESH on the raw logit), and the memory
+# selection threshold on the rescaled object score (A4, mf_threshold).
+META_CONDITIONING_FRAMES = 4
+META_ANCHOR_OBJECT_LOGIT = 0.8
+META_MEMORY_SCORE = 0.01
 
 # --- box_keypoint mode layout constants ----------------------------------------------------
 
@@ -361,16 +410,138 @@ def clean_logits(masks, fill_hole_area):
     return fill_holes_in_mask_scores(masks.unsqueeze(1).float(), max_area=fill_hole_area)[:, 0]
 
 
-def to_frame_size(low_res, H, W):
-    """One frame's [1, 1, h, w] mask logits as an [H, W] float mask of the frame."""
+def to_frame_size(low_res, H, W, threshold=0.0):
+    """One frame's [1, 1, h, w] mask logits as an [H, W] float mask of the frame, cut at
+    `threshold`."""
     upsampled = F.interpolate(low_res.float(), size=(H, W), mode="bilinear", align_corners=False)
-    return (upsampled[0, 0] > 0).float().cpu()
+    return (upsampled[0, 0] > threshold).float().cpu()
+
+
+def output_cut(config):
+    """The logit threshold prompt mode's masks and box_keypoint's propagated masks are cut at:
+    0, or mask_threshold with uniform_mask_threshold on (M4)."""
+    return config.mask_threshold if config.uniform_mask_threshold else 0.0
+
+
+def shown_logits(raw, cut, fill_hole_area, cleaned=None):
+    """The [n, 1, h, w] logits a prompt-mode frame shows, from the tracker's or detector's `raw`
+    ones: `cleaned` (clean_logits of `raw`, the memory's copy; computed when not given) when
+    the output is cut at 0. At any other cut (M4) the specks and pinholes are cleaned relative
+    to the cut: cleaning at 0 sets a removed speck to -0.1 and a filled hole to 0.1, which a cut
+    of -1 would put straight back in (and one of +1 back out). Only the pixels the cleaning
+    changes are moved, to just past the cut; every other pixel keeps its raw value."""
+    if cut == 0:
+        return cleaned if cleaned is not None else clean_logits(raw[:, 0], fill_hole_area).unsqueeze(1)
+    raw = raw[:, 0].float()
+    relative = clean_logits(raw - cut, fill_hole_area)
+    return torch.where(relative != raw - cut, relative + cut, raw).unsqueeze(1)
+
+
+def low_res_logits(masks):
+    """The [h, w] logits of a [1, 1, h, w] (or [1, h, w]) tensor as the fp16 CPU copy the logits
+    dump keeps."""
+    return masks.reshape(masks.shape[-2:]).detach().to("cpu", torch.float16).clone()
+
+
+def seed_from(det_masks, index, config):
+    """The detection that starts or re-anchors a track, as it is handed to the tracker: cleaned
+    (ours) or raw (Meta, A9)."""
+    if config.seed_cleaning == OURS:
+        return clean_logits(det_masks[index:index + 1], config.fill_hole_area)
+    return det_masks[index:index + 1].float()
+
+
+def choose_anchor(det_scores, overlap, config):
+    """The detection that re-anchors the single track, or None: of the detections scoring
+    recondition_score and overlapping the track by recondition_iou, the first - the best
+    scoring, they are sorted - (ours) or the last (Meta's per-detection loop, where a later
+    detection overwrites an earlier one for the same track, A6). `overlap` is [D]."""
+    fresh = ((det_scores >= config.recondition_score) & (overlap >= config.recondition_iou)).nonzero()
+    if not fresh.shape[0]:
+        return None
+    return int(fresh[0]) if config.anchor_matching == OURS else int(fresh[-1])
+
+
+def anchor_detections(det_scores, overlap, tracks, config):
+    """{track: detection} re-anchoring several tracks; `overlap` is [D, K], `tracks` the columns
+    still live. Ours: every track takes the first detection agreeing with it, so two tracks can
+    take one detection. Meta (A6): every agreeing detection goes to the one track it overlaps
+    most, the last detection winning a track two agree with."""
+    anchors = {}
+    if config.anchor_matching == OURS:
+        for k in tracks:
+            fresh = ((det_scores >= config.recondition_score) & (overlap[:, k] >= config.recondition_iou)).nonzero()
+            if fresh.shape[0]:
+                anchors[k] = int(fresh[0])
+        return anchors
+    if not tracks:
+        return anchors
+    columns = torch.tensor(tracks, device=overlap.device)
+    for d in range(overlap.shape[0]):
+        best, j = overlap[d, columns].max(dim=0)
+        if float(det_scores[d]) >= config.recondition_score and float(best) >= config.recondition_iou:
+            anchors[tracks[int(j)]] = d
+    return anchors
+
+
+def counts_unmatched(matched, track_masks, config):
+    """Whether a probation frame counts against the track: unmatched, and for Meta (A7) only
+    when the track's mask is not empty."""
+    return not matched and (config.unmatched_counting == OURS or bool((track_masks > 0).any()))
+
+
+def prune_conditioning(conditioned, how):
+    """Drop conditioning frames past the limit (A3). Ours keeps the birth frame, which says
+    which person this is, and the newest anchor, which says where they are now; Meta keeps the
+    META_CONDITIONING_FRAMES temporally closest, which for a forward pass are the newest."""
+    limit, keep_first = (MAX_CONDITIONING_FRAMES, True) if how == OURS else (META_CONDITIONING_FRAMES, False)
+    while len(conditioned) > limit:
+        del conditioned[sorted(conditioned)[1 if keep_first else 0]]
+
+
+def object_present(out):
+    """Meta's memory score for a stored frame, by the object score alone (A4): the logit,
+    rescaled to 0..1 above 0, has to pass META_MEMORY_SCORE. Meta multiplies in the decoder's
+    predicted IoU, which core's track_step does not return."""
+    logit = float(out["object_score_logits"].float().max())
+    return logit > 0 and (torch.sigmoid(torch.tensor(logit)).item() * 2 - 1) > META_MEMORY_SCORE
+
+
+def memory_view(output_dict, frame_idx, tracker):
+    """The output_dict the tracker should read on `frame_idx` under Meta's memory selection
+    (A4): the frame before, plus the newest stored frames the person was present on, placed at
+    frame_idx - 1, frame_idx - 2, ... in that order. Core's lookup reads memories and object
+    pointers by index, so re-indexing them is how the selected frames reach it - the temporal
+    positions become ranks, as in Meta's frame_filter."""
+    stored = output_dict["non_cond_frame_outputs"]
+    selected = [t for t in sorted(stored, reverse=True) if t < frame_idx and object_present(stored[t])]
+    selected = selected[:tracker.max_obj_ptrs_in_encoder - 1]
+    if frame_idx - 1 in stored and frame_idx - 1 not in selected:
+        selected.insert(0, frame_idx - 1)   # the frame before is always read, present or not
+    return {"cond_frame_outputs": output_dict["cond_frame_outputs"],
+            "non_cond_frame_outputs": {frame_idx - rank: stored[t] for rank, t in enumerate(selected, start=1)}}
+
+
+def forget_old_memory(stored, frame_idx, lookback, how):
+    """Drop the non-conditioning outputs the lookup cannot reach any more. Ours: older than
+    `lookback` frames. Meta (A4): all but the newest frame and the newest lookback - 1 frames the
+    person was present on, however old."""
+    if how == OURS:
+        for old in list(stored):
+            if old < frame_idx - lookback:
+                del stored[old]
+        return
+    present = [t for t in sorted(stored, reverse=True) if t != frame_idx and object_present(stored[t])]
+    keep = {frame_idx, *present[:lookback - 1]}
+    for old in list(stored):
+        if old not in keep:
+            del stored[old]
 
 
 def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, config):
     """Fill in the frames before `birth` by tracking backwards from the detection that
-    started the track: `emit(frame, output)` is called with the tracker's output for every
-    frame from birth - 1 down to 0.
+    started the track: `emit(frame, output, raw)` is called with the tracker's output for every
+    frame from birth - 1 down to 0, and the logits it had before they were cleaned.
 
     Core's memory lookups only run forwards - `collect_memory_tokens` asks for frame_idx - 1,
     frame_idx - 2 and so on - so the frames go in mirrored: frame t is tracked under the
@@ -400,21 +571,40 @@ def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emi
             current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
             output_dict=output_dict, num_frames=N, propagation_high_res=high_res,
             multiplex_state=mux, run_mem_encoder=False)
-        current["pred_masks"] = clean_logits(current["pred_masks"][:, 0], config.fill_hole_area).unsqueeze(1)
+        raw = current["pred_masks"]
+        current["pred_masks"] = clean_logits(raw[:, 0], config.fill_hole_area).unsqueeze(1)
         tracker._deferred_memory_encode(current, 1, vision_feats, feat_sizes, mux, device)
         output_dict["non_cond_frame_outputs"][mirror - f] = current
         for old in list(output_dict["non_cond_frame_outputs"]):
             if old < mirror - f - max(tracker.num_maskmem, tracker.max_obj_ptrs_in_encoder):
                 del output_dict["non_cond_frame_outputs"][old]
-        emit(f, current)
+        emit(f, current, raw)
 
 
-def segment_by_prompt(model, clip, images, prompt, config, result=None):
+def _logits_record(logits, N):
+    """The per-frame slots a segment function fills for the logits dump, or None when nobody
+    asked: `logits` is the caller's dict, given "logits" (the [h, w] fp16 low-res logits each
+    output frame was cut from, None for a frame without output) and "cut" (how: "prompt",
+    "prompted" or "propagated"; segment_by_prompt marks its birth frame "birth" and its
+    re-anchor frames "anchor"). segment_by_prompt adds "raw": whether a frame's logits are the
+    ones before shown_logits cleaned them."""
+    if logits is None:
+        return None
+    logits.update({"logits": [None] * N, "cut": [None] * N})
+    return logits
+
+
+def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=None):
     """[N, H, W] float masks of the person in `images` [N, H, W, 3], from the text prompt
-    alone. `result`, if given, is filled with what happened for the log."""
+    alone. `result`, if given, is filled with what happened for the log; `logits`, if given, a
+    dict, receives each output frame's low-res logits (see `_logits_record`).
+
+    The [prompt] A/B switches of `config` pick ours or Meta's side of each policy step; at
+    their defaults this is the policy described in the module docstring."""
     if clip is None:
         raise ValueError("the SAM3 checkpoint carries no text encoder, so the prompt cannot be "
                          f"encoded; use a full SAM3 checkpoint such as {DEFAULT_SAM3}")
+    c = config
     N, H, W, _ = images.shape
     device, dtype = mm.get_torch_device(), model.model.get_dtype()
     frames = images[..., :3].movedim(-1, 1)
@@ -424,6 +614,13 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None):
     embedding, text_mask = encode_prompt(clip, detector, prompt, device, dtype)
     size = tracker.image_size
     backbone_fn = _propagation_backbone(backbone)
+    lookback = max(tracker.num_maskmem, tracker.max_obj_ptrs_in_encoder)
+    cut = output_cut(c)
+    # M4: birth and anchor frames show the detection cut at `cut`, not the conditioning mask
+    detection_shown = c.uniform_mask_threshold and c.m4_anchor_frames == "output"
+    record = _logits_record(logits, N)
+    if record is not None:
+        record["raw"] = [False] * N
 
     masks = torch.zeros(N, H, W)
     output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
@@ -431,41 +628,58 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None):
     birth = -1            # the frame the live track was born on, -1 while there is none
     unmatched = 0         # frames of the probation window the track went unmatched
     quiet_until = -1      # no non-conditioning memory is kept up to here, after an anchor
-    pending = []          # (frame, mask) produced by a track still on probation
+    pending = []          # (frame, mask, logits, raw, how) produced by a track still on probation
     counts = {"false starts": 0, "reconditioned": 0}
     pbar = ProgressBar(N)
+
+    def put(f, mask, low, raw, how="prompt"):
+        masks[f] = mask
+        if record is not None:
+            record["logits"][f], record["cut"][f], record["raw"][f] = low, how, raw
 
     with torch.inference_mode():
         for f in range(N):
             frame = _prep_frame(frames, slice(f, f + 1), device, dtype, size)
             vision_feats, vision_pos, feat_sizes, high_res, trunk_out = tracker._compute_backbone_frame(
                 backbone_fn, frame, frame_idx=f)
-            det_masks, det_scores = detect_person(detector, backbone, trunk_out, embedding, text_mask, config)
+            det_masks, det_scores = detect_person(detector, backbone, trunk_out, embedding, text_mask, c)
+            how = "prompt"
 
             if birth < 0:
-                if det_scores.numel() == 0 or det_scores[0] < config.birth_threshold:
+                if det_scores.numel() == 0 or det_scores[0] < c.birth_threshold:
                     pbar.update(1)
                     continue
                 mux = MultiplexState(1, tracker.num_multiplex, device, dtype)
-                seed = clean_logits(det_masks[:1], config.fill_hole_area)
+                seed = seed_from(det_masks, 0, c)
                 current = tracker._condition_with_masks(
                     seed, f, vision_feats, vision_pos, feat_sizes, high_res,
                     output_dict, N, mux, backbone, frame, trunk_out, threshold=0.0)
-                birth, unmatched, quiet_until = f, 0, -1
+                birth, unmatched, quiet_until, how = f, 0, -1, "birth"
+                # Meta tracks the raw detection but outputs it cleaned (A9). `dumped`: the
+                # logits before the output's cleaning, None when the frame shows the
+                # conditioning mask itself
+                if c.seed_cleaning == OURS and not detection_shown:
+                    shown, dumped = current["pred_masks"], None
+                else:
+                    dumped = det_masks[:1].unsqueeze(1)
+                    shown = shown_logits(dumped, cut, c.fill_hole_area)
             else:
+                lookup = output_dict if c.memory_selection == OURS else memory_view(output_dict, f, tracker)
                 current = tracker.track_step(
                     frame_idx=f, is_init_cond_frame=False, current_vision_feats=vision_feats,
                     current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
-                    output_dict=output_dict, num_frames=N, propagation_high_res=high_res,
+                    output_dict=lookup, num_frames=N, propagation_high_res=high_res,
                     multiplex_state=mux, run_mem_encoder=False)
-                current["pred_masks"] = clean_logits(current["pred_masks"][:, 0], config.fill_hole_area).unsqueeze(1)
+                raw = current["pred_masks"]
+                current["pred_masks"] = clean_logits(raw[:, 0], c.fill_hole_area).unsqueeze(1)
+                shown, dumped = shown_logits(raw, cut, c.fill_hole_area, current["pred_masks"]), raw
 
                 overlap = iou(det_masks, current["pred_masks"][:, 0])[:, 0] if det_masks.shape[0] else None
-                matched = overlap is not None and float(overlap.max()) >= config.match_iou
+                matched = overlap is not None and float(overlap.max()) >= c.match_iou
 
-                if f - birth < config.hotstart_frames and not matched:
+                if f - birth < c.hotstart_frames and counts_unmatched(matched, current["pred_masks"], c):
                     unmatched += 1
-                    if unmatched >= config.hotstart_unmatched:
+                    if unmatched >= c.hotstart_unmatched:
                         # The detector cannot find this track on half of its first frames, so
                         # it was never the person; drop it and everything it drew.
                         log.info(f"the track born on frame {birth} went unmatched on {unmatched} of its "
@@ -477,58 +691,70 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None):
                         continue
 
                 anchor = None
-                if f % config.recondition_every == 0 and overlap is not None:
-                    fresh = ((det_scores >= config.recondition_score) & (overlap >= config.recondition_iou)).nonzero()
-                    anchor = int(fresh[0]) if fresh.shape[0] else None
+                if f % c.recondition_every == 0 and overlap is not None and (
+                        c.anchor_score_gate == OURS
+                        or float(current["object_score_logits"].float().max()) > META_ANCHOR_OBJECT_LOGIT):
+                    anchor = choose_anchor(det_scores, overlap, c)
                 if anchor is None:
                     if f > quiet_until:
                         tracker._deferred_memory_encode(current, 1, vision_feats, feat_sizes, mux, device)
                     output_dict["non_cond_frame_outputs"][f] = current
-                    for old in list(output_dict["non_cond_frame_outputs"]):
-                        if old < f - max(tracker.num_maskmem, tracker.max_obj_ptrs_in_encoder):
-                            del output_dict["non_cond_frame_outputs"][old]
+                    forget_old_memory(output_dict["non_cond_frame_outputs"], f, lookback, c.memory_selection)
                 else:
                     # An anchor only anchors if it is alone: drop the spatial memory of the
                     # frames around it, the ones carrying the drift. Everything still in the
                     # dict is within reach of the lookup, and the frames after it are held off
                     # by quiet_until. The object pointers stay - it is the memory that is
-                    # cleared, not the frame.
-                    for old in output_dict["non_cond_frame_outputs"].values():
-                        old["maskmem_features"] = old["maskmem_pos_enc"] = None
-                    quiet_until = f + config.memory_gap
+                    # cleared, not the frame. (A1: clear_past only clears, Meta does neither.)
+                    if c.anchor_memory != META:
+                        for old in output_dict["non_cond_frame_outputs"].values():
+                            old["maskmem_features"] = old["maskmem_pos_enc"] = None
+                    if c.anchor_memory == OURS:
+                        quiet_until = f + c.memory_gap
+                    propagated = current
                     current = tracker._condition_with_masks(
-                        clean_logits(det_masks[anchor:anchor + 1], config.fill_hole_area), f, vision_feats,
+                        seed_from(det_masks, anchor, c), f, vision_feats,
                         vision_pos, feat_sizes, high_res, output_dict, N, mux, backbone, frame, trunk_out,
                         threshold=0.0)
+                    shown, dumped, how = current["pred_masks"], None, "anchor"
+                    if c.anchor_output == META:
+                        # A2: the frame shows the propagated mask, and the conditioning entry
+                        # remembers that mask - encoded as a propagated one, the way Meta
+                        # re-encodes every frame's memory from the propagated masks
+                        tracker._deferred_memory_encode(propagated, 1, vision_feats, feat_sizes, mux, device)
+                        current["maskmem_features"] = propagated["maskmem_features"]
+                        current["maskmem_pos_enc"] = propagated["maskmem_pos_enc"]
+                        shown = shown_logits(raw, cut, c.fill_hole_area, propagated["pred_masks"])
+                    elif detection_shown:
+                        dumped = det_masks[anchor:anchor + 1].unsqueeze(1)
+                        shown = shown_logits(dumped, cut, c.fill_hole_area)
                     counts["reconditioned"] += 1
-                    conditioned = output_dict["cond_frame_outputs"]
-                    while len(conditioned) > MAX_CONDITIONING_FRAMES:
-                        # keep the birth frame, which says which person this is, and the newest
-                        # anchor, which says where they are now
-                        del conditioned[sorted(conditioned)[1]]
+                    prune_conditioning(output_dict["cond_frame_outputs"], c.conditioning_frames)
 
-            mask = to_frame_size(current["pred_masks"], H, W)
-            if f - birth >= config.hotstart_frames:
-                for held, held_mask in pending:
-                    masks[held] = held_mask
+            mask = to_frame_size(shown, H, W, cut)
+            low = low_res_logits(shown if dumped is None else dumped) if record is not None else None
+            if f - birth >= c.hotstart_frames:
+                for held in pending:
+                    put(*held)
                 pending = []
-                masks[f] = mask
+                put(f, mask, low, dumped is not None, how)
             else:
-                pending.append((f, mask))
+                pending.append((f, mask, low, dumped is not None, how))
             pbar.update(1)
 
-        for held, held_mask in pending:
-            masks[held] = held_mask
+        for held in pending:
+            put(*held)
         if birth > 0:
             log.info(f"the track starts on frame {birth}; tracking backwards to fill frames 0-{birth - 1}")
-            def emit(f, current):
-                masks[f] = to_frame_size(current["pred_masks"], H, W)
-            propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, config)
+            def emit(f, current, raw):
+                put(f, to_frame_size(shown_logits(raw, cut, c.fill_hole_area, current["pred_masks"]), H, W, cut),
+                    low_res_logits(raw) if record is not None else None, True)
+            propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, c)
             counts["tracked backwards"] = birth
 
     segmented = int((masks.flatten(1).any(dim=1)).sum())
     if segmented == 0:
-        log.warning(f"no frame of this clip scored above {config.birth_threshold} for '{prompt}'; there is no mask")
+        log.warning(f"no frame of this clip scored above {c.birth_threshold} for '{prompt}'; there is no mask")
     else:
         log.info(f"segmented {segmented} of {N} frame(s) from '{prompt}', tracked from frame {birth}"
                  + (f", reconditioned {counts['reconditioned']} time(s)" if counts["reconditioned"] else ""))
@@ -604,7 +830,9 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
     leaves nothing behind. Meta's keep-alive counters and masklet confirmation are not here:
     both are switched off in the configuration easy-sam3 ships (keep-alive only suppresses
     with suppress_unmatched_only_within_hotstart=False, confirmation with
-    masklet_confirmation_enable=True), so they would be dead code."""
+    masklet_confirmation_enable=True), so they would be dead code. Of the [prompt] A/B switches
+    only anchor_matching (A6) and unmatched_counting (A7) are read here, and the
+    uniform_mask_threshold cut (M4)."""
     if clip is None:
         raise ValueError("the SAM3 checkpoint carries no text encoder, so the prompt cannot be "
                          f"encoded; use a full SAM3 checkpoint such as {DEFAULT_SAM3}")
@@ -619,6 +847,7 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
     size = tracker.image_size
     backbone_fn = _propagation_backbone(backbone)
     lookback = max(tracker.num_maskmem, tracker.max_obj_ptrs_in_encoder)
+    cut = output_cut(c)
 
     born = []             # every track ever started, in birth order
     live = []             # the tracks still running
@@ -647,7 +876,8 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
                     current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
                     output_dict=t["output"], num_frames=N, propagation_high_res=high_res,
                     multiplex_state=t["mux"], run_mem_encoder=False)
-                current["pred_masks"] = clean_logits(current["pred_masks"][:, 0], c.fill_hole_area).unsqueeze(1)
+                t["raw"] = current["pred_masks"]
+                current["pred_masks"] = clean_logits(t["raw"][:, 0], c.fill_hole_area).unsqueeze(1)
                 t["current"] = current
                 t["score"] = float(current["object_score_logits"].float().sigmoid().flatten()[0])
             K = len(live)
@@ -663,7 +893,7 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
             # probation: unmatched tracks, and the younger of two tracks sharing a detection
             for k, t in enumerate(live):
                 matched = D > 0 and float(overlap[:, k].max()) >= c.match_iou
-                if f - t["birth"] < c.hotstart_frames and not matched:
+                if f - t["birth"] < c.hotstart_frames and counts_unmatched(matched, t["current"]["pred_masks"], c):
                     t["unmatched"] += 1
                     if t["unmatched"] >= c.hotstart_unmatched:
                         drop(t, f"went unmatched on {t['unmatched']} of its first {f - t['birth'] + 1} frames")
@@ -689,10 +919,7 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
             # reconditioning, per track
             anchors = {}
             if f % c.recondition_every == 0 and D:
-                for k in kept:
-                    fresh = ((det_scores >= c.recondition_score) & (overlap[:, k] >= c.recondition_iou)).nonzero()
-                    if fresh.shape[0]:
-                        anchors[k] = int(fresh[0])
+                anchors = anchor_detections(det_scores, overlap, kept, c)
 
             # the tracks against each other, then memory
             if kept:
@@ -737,7 +964,10 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
                     conditioned = output["cond_frame_outputs"]
                     while len(conditioned) > MAX_CONDITIONING_FRAMES:
                         del conditioned[sorted(conditioned)[1]]
-                outputs[f][t["id"]] = (t["current"]["pred_masks"].float().cpu(), t["score"])
+                shown = t["current"]["pred_masks"]
+                if k not in anchors and not bool(suppressed[j]):
+                    shown = shown_logits(t["raw"], cut, c.fill_hole_area, shown)
+                outputs[f][t["id"]] = (shown.float().cpu(), t["score"])
             live = [live[k] for k in kept]
 
             # births, best score first
@@ -761,9 +991,10 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
                 log.info(f"object {objects.index(t)} starts on frame {t['birth']}; tracking backwards "
                          f"to fill frames 0-{t['birth'] - 1}")
 
-                def emit(f, current, track=t):
+                def emit(f, current, raw, track=t):
                     score = float(current["object_score_logits"].float().sigmoid().flatten()[0])
-                    outputs[f][track["id"]] = (current["pred_masks"].float().cpu(), score)
+                    shown = shown_logits(raw, cut, c.fill_hole_area, current["pred_masks"])
+                    outputs[f][track["id"]] = (shown.float().cpu(), score)
                 propagate_backwards(tracker, backbone, backbone_fn, frames, t["seed"], t["birth"], emit,
                                     device, dtype, c)
 
@@ -776,7 +1007,7 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
         present = [i for i in ids if i in outputs[f]]
         if not present:
             continue
-        binary = torch.stack([to_frame_size(outputs[f][i][0], H, W) > 0 for i in present])
+        binary = torch.stack([to_frame_size(outputs[f][i][0], H, W, cut) > 0 for i in present])
         binary = non_overlapping(binary, torch.tensor([outputs[f][i][1] for i in present]))
         if object_index < 0:
             masks[f] = binary.any(dim=0).float()
@@ -1047,14 +1278,18 @@ def decode(sam3, frame, point_inputs, box_inputs, refine):
     return logits
 
 
-def propagate(sam3, frames_chw, first_mask, device, dtype, H, W):
+def propagate(sam3, frames_chw, first_mask, device, dtype, H, W, threshold=0.0, logits_out=None):
     """Masks for frames_chw[1:], propagated by the tracker's memory from `first_mask` on
-    frames_chw[0], as a list of [H, W] bool arrays.
+    frames_chw[0], yielded one [H, W] bool array per frame: a frame is computed only when the
+    caller asks for it, so a caller that stops accepting frames stops the tracker there.
 
     This is exactly what core's `track_video_with_detection` computes when it is given an
     initial mask and no detector: the mask conditions frame 0, every later frame is a plain
     track_step with the pinholes filled, and the output is the tracker's high-res mask cut at
-    0 and resized to the frame. Written out here so no part of core's detection policy runs."""
+    `threshold` (0 unless uniform_mask_threshold, M4) and resized to the frame. Written out here
+    so no part of core's detection policy runs. `logits_out`, a list, receives each returned
+    frame's low-res logits before the pinholes are filled - the ones the high-res mask was
+    upsampled from - before that frame is yielded."""
     tracker, backbone = sam3.tracker, sam3.detector.backbone["vision_backbone"]
     backbone_fn = _propagation_backbone(backbone)
     N = frames_chw.shape[0]
@@ -1064,37 +1299,40 @@ def propagate(sam3, frames_chw, first_mask, device, dtype, H, W):
     output_dict = {"cond_frame_outputs": {}, "non_cond_frame_outputs": {}}
     mux = MultiplexState(1, tracker.num_multiplex, device, dtype)
     lookback = max(tracker.num_maskmem, tracker.max_obj_ptrs_in_encoder)
-    tracked = []
-    with torch.inference_mode():
-        for f in range(N):
+    for f in range(N):
+        # inference mode per frame, not around the loop: a generator suspended inside it
+        # would leave the caller in inference mode
+        with torch.inference_mode():
             frame = _prep_frame(frames_chw, slice(f, f + 1), device, dtype, size)
             vision_feats, vision_pos, feat_sizes, high_res, trunk_out = tracker._compute_backbone_frame(
                 backbone_fn, frame, frame_idx=f)
             if f == 0:
-                current = tracker._condition_with_masks(
+                tracker._condition_with_masks(
                     initial, 0, vision_feats, vision_pos, feat_sizes, high_res, output_dict, N, mux,
                     backbone, frame, trunk_out)
-            else:
-                current = tracker.track_step(
-                    frame_idx=f, is_init_cond_frame=False, current_vision_feats=vision_feats,
-                    current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
-                    output_dict=output_dict, num_frames=N, propagation_high_res=high_res,
-                    multiplex_state=mux, run_mem_encoder=False)
-                current["pred_masks"] = fill_holes_in_mask_scores(current["pred_masks"], max_area=16)
-                if tracker.num_maskmem > 0:
-                    tracker._deferred_memory_encode(current, 1, vision_feats, feat_sizes, mux, device)
-                output_dict["non_cond_frame_outputs"][f] = current
-                for old in list(output_dict["non_cond_frame_outputs"]):
-                    if old < f - lookback:
-                        del output_dict["non_cond_frame_outputs"][old]
-            tracked.append((current["pred_masks_high_res"][0, 0] > 0).to(idev))
-        masks = torch.stack(tracked).float()[:, None]
-        masks = F.interpolate(masks, size=(H, W), mode="bilinear", align_corners=False)[:, 0] > 0.5
-    return [m.cpu().numpy() for m in masks[1:]]
+                continue  # frame 0 is the given mask, not an output
+            current = tracker.track_step(
+                frame_idx=f, is_init_cond_frame=False, current_vision_feats=vision_feats,
+                current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
+                output_dict=output_dict, num_frames=N, propagation_high_res=high_res,
+                multiplex_state=mux, run_mem_encoder=False)
+            if logits_out is not None:
+                logits_out.append(low_res_logits(current["pred_masks"]))
+            current["pred_masks"] = fill_holes_in_mask_scores(current["pred_masks"], max_area=16)
+            if tracker.num_maskmem > 0:
+                tracker._deferred_memory_encode(current, 1, vision_feats, feat_sizes, mux, device)
+            output_dict["non_cond_frame_outputs"][f] = current
+            for old in list(output_dict["non_cond_frame_outputs"]):
+                if old < f - lookback:
+                    del output_dict["non_cond_frame_outputs"][old]
+            # one frame at a time: bilinear resizes every frame of a batch independently
+            mask = (current["pred_masks_high_res"][0, 0] > threshold).to(idev).float()[None, None]
+            mask = F.interpolate(mask, size=(H, W), mode="bilinear", align_corners=False)[0, 0] > 0.5
+        yield mask.cpu().numpy()
 
 
 def segment_by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf, extra_positive=(), extra_negative=(),
-                    result=None):
+                    result=None, logits=None):
     """[N, H, W] float masks of the detected person in `images` [N, H, W, 3].
 
     `bboxes[i]` is frame i's detector box as (x1, y1, x2, y2, score); a score of -1 means
@@ -1110,7 +1348,8 @@ def segment_by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf
     and immediately when the propagated mask stops covering the keypoints. Whatever the mask
     annexes along the way is remembered and prompted against from then on. With
     `config.temporal` off, every frame is prompted on its own, without the tracker. `result`, if given, is
-    filled with what happened for the log."""
+    filled with what happened for the log; `logits`, if given, a dict, receives each output
+    frame's low-res logits (see `_logits_record`)."""
     c = config
     refine, temporal = c.refine, c.temporal
     N, H, W, _ = images.shape
@@ -1120,24 +1359,30 @@ def segment_by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf
     frames_chw = images[..., :3].movedim(-1, 1)
     masks = torch.zeros(N, H, W)
     pbar = ProgressBar(N)
-    counts = {"prompted": 0, "propagated": 0, "re-seeded early": 0, "no prompt": 0, "empty prompt": 0}
+    counts = {"prompted": 0, "propagated": 0, "re-seeded early": 0, "kept at low recall": 0, "no prompt": 0,
+              "empty prompt": 0}
     i = 0
     seed_frame, seed_count = -1, 0
     annexed = None
+    cut = output_cut(c)
+    record = _logits_record(logits, N)
 
-    def keep(index, mask):
+    def keep(index, mask, low=None, how=None):
         """Store frame `index`'s mask and update what the decoder is known to have annexed.
         The annexation shows itself on the frame it happens, which is almost never a frame
         that is prompted, so it has to be carried to the next prompt."""
         nonlocal annexed
         was = masks[index - 1].numpy() > 0.5 if index > 0 and masks[index - 1].any() else None
         masks[index] = torch.from_numpy(mask).float()
+        if record is not None:
+            record["logits"][index], record["cut"][index] = low, how
         if was is not None:
             annexed = remember_annexed(annexed, mask.astype(bool), was,
                                        pose_metas[index]["keypoints_body"], W, H,
                                        c.min_annexed_fraction, min_keypoint_conf)
 
     while i < N:
+        carried = False  # this frame's prompt failed and the track is carried on from i - 1
         previous = masks[i - 1].numpy() > 0.5 if i > 0 and masks[i - 1].any() else None
         box_inputs, point_inputs = prompt_for(i, bboxes, pose_metas, W, H, device, dtype, c, min_keypoint_conf,
                                               previous, annexed,
@@ -1153,14 +1398,15 @@ def segment_by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf
                 pbar.update(1)
                 i += 1
                 continue
+            carried = True
         else:
             frame = common_upscale(frames_chw[i:i + 1], SAM3_SIZE, SAM3_SIZE, "bilinear", crop="disabled").to(device, dtype)
             with torch.inference_mode():
-                logits = decode(sam3, frame, point_inputs, box_inputs, refine)
-                seed = (F.interpolate(logits.float(), size=(H, W), mode="bilinear",
+                decoded = decode(sam3, frame, point_inputs, box_inputs, refine)
+                seed = (F.interpolate(decoded.float(), size=(H, W), mode="bilinear",
                                       align_corners=False)[0, 0] > c.mask_threshold).cpu().numpy()
             if seed.any():
-                keep(i, clean_mask(seed, c))
+                keep(i, clean_mask(seed, c), low_res_logits(decoded) if record is not None else None, "prompted")
                 counts["prompted"] += 1
                 seed_frame, seed_count = i, confident_count(pose_metas[i], min_keypoint_conf)
                 pbar.update(1)
@@ -1172,20 +1418,28 @@ def segment_by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf
                     pbar.update(1)
                     i += 1
                     continue
+                carried = True
         if not temporal or i >= N:
             continue
         # propagate from the last frame that has a mask; accept frames while the mask still
         # covers the keypoints, and stop at the first anchor once the interval is up
         while i < N:
             end = min(i + c.reseed_interval, N)
-            tracked = propagate(sam3, frames_chw[i - 1:end], masks[i - 1], device, dtype, H, W)
+            lows = [] if record is not None else None
+            tracked = propagate(sam3, frames_chw[i - 1:end], masks[i - 1], device, dtype, H, W, cut, lows)
             stop = False
-            for k, mask in enumerate(tracked, start=i):
+            start = i
+            for k, mask in enumerate(tracked, start=start):
                 if keypoint_recall(mask, pose_metas[k]["keypoints_body"], W, H, min_keypoint_conf) < c.min_tracked_recall:
-                    counts["re-seeded early"] += 1
-                    stop = True
-                    break
-                keep(k, clean_mask(mask, c))
+                    if carried and k == start:
+                        # the prompt for this frame just failed, so re-seeding it would only
+                        # repeat the same failure forever: keep the tracked mask and move on
+                        counts["kept at low recall"] += 1
+                    else:
+                        counts["re-seeded early"] += 1
+                        stop = True
+                        break
+                keep(k, clean_mask(mask, c), lows[k - start] if lows is not None else None, "propagated")
                 counts["propagated"] += 1
                 pbar.update(1)
                 i = k + 1
@@ -1196,6 +1450,7 @@ def segment_by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf
                 if since_seed >= c.max_propagate:
                     stop = True
                     break
+            carried = False  # only the frame whose prompt just failed is exempt, not later windows
             if stop:
                 break
     if result is not None:
@@ -1269,8 +1524,13 @@ def pose_inputs(pose_data, N):
 
 # --- entry point ---------------------------------------------------------------------------
 
+# Set to a callable to receive every run's low-res logits (see `track`); the test dump sets it,
+# since the node's outputs are masks only. None collects nothing.
+LOGITS_SINK = None
+
+
 def track(sam3_model, images, pose_data=None, bboxes=None, positive_coords=None, negative_coords=None,
-          mode=MODE_PROMPT, prompt=PROMPT, max_objects=1, object_index=-1, config=None):
+          mode=MODE_PROMPT, prompt=PROMPT, max_objects=1, object_index=-1, config=None, logits_sink=None):
     """[N, H, W] float mask of the person (or people) in `images` [N, H, W, 3], the one function
     the SAM3 node calls. `sam3_model` is the (model, clip) pair from `load_sam3`.
 
@@ -1293,7 +1553,24 @@ def track(sam3_model, images, pose_data=None, bboxes=None, positive_coords=None,
 
     Whatever the mode does not read is ignored, never raised on, so the mode can be switched
     without rewiring: a connected input, a widget or a config field changed from its default
-    that the run ignores is named in one console line."""
+    that the run ignores is named in one console line.
+
+    `logits_sink` (or, when it is None, the module's LOGITS_SINK) is called once when the run is
+    done, with `(logits, info)`: `logits` is a list of N [h, w] float16 CPU tensors - the low-res
+    mask logits each output frame was cut from, None for a frame with no output - and `info` a
+    dict {"mode", "cut", "size", "threshold", "mask_threshold"}, in prompt mode also "raw" and
+    "fill_hole_area". "cut" says per frame how its mask came from its logits, so a threshold can
+    be swept offline:
+    - "prompt": bilinear to `size` (H, W), then > threshold; where "raw" is true for the frame,
+      the logits are the ones before the output's speck and pinhole cleaning, cleaned relative
+      to the threshold by `shown_logits(logits, threshold, fill_hole_area)` first
+    - "birth" / "anchor": the same as "prompt", on the frame the track was born on and on the
+      frames it was re-anchored on (where "raw" is false, the logits are the conditioning mask)
+    - "prompted" (box_keypoint): bilinear to `size`, > threshold, then clean_mask
+    - "propagated" (box_keypoint): bilinear to the tracker's 1008 x 1008, > threshold, bilinear
+      to `size` as 0/1, > 0.5, then clean_mask
+    "threshold" is the cut this run used on "prompt" / "propagated" frames and "mask_threshold"
+    the one on "prompted" frames. Not collected with max_objects above 1."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, found {mode!r}")
     if not isinstance(max_objects, int) or max_objects < 1:
@@ -1311,21 +1588,31 @@ def track(sam3_model, images, pose_data=None, bboxes=None, positive_coords=None,
         raise ValueError(f"images must be [N, H, W, 3], found {list(images.shape)}")
     model, clip = sam3_model
     N, H, W = images.shape[:3]
+    sink = logits_sink if logits_sink is not None else LOGITS_SINK
+    collected = {} if sink is not None and not (mode == MODE_PROMPT and max_objects > 1) else None
+    dump = {"logits": collected} if collected is not None else {}
 
     result = {}
     with log.step(f"segmenting the person with SAM3 ({mode}) on {N} frames", result):
         if mode == MODE_PROMPT:
             unused = [n for n, v in (("pose_data", pose_data), ("bboxes", bboxes), ("positive_coords", positive_coords),
                                      ("negative_coords", negative_coords)) if v is not None]
-            unused += [f"sam3_config.{n}" for n in changed_fields(config, "[box_keypoint]")]
+            unused += [f"sam3_config.{n}" for n in changed_fields(config, "[box_keypoint]")
+                       if not (n == "mask_threshold" and config.uniform_mask_threshold)]
+            if max_objects == 1 and not config.uniform_mask_threshold:
+                unused += [f"sam3_config.{n} (uniform_mask_threshold off)" for n in changed_fields(config, names=("m4_anchor_frames",))]
             if max_objects == 1:
                 unused += [f"sam3_config.{n} (max_objects 1)" for n in changed_fields(config, "[prompt, max_objects > 1]")]
+            else:
+                unused += [f"sam3_config.{n} (max_objects > 1)" for n in changed_fields(config, names=SINGLE_OBJECT_FIELDS)]
+                if sink is not None:
+                    unused.append("the logits sink (max_objects > 1)")
             if unused:
                 log.info(f"prompt mode segments from the text alone; {', '.join(unused)} not used")
             if not prompt or not prompt.strip():
                 raise ValueError("prompt mode needs a text prompt, found an empty one")
             if max_objects == 1:
-                mask = segment_by_prompt(model, clip, images, prompt, config, result=result)
+                mask = segment_by_prompt(model, clip, images, prompt, config, result=result, **dump)
             else:
                 mask = segment_by_prompt_multi(model, clip, images, prompt, config, max_objects,
                                                object_index, result=result)
@@ -1347,10 +1634,16 @@ def track(sam3_model, images, pose_data=None, bboxes=None, positive_coords=None,
             mask = segment_by_pose(model, images, frame_boxes, pose_metas, config, keypoint_conf,
                                    extra_positive=parse_coords(positive_coords, W, H, "positive_coords"),
                                    extra_negative=parse_coords(negative_coords, W, H, "negative_coords"),
-                                   result=result)
+                                   result=result, **dump)
         if mode == MODE_PROMPT and object_index == 0 and max_objects == 1 and not bool(mask.any()):
             raise ValueError("object_index 0: 0 objects were tracked (numbered from 0)")
         coverage = mask.mean(dim=(1, 2))
         result["frames without a mask"] = int((coverage == 0).sum())
         result["mask coverage"] = f"{coverage.min() * 100:.1f}-{coverage.max() * 100:.1f}%"
+    if collected is not None:
+        info = {"mode": mode, "cut": collected["cut"], "size": (H, W),
+                "threshold": output_cut(config), "mask_threshold": config.mask_threshold}
+        if "raw" in collected:
+            info.update(raw=collected["raw"], fill_hole_area=config.fill_hole_area)
+        sink(collected["logits"], info)
     return mask

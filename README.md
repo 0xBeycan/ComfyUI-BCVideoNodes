@@ -48,10 +48,14 @@ Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `preprocess/pose.py`: `confidence_scale` (RTMW only: the divisor of its raw
 SimCC score, 0 keeps the default 4.6; ignored with ViTPose, with one console
-line saying so), `min_keypoint_conf`, `detection_threshold`, `temporal`,
+line saying so), `flip_test` (ViTPose only: also runs the mirrored crop and
+averages the heatmaps, the way ViTPose's published accuracy is measured;
+about doubles pose time; RTMW ignores it with one console line),
+`min_keypoint_conf`, `detection_threshold`, `temporal`,
 `temporal_max_gap`, `temporal_max_step`, `temporal_max_residual`,
-`box_window`. `min_keypoint_conf` is also the threshold both guards judge by:
-they read it from `pose_data`.
+`box_window`. `min_keypoint_conf` travels in `pose_data` to SAM3's
+`box_keypoint` mode; the guards count what is drawn, at Pose Detection's
+`draw_threshold` (also carried in `pose_data`).
 
 ### SAM 3.1 Video Track
 
@@ -82,6 +86,14 @@ connected, so the behaviour can be switched without rewiring:
 Optional; generated from `SAM3Config` in `preprocess/sam3.py`. Each tooltip
 starts with the mode it affects.
 
+The `[prompt]` fields `anchor_memory`, `anchor_output`, `conditioning_frames`,
+`memory_selection`, `anchor_score_gate`, `anchor_matching`,
+`unmatched_counting` and `seed_cleaning` switch one step of the tracking
+policy between this pack's (`ours`, the default) and Meta's (`meta`), for the
+A/B in the mask spec. `uniform_mask_threshold` makes `mask_threshold` the one
+cut for every frame of both modes (off: prompt mode cuts at 0, box_keypoint
+cuts prompted frames at `mask_threshold` and propagated ones at 0).
+
 ### Input precedence
 
 - A connected input beats the config node, and the config node beats the
@@ -108,12 +120,18 @@ starts with the mode it affects.
 
 ### Pose Guard and Mask Guard
 
-Frame-by-frame checks of the pose (no detection, incomplete skeleton, torso
-jump, subject switch, a second person) and of the mask against that pose
-(empty, leaking outside the box, fragmented, keypoints outside the mask,
-unstable). Every measurement is always reported and plotted; with the switch
-(`pose_guard` / `mask_guard`) on, a failed check stops the workflow with the
-report, since sampling on a wrong pose or mask is wasted. The thresholds are
+Frame-by-frame checks of the drawn pose (incomplete skeleton, torso jump,
+limb spike, subject switch) and of the mask against that pose (empty, leaking
+outside the box, fragmented, keypoints outside the mask, body the pose does
+not draw, unstable). The guards count what the pose images draw, at
+`draw_threshold`. The detector is not judged: its box count and missed frames
+are in the metrics as data. Every measurement is always reported and plotted;
+with the switch (`pose_guard` / `mask_guard`) on, a failed check stops the
+workflow with the report, since sampling on a wrong pose or mask is wasted.
+Checks that cannot tell a defect from what the scene really does are warnings
+and never stop: a limb missing for a stretch (`pose_limb_gap`), small detached
+specks (`mask_specks`), background attached to the body
+(`mask_attached_leak`), one limb end outside the mask (`mask_missed_limb`). The thresholds are
 widgets generated from `PoseGuardConfig` / `MaskGuardConfig` in
 `preprocess/guard.py`.
 

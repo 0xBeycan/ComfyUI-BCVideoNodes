@@ -109,35 +109,31 @@ def test_combine_needs_one_of_each_group_of_the_same_clip():
     with pytest.raises(ValueError, match="check_pose and check_mask"):
         guard.combine_guards(mask_metrics, pose_metrics)
     short = {"pose_metas_original": pose_data["pose_metas_original"][:5], "detections": pose_data["detections"][:5],
-             "pose_config": pose_data["pose_config"]}
+             "pose_config": pose_data["pose_config"], "draw_threshold": pose_data["draw_threshold"]}
     _, _, short_metrics, _ = guard.check_pose(short, POSE, stop_on_fail=False)
     with pytest.raises(ValueError, match="same clip"):
         guard.combine_guards(short_metrics, mask_metrics)
 
 
-def test_the_keypoint_threshold_comes_from_pose_data():
+def test_the_keypoint_threshold_is_the_draw_threshold_from_pose_data():
     masks, pose_data = clip()
-    pose_data["pose_config"]["min_keypoint_conf"] = 0.95   # above every keypoint's 0.9
+    pose_data["draw_threshold"] = 0.95   # above every keypoint's 0.9: nothing is drawn
     _, _, pose_metrics, _ = guard.check_pose(pose_data, POSE, stop_on_fail=False)
     _, _, mask_metrics, _ = guard.check_mask(masks, pose_data, MASK, stop_on_fail=False)
     for metrics in (pose_metrics, mask_metrics):
-        assert json.loads(metrics)["thresholds"]["min_keypoint_conf"] == 0.95
-    assert all(row["confident_keypoints"] == 0 for row in json.loads(pose_metrics)["frames"])
+        assert json.loads(metrics)["thresholds"]["draw_threshold"] == 0.95
+    assert all(row["drawn_keypoints"] == 0 for row in json.loads(pose_metrics)["frames"])
     assert all(not row["box_reliable"] for row in json.loads(mask_metrics)["frames"])
     _, metrics, _ = guard.combine_guards(pose_metrics, mask_metrics, stop_on_fail=False)
-    assert json.loads(metrics)["thresholds"]["min_keypoint_conf"] == 0.95
+    assert json.loads(metrics)["thresholds"]["draw_threshold"] == 0.95
 
 
-@pytest.mark.parametrize("pose_config", [None, {}, {"confidence_scale": 0.0}])
-def test_pose_data_without_the_keypoint_threshold_is_an_error(pose_config):
+def test_pose_data_without_the_draw_threshold_is_an_error():
     masks, pose_data = clip()
-    if pose_config is None:
-        del pose_data["pose_config"]
-    else:
-        pose_data["pose_config"] = pose_config
-    with pytest.raises(ValueError, match="pose_config.min_keypoint_conf"):
+    del pose_data["draw_threshold"]
+    with pytest.raises(ValueError, match="draw_threshold"):
         guard.check_pose(pose_data, POSE)
-    with pytest.raises(ValueError, match="pose_config.min_keypoint_conf"):
+    with pytest.raises(ValueError, match="draw_threshold"):
         guard.check_mask(masks, pose_data, MASK)
 
 
@@ -153,3 +149,11 @@ def test_combined_equals_both_groups_side_by_side():
     for p, m, row in zip(pose["frames"], mask["frames"], both["frames"]):
         assert row == {**p, **m}
 
+
+
+def test_both_guards_take_a_zero_frame_clip():
+    masks, pose_data = clip()
+    pose_data["pose_metas_original"], pose_data["detections"] = [], []
+    guard.check_pose(pose_data, POSE)
+    out, report, _, _ = guard.check_mask(masks[:0], pose_data, MASK)
+    assert out.shape[0] == 0 and report.startswith("Mask guard: passed"), report

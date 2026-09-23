@@ -23,9 +23,9 @@ import logging
 # module (and the package __init__) imports without a ComfyUI install; pytest
 # collects the repo root as a package.
 if __package__:
-    from .chunk_planner import format_plan, next_chunk_length, overlap_for_motion_frames, plan_chunks, produced_frames
+    from .chunk_planner import format_plan, next_chunk_length, overlap_for_motion_frames, plan_chunks, produced_frames, snap_down
 else:  # top-level import outside ComfyUI (pytest, tooling)
-    from chunk_planner import format_plan, next_chunk_length, overlap_for_motion_frames, plan_chunks, produced_frames
+    from chunk_planner import format_plan, next_chunk_length, overlap_for_motion_frames, plan_chunks, produced_frames, snap_down
 
 ANIMATE_OUTPUTS = 6  # positive, negative, latent, trim_latent, trim_image, video_frame_offset
 WAN_BETA = "wan_beta"
@@ -290,16 +290,44 @@ class _LongVideoSampler:
         if pose_frames < 1:
             raise ValueError("pose_video has no frames.")
         total = int(total_frames) if total_frames > 0 else pose_frames
-        if total > pose_frames:
-            logging.warning("%s total_frames (%d) exceeds pose_video length (%d): the last pose frame is held for the remaining %d frames.",
-                            log_prefix, total, pose_frames, total - pose_frames)
-            # The core node holds the last frame within a chunk, but once the
-            # offset itself runs past the pose video it errors (Animate 2) or
-            # drops the pose entirely (Animate). Pad up front.
-            pose_video = torch.cat((pose_video, pose_video[-1:].expand(total - pose_frames, -1, -1, -1)), dim=0)
 
         plan = plan_chunks(total, frames_per_chunk, overlap)
         logging.info("%s chunk plan: %s", log_prefix, format_plan(plan, produced_frames(plan, overlap), total, pose_frames, overlap))
+
+        # Every video must reach the last frame the plan samples: past total_frames
+        # (longer than the input) and past total itself when the last chunk is snapped
+        # up to 4k+1. Core holds only the pose within a chunk; once the offset runs past
+        # a video it errors (Animate 2 pose) or drops it (Animate: pose, face,
+        # background, mask), and inside the last chunk a short face video loses its
+        # motion, a background turns grey and the mask rows turn unknown. Hold the last
+        # frame up front instead. The mask is not held: past its end the character may be
+        # anywhere, so core leaves those rows unknown. It says where the character goes in
+        # each background frame, so a mask video must be as long as the background.
+        character_mask, background = animate_inputs.get("character_mask"), animate_inputs.get("background_video")
+        if (character_mask is not None and background is not None and character_mask.ndim >= 3
+                and character_mask.shape[0] > 1 and character_mask.shape[0] != background.shape[0]):
+            raise ValueError("character_mask has {} frames but background_video has {}: the mask marks where the character "
+                             "goes in each background frame, so connect the two from the same video.".format(
+                                 int(character_mask.shape[0]), int(background.shape[0])))
+        reach = max(total, produced_frames(plan, overlap))
+        short = {}
+        for name in ("pose_video", "face_video", "background_video"):
+            video = pose_video if name == "pose_video" else animate_inputs.get(name)
+            if video is None or video.shape[0] >= reach:
+                continue
+            short[name] = int(video.shape[0])
+            if name == "pose_video":
+                pose_video = _hold_last(video, reach)
+            else:
+                animate_inputs[name] = _hold_last(video, reach)
+        if short:
+            shorter_than_total = [name for name, frames in short.items() if frames < total]
+            why = ["total_frames ({}) exceeds {}".format(total, ", ".join(shorter_than_total))] if shorter_than_total else []
+            if reach > total:
+                why.append("the last chunk is snapped up to 4k+1 and runs {} frames past total_frames".format(reach - total))
+            (logging.warning if shorter_than_total else logging.info)(
+                "%s last frame held to %d frames: %s (%s).", log_prefix, reach,
+                ", ".join("{} +{}".format(name, reach - frames) for name, frames in short.items()), "; ".join(why))
 
         patched = self._patch_model(_call_node("ModelSamplingSD3", model=model, shift=shift)[0], animate_inputs)
         if sigmas_override is not None:
@@ -377,7 +405,8 @@ class _LongVideoSampler:
             chunks.append(images)
             lengths.append(length)
             produced += int(images.shape[0])
-            anchor = images
+            # a middle chunk adds only chunk - overlap frames; keep enough for a full overlap seed
+            anchor = images if anchor is None else torch.cat((anchor, images), dim=0)[-snap_down(frames_per_chunk):]
             if index > 0 and trim_image != overlap:
                 logging.warning("%s %s trimmed %d frames, planner assumed %d; using %d from here on.", log_prefix, animate_node, trim_image, overlap, trim_image)
                 overlap = trim_image
@@ -392,13 +421,21 @@ class _LongVideoSampler:
         return (images, int(images.shape[0]), plan_text)
 
 
+def _hold_last(video, frames):
+    """``video`` with its last frame repeated up to ``frames`` frames."""
+    import torch
+
+    return torch.cat((video, video[-1:].expand(frames - video.shape[0], *video.shape[1:])), dim=0)
+
+
 def _replacement_mask_rows(character_mask, offset, length, seed_frames, lat_h, lat_w):
     """The concat-mask rows for one window, built the way the reference
     implementation (wan/animate.py get_i2v_mask) builds them: one row per
     pixel frame, frame 0 repeated four times, seed frames known (0), frames
     the mask does not cover unknown (1). The pixel mask -> latent grid step
-    uses core's filter (nearest-exact). Returns None when the mask does not
+    uses core's filter and crop (nearest-exact, center). Returns None when the mask does not
     reach this window, which is when core does not apply it either."""
+    import comfy.utils
     import torch
 
     mask = character_mask
@@ -410,7 +447,7 @@ def _replacement_mask_rows(character_mask, offset, length, seed_frames, lat_h, l
         mask = mask[offset:offset + length]
     else:
         return None
-    mask = torch.nn.functional.interpolate(mask.unsqueeze(1).float(), size=(lat_h, lat_w), mode="nearest-exact").squeeze(1)
+    mask = comfy.utils.common_upscale(mask.unsqueeze(1).float(), lat_w, lat_h, "nearest-exact", "center").squeeze(1)
     frames = torch.ones((length, lat_h, lat_w), dtype=mask.dtype, device=mask.device)
     frames[:mask.shape[0]] = mask
     frames[:seed_frames] = 0.0
@@ -671,7 +708,7 @@ class BCVPoseConfig(_ConfigNode):
     CONFIG = "PoseConfig"
     RETURN_TYPES = ("POSE_CONFIG",)
     RETURN_NAMES = ("pose_config",)
-    DESCRIPTION = "Overrides the Pose Detection tunables. Without it Pose Detection runs with the measured defaults, which are the values shown here. min_keypoint_conf is carried in pose_data and is the only keypoint threshold SAM3 box_keypoint mode and the guards use."
+    DESCRIPTION = "Overrides the Pose Detection tunables. Without it Pose Detection runs with the measured defaults, which are the values shown here. min_keypoint_conf is carried in pose_data and is the keypoint threshold SAM3 box_keypoint mode uses; the guards count what Pose Detection draws (draw_threshold)."
 
 
 class BCVSAM3Config(_ConfigNode):
@@ -689,15 +726,15 @@ class BCVPoseDetection:
         return {
             "required": {
                 "images": ("IMAGE",),
-                "pose_model": (list(loader.POSE_MODELS), {"tooltip": "The wholebody pose model (133 keypoints). Its file is downloaded into models/detection on first use."}),
+                "pose_model": (list(loader.POSE_MODELS), {"tooltip": "The wholebody pose model (133 keypoints). ViTPose-H for complex motion: turns, back views, motion blur, close-ups. RTMW-l only for simple motion that stays in the frame: it loses the body under blur, draws a face on the back of the head and pushes limbs to the frame edge, and the diffusion follows the pose it is given. Its speed gain is a few seconds per clip; with SAM3 box_keypoint mode it can make SAM3 much slower (more re-seeds). The file is downloaded into models/detection on first use."}),
                 "body_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the body sticks in the pose images; 0 leaves the body out, -1 picks it from the frame size"}),
                 "hand_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the hand sticks in the pose images; 0 leaves the hands out, -1 picks it from the frame size"}),
                 "draw_head": ("BOOLEAN", {"default": True, "tooltip": "Whether to draw head keypoints"}),
-                "draw_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "A limb is drawn when both its ends reach this confidence; key_frame_body_points uses the same threshold. Drawing only: SAM3 box_keypoint mode and the guards read pose_config.min_keypoint_conf"}),
+                "draw_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "A limb is drawn when both its ends reach this confidence; key_frame_body_points uses the same threshold. Carried in pose_data: the guards count what is drawn. SAM3 box_keypoint mode reads pose_config.min_keypoint_conf instead"}),
             },
             "optional": {
                 "bboxes": ("BBOX", {"tooltip": "Person boxes (x1, y1, x2, y2), one per frame or one for all. When connected the detector does not run and pose_config.detection_threshold is ignored; box_window and the edge snap still apply."}),
-                "pose_config": ("POSE_CONFIG", {"tooltip": "Overrides from Pose Config; the measured defaults without it. Its min_keypoint_conf travels in pose_data to SAM3 and the guards."}),
+                "pose_config": ("POSE_CONFIG", {"tooltip": "Overrides from Pose Config; the measured defaults without it. Its min_keypoint_conf travels in pose_data to SAM3."}),
             },
         }
 
@@ -722,7 +759,7 @@ class BCVSAM3VideoTrack:
         return {
             "required": {
                 "images": ("IMAGE",),
-                "mode": (list(sam3.MODES), {"default": sam3.MODE_PROMPT, "tooltip": "prompt: SAM 3.1 finds the person from the text prompt alone. box_keypoint: the person is described by pose_data's box and body keypoints (needs pose_data); the v1 behaviour. Inputs the mode does not read are ignored with one console line, so switching needs no rewiring."}),
+                "mode": (list(sam3.MODES), {"default": sam3.MODE_PROMPT, "tooltip": "prompt: SAM 3.1 finds the person from the text prompt alone; limits: a limb the frame edge cuts can be left out, thin hair strands are not followed. box_keypoint: the person is described by pose_data's box and body keypoints (needs pose_data), the v1 behaviour; limits: frame 0 can take in background around the person, and objects the arm reaches can be pulled into the mask. Mask Guard reports both (mask_specks, mask_attached_leak, mask_missing_keypoints). Inputs the mode does not read are ignored with one console line, so switching needs no rewiring."}),
                 "prompt": ("STRING", {"default": sam3.PROMPT, "tooltip": "[prompt] what to segment. The thresholds were measured with the default. Ignored in box_keypoint mode."}),
                 "max_objects": ("INT", {"default": 1, "min": 1, "max": 16, "step": 1, "tooltip": "[prompt] how many tracks may be born and kept; above 1 the [prompt, max_objects > 1] config fields apply. Ignored in box_keypoint mode, which tracks the one person the pose describes."}),
                 "object_index": ("INT", {"default": -1, "min": -1, "max": 15, "step": 1, "tooltip": "[prompt] which tracked object the mask is: -1 the union of every tracked object, k object k (numbered from 0). Ignored in box_keypoint mode."}),
@@ -740,7 +777,7 @@ class BCVSAM3VideoTrack:
     RETURN_NAMES = ("mask",)
     FUNCTION = "track"
     CATEGORY = PREPROCESS
-    DESCRIPTION = "Segments the person on every frame with SAM 3.1 and its tracker memory, from a text prompt or from Pose Detection's boxes and keypoints. The mask covers every frame, including the ones before the person was found. The checkpoint is ComfyUI's own SAM 3.1, downloaded into models/checkpoints on first use."
+    DESCRIPTION = "Segments the person on every frame with SAM 3.1 and its tracker memory, from a text prompt or from Pose Detection's boxes and keypoints. The mask covers every frame, including the ones before the person was found. Mode limits: prompt can leave out a limb the frame edge cuts and thin hair; box_keypoint can take in background on frame 0 and objects the arm reaches. The checkpoint is ComfyUI's own SAM 3.1, downloaded into models/checkpoints on first use."
 
     def track(self, images, mode, prompt, max_objects, object_index, pose_data=None, bboxes=None, positive_coords=None,
               negative_coords=None, sam3_config=None):
@@ -793,7 +830,7 @@ class BCVPoseGuard:
     RETURN_NAMES = ("pose_data", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = PREPROCESS
-    DESCRIPTION = "Checks the pose frame by frame (missing detections, incomplete skeletons, torso jumps, subject switches, a second person). A failed check stops the workflow with the report when pose_guard is on; 'metrics' has every measurement per frame and 'timeline' plots them. pose_data passes through."
+    DESCRIPTION = "Checks the drawn pose frame by frame (incomplete skeletons, torso jumps, limb spikes, subject switches; limbs missing for a stretch is a warning). A failed check stops the workflow with the report when pose_guard is on; warnings never stop. 'metrics' has every measurement per frame and 'timeline' plots them. pose_data passes through."
 
     def check(self, pose_data, pose_guard, **thresholds):
         guard = _preprocess("guard")
@@ -810,7 +847,7 @@ class BCVMaskGuard:
     RETURN_NAMES = ("mask", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = PREPROCESS
-    DESCRIPTION = "Checks the mask frame by frame against the pose it belongs to (empty, leaking, fragmented, keypoints outside the mask, unstable). A failed check stops the workflow with the report when mask_guard is on; 'metrics' has every measurement per frame and 'timeline' plots them. The mask passes through."
+    DESCRIPTION = "Checks the mask frame by frame against the drawn pose it belongs to (empty, leaking outside the box, detached pieces, keypoints outside the mask, body the pose does not draw, unstable; small detached specks, background attached to the body and a single limb end outside the mask are warnings). A failed check stops the workflow with the report when mask_guard is on; warnings never stop. 'metrics' has every measurement per frame and 'timeline' plots them. The mask passes through."
 
     def check(self, mask, pose_data, mask_guard, **thresholds):
         guard = _preprocess("guard")
