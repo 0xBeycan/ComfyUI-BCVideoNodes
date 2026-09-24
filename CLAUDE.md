@@ -2,10 +2,11 @@
 
 ## What this is
 
-ComfyUI custom nodes for Wan Animate: the preprocess (pose, SAM 3.1 Multiplex person mask, face
-crops, pose and mask guards) and two long-video samplers. The 11 node keys are locked, and so is
-everything ComfyUI reads from a node (inputs, types, order, defaults, ranges, return types,
-categories, display names): `tests/nodes/test_surface_golden.py` (G2) pins that surface.
+ComfyUI custom nodes for Wan Animate and SCAIL-2: the preprocess (pose, SAM 3.1 Multiplex person
+mask, face crops, pose and mask guards, SCAIL-2 colored masks) and three long-video samplers. The
+14 node keys are locked, and so is everything ComfyUI reads from a node (inputs, types, order,
+defaults, ranges, return types, categories, display names): `tests/nodes/test_surface_golden.py`
+(G2) pins that surface.
 
 SAM naming: the SAM nodes and their code are named after the one model they run, SAM 3.1
 Multiplex. Display names read "SAM 3.1 Multiplex ...", modules `sam3_1_multiplex`, constants
@@ -25,16 +26,17 @@ Four layers, `nodes -> pipelines -> models -> libs`:
 - `libs/`: model-independent code.
 
 ```
-__init__.py          registration only: the 11 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+__init__.py          registration only: the 14 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 nodes/               common (category, _config, _ConfigNode), sampler, pose, sam3_1_multiplex, face, guard,
-                     preprocess (the two WanAnimate wrappers, composed of the nodes above)
-pipelines/           long_video (the chunk loop), pose, face,
+                     preprocess (the two WanAnimate wrappers, composed of the nodes above),
+                     scail2 (SCAIL-2 Colored Mask, and the SCAIL-2 Preprocess wrapper)
+pipelines/           long_video (the chunk loop), pose, face, scail2 (the colored masks),
                      guard/ (config, common, pose, mask, report, timeline, combine),
                      sam3_1_multiplex/ (config, prompt, pose, track: the entry the node calls)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, rtmw/, yolo/, sam3_1_multiplex/ (adapter, loader,
-                     postprocess), wan_animate/, wan_animate2/
+                     postprocess), wan_animate/, wan_animate2/, wan_scail2/
 libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, config_widgets, pose_data,
                      pose_utils/ (vendored, with its LICENSE)
 scripts/             offline model conversion and upload (ComfyUI-free)
@@ -44,7 +46,7 @@ tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the
 ## The layer rule
 
 - Imports go one way: `nodes -> pipelines -> models -> libs`, and within a layer. `nodes -> nodes`
-  is allowed (`nodes/common.py`, and the WanAnimate wrappers composing the other nodes).
+  is allowed (`nodes/common.py`, and the WanAnimate and SCAIL-2 wrappers composing the other nodes).
 - A model package imports only itself, `models/common/` and `libs/`. Model packages never import
   each other, and `models/common/` never imports a model package. Inside `models/`, only
   `models/__init__.py` imports the model packages: that is the registration list.
@@ -96,6 +98,25 @@ and patch underscore names through the `Names` tables.
   `nodes/sampler.py`, registered in the root `__init__.py`. A new node key changes the G2
   surface, so it needs the same re-record with the owner's word, and a row in
   `tests/test_package.py` and in the gate's `NODE_KEYS`.
+- The chunk loop (`pipelines/long_video.py`) knows the core node only through the adapter. The
+  base class is the Wan Animate contract; a node with another contract overrides what differs
+  (`models/wan_scail2/adapter.py` overrides all of them):
+  - `OUTPUTS` / `UPDATE_HINT`: the fewest outputs the core node must return, and the error hint;
+  - `HELD_VIDEOS`: the videos the core node seeks by offset, held on their last frame up to the
+    plan's reach; `OVERSHOOT`: why the plan runs past `total_frames`, for that log line;
+  - `prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)`:
+    validate, rename or pop the node's own inputs, encode what is encoded once per run; returns
+    the overlap;
+  - `chunk_length`: the length policy the plan and the loop share (default: the last chunk fitted;
+    SCAIL-2: every chunk full length, `libs/chunking.full_chunk_length`);
+  - `check_videos(pose_video, animate_inputs)`: checks between the videos, before any is held;
+  - `patch_model`: model patches, once per run;
+  - `continuation(anchor, offset)`: the core call's chaining inputs (default `continue_motion`,
+    `video_frame_offset`), spliced after `pose_video`, before `chunk_inputs`;
+  - `chunk_inputs`: per-chunk inputs; `after_animate`: conditioning repairs before sampling;
+  - `unpack(outputs, anchor)`: the outputs as (positive, negative, latent, trim_latent,
+    trim_image, video_frame_offset).
+  A change to a default is a change to both Wan Animate samplers, which G1 pins.
 
 ## Coding style
 
@@ -131,7 +152,7 @@ and patch underscore names through the `Names` tables.
     so importing either package triggers neither E1 nor E3.
 - The gate, with the ComfyUI venv's Python: `PYTHONPATH=/path/to/ComfyUI python
   tests/test_import_time.py`. A standalone script (pytest does not collect it). It checks the
-  package import (under 0.1 s, no heavy module, the 11 keys in order), each node module, each
+  package import (under 0.1 s, no heavy module, the 14 keys in order), each node module, each
   module against its allowed heavy set, the ComfyUI-free set, and the E1/E3 trigger points of each
   node key against `tests/goldens/import_gate.json`.
 - Code outside the pack binds the repo root as a package and imports through it: tests and

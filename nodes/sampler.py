@@ -1,8 +1,9 @@
-"""Wan Animate long video in one node: chained fixed-size chunks.
+"""Wan Animate / SCAIL-2 long video in one node: chained fixed-size chunks.
 
 One node per core conditioning node: BCVWanAnimateLongVideoSampler wraps
-WanAnimateToVideo (Wan 2.2 Animate) and BCVWanAnimate2LongVideoSampler wraps
-WanAnimate2ToVideo. The chunk loop is pipelines/long_video.py.
+WanAnimateToVideo (Wan 2.2 Animate), BCVWanAnimate2LongVideoSampler wraps
+WanAnimate2ToVideo and BCVWanSCAIL2LongVideoSampler wraps WanSCAILToVideo (Wan 2.1
+SCAIL-2). The chunk loop is pipelines/long_video.py.
 """
 
 # comfy.* is imported inside the functions that use it, so this
@@ -15,15 +16,16 @@ def _combo_default(options, preferred):
 
 
 class _LongVideoSampler:
-    """The node surface both samplers share; ``generate`` hands the run to the
+    """The node surface the samplers share; ``generate`` hands the run to the
     chunk loop in pipelines/long_video.py.
 
     A subclass names the core conditioning node it wraps (``ANIMATE_NODE``)
     and lists the inputs that pass straight through to it
     (``_animate_inputs``). How many frames that node trims back off every
     chained chunk is the ``prepare`` of its adapter
-    (models/wan_animate*/adapter.py). Everything else - widgets, sampling
-    stack, loop, output - is identical.
+    (models/wan_*/adapter.py). Everything else - widgets, sampling
+    stack, loop, output - is identical; the class attributes below set a
+    subclass's widget defaults.
     """
 
     ANIMATE_NODE = ""
@@ -33,6 +35,11 @@ class _LongVideoSampler:
     DEFAULT_SAMPLER = "euler"
     DEFAULT_SCHEDULER = WAN_BETA
     DEFAULT_STEPS = 6
+    DEFAULT_WIDTH = 720
+    DEFAULT_HEIGHT = 1280
+    SIZE_MIN = 16
+    SIZE_STEP = 2
+    SIZE_TOOLTIP = "Multiples of 16 are ideal; the VAE crops to a multiple of 8."
 
     RETURN_TYPES = ("IMAGE", "INT", "STRING")
     RETURN_NAMES = ("images", "frame_count", "chunk_plan")
@@ -61,8 +68,8 @@ class _LongVideoSampler:
                 "vae": ("VAE",),
                 "reference_image": ("IMAGE", {"tooltip": "The character to animate."}),
                 "pose_video": ("IMAGE", {"tooltip": "Driving video. With total_frames = 0 its frame count is the output length."}),
-                "width": ("INT", {"default": 720, "min": 16, "max": max_res, "step": 2, "tooltip": "Multiples of 16 are ideal; the VAE crops to a multiple of 8."}),
-                "height": ("INT", {"default": 1280, "min": 16, "max": max_res, "step": 2, "tooltip": "Multiples of 16 are ideal; the VAE crops to a multiple of 8."}),
+                "width": ("INT", {"default": cls.DEFAULT_WIDTH, "min": cls.SIZE_MIN, "max": max_res, "step": cls.SIZE_STEP, "tooltip": cls.SIZE_TOOLTIP}),
+                "height": ("INT", {"default": cls.DEFAULT_HEIGHT, "min": cls.SIZE_MIN, "max": max_res, "step": cls.SIZE_STEP, "tooltip": cls.SIZE_TOOLTIP}),
                 "frames_per_chunk": ("INT", {"default": cls.DEFAULT_CHUNK, "min": 5, "max": max_res, "step": 4, "tooltip": "Frames sampled per chunk, rounded down to 4k+1. 81 for 24 GB, 49 for 16 GB, 33 for 12 GB are sane starts."}),
                 "total_frames": ("INT", {"default": 81, "min": 0, "max": 100000, "tooltip": "Exact output length. 0 = the pose video's frame count."}),
                 "shift": ("FLOAT", {"default": cls.DEFAULT_SHIFT, "min": 0.0, "max": 100.0, "step": 0.01, "tooltip": "ModelSamplingSD3 shift, applied to the model before the schedule is built."}),
@@ -153,3 +160,36 @@ class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
             "clip_vision": ("CLIP_VISION", {"tooltip": "When connected, the pose CLIP embedding is re-encoded from the first frame of each chunk's pose window, as the official pipeline does; clip_vision_output_pose is then ignored."}),
         }
         return required, optional
+
+
+class BCVWanSCAIL2LongVideoSampler(_LongVideoSampler):
+    ANIMATE_NODE = "WanSCAILToVideo"
+    MODEL_TOOLTIP = "Wan 2.1 SCAIL-2 model. LoRA (lightx2v distill, SCAIL-2 DPO / relight) and model patches pass through unchanged; shift is applied here."
+    DEFAULT_SHIFT = 8.0
+    DEFAULT_SCHEDULER = "simple"
+    DEFAULT_WIDTH = 704
+    DEFAULT_HEIGHT = 1280
+    SIZE_MIN = 32
+    SIZE_STEP = 32
+    SIZE_TOOLTIP = "Must be divisible by 32 (the pose runs at half resolution through the /16 patch grid). 704x1280 (the authors: replacement and pose-driven are better at 704p) or 512x896 (less VRAM)."
+    CATEGORY = "BCVideoNodes/Wan/SCAIL"
+    DESCRIPTION = ("Generates an arbitrarily long Wan 2.1 SCAIL-2 video (animation or replacement mode) by chaining fixed-size "
+                   "chunks internally, each seeded with the previous chunk's last previous_frame_count frames. Every chunk runs "
+                   "the full frames_per_chunk (SCAIL-2 was trained on 65-81 frame segments); the output is cut to total_frames "
+                   "(or the pose video length) exactly. Defaults: shift 8, simple, euler, 6 steps, cfg 1 give the sigmas the "
+                   "official ComfyUI SCAIL-2 template samples with (1, .9757, .9413, .8889, .8005, .616, 0), for the lightx2v "
+                   "distill LoRA. Without a distill LoRA the SCAIL-2 authors recommend shift 5, 40-50 steps, cfg 4.")
+
+    @classmethod
+    def _animate_inputs(cls, max_res):
+        required = {
+            "clip_vision": ("CLIP_VISION", {"tooltip": "CLIP vision model (clip_vision_h). The reference is encoded once per run, stretched (crop none) as SCAIL-2 was trained; in replacement mode with the character on black, as the authors require."}),
+            "pose_video_mask": ("IMAGE", {"tooltip": "Colored driving mask from SCAIL-2 Colored Mask / SCAIL-2 Preprocess, as long as pose_video: the character in its identity colour, on black (animation) or white (replacement)."}),
+            "reference_image_mask": ("IMAGE", {"tooltip": "Colored reference mask from SCAIL-2 Colored Mask / SCAIL-2 Preprocess: the character in its identity colour, on white (animation) or black (replacement)."}),
+            "replacement_mode": ("BOOLEAN", {"default": False, "tooltip": "False: animation mode, the reference character is animated by the driving video. True: replacement mode, the character replaces the person in the driving video. Must match the mode the masks were rendered for; a mismatch is an error."}),
+            "pose_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+            "pose_start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "pose_end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "previous_frame_count": ("INT", {"default": 5, "min": 1, "max": max_res, "step": 4, "tooltip": "Frames of the previous chunk that seed the next one and are trimmed back off: the overlap between chunks. SCAIL-2 was trained with 5. Snapped down to the 4k+1 grid; must be smaller than frames_per_chunk."}),
+        }
+        return required, {}

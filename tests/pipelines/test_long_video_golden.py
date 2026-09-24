@@ -1,4 +1,4 @@
-"""G1 and G11: the chunk loop of both long-video sampler nodes, end to end on the sampler_fakes
+"""G1 and G11: the chunk loop of the long-video sampler nodes, end to end on the sampler_fakes
 core stubs.
 
 Every core call is recorded in order, with its keyword arguments reduced to plain data at the
@@ -28,10 +28,10 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from golden import check, digest, log_text  # noqa: E402
-from sampler_fakes import (ANIMATE1, ANIMATE2, LATENT_DOWN, FakeNodeOutput, FakeProgressBar,  # noqa: E402,F401
-                           FakeSamplerCustom, FakeVAE, FakeWanAnimate2ToVideo, node_module, run)
+from sampler_fakes import (ANIMATE1, ANIMATE2, LATENT_DOWN, SCAIL2, FakeNodeOutput, FakeProgressBar,  # noqa: E402,F401
+                           FakeSamplerCustom, FakeVAE, FakeWanAnimate2ToVideo, node_module, reference_mask, run)
 
-CORE_NODE = {ANIMATE1: "WanAnimateToVideo", ANIMATE2: "WanAnimate2ToVideo"}
+CORE_NODE = {ANIMATE1: "WanAnimateToVideo", ANIMATE2: "WanAnimate2ToVideo", SCAIL2: "WanSCAILToVideo"}
 LOGGERS = ("root", "BCVideoNodes")
 
 
@@ -168,6 +168,12 @@ SCENARIOS = {
     "seed_2_64_minus_1_increment": lambda module: dict(node=ANIMATE2, pose_frames=200, seed=2 ** 64 - 1,
                                                        seed_mode="increment"),
     "sigmas_override": lambda module: dict(node=ANIMATE2, pose_frames=81, sigmas_override=torch.linspace(1.0, 0.0, 4)),
+    "s2_default": lambda module: dict(node=SCAIL2, pose_frames=81, **widget_defaults(module, SCAIL2)),
+    "s2_long": lambda module: dict(node=SCAIL2, pose_frames=450),
+    "s2_replacement": lambda module: dict(node=SCAIL2, pose_frames=200, replacement_mode=True,
+                                          reference_image=seeded(1, 64, 32, 3)),
+    "s2_hold": lambda module: dict(node=SCAIL2, pose_frames=100, total_frames=250),
+    "s2_overlap_9": lambda module: dict(node=SCAIL2, pose_frames=200, previous_frame_count=9),
 }
 
 ERRORS = {
@@ -182,6 +188,11 @@ ERRORS = {
     "error_mask_background_mismatch": lambda module: dict(node=ANIMATE1, pose_frames=200, frames_per_chunk=77,
                                                           character_mask=seeded(100, 64, 32),
                                                           background_video=torch.zeros(200, 64, 32, 3)),
+    "error_old_core_s2": lambda module: dict(node=SCAIL2, pose_frames=81, old_core=True),
+    "error_s2_size_not_32": lambda module: dict(node=SCAIL2, pose_frames=81, width=48),
+    "error_s2_mask_length": lambda module: dict(node=SCAIL2, pose_frames=100, pose_video_mask=torch.zeros(80, 64, 32, 3)),
+    "error_s2_mode_mismatch": lambda module: dict(node=SCAIL2, pose_frames=81, replacement_mode=True,
+                                                  reference_image_mask=reference_mask(False)),
 }
 
 

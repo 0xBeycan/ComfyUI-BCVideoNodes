@@ -1,28 +1,26 @@
-"""The long-video chunk loop both Wan Animate sampler nodes run (nodes/sampler.py).
+"""The long-video chunk loop every long-video sampler node runs (nodes/sampler.py).
 
 Every chunk after the first is seeded with the previous
-chunk's last frames (continue_motion) and the driving videos are read from
-the returned video_frame_offset, so they stay aligned across the whole run.
+chunk's last frames (continue_motion, or previous_frames for SCAIL-2) and the driving videos are
+read from the returned video_frame_offset, so they stay aligned across the whole run.
 The sampling stack (ModelSamplingSD3 -> BasicScheduler -> KSamplerSelect ->
 SamplerCustom -> TrimVideoLatent -> VAEDecode) is called node-by-node from
 ComfyUI's own registry, so this stays in step with core. What differs per core
 conditioning node is its animate adapter (models/common/animate.py), picked from
-the registry by the node id.
+the registry by the node id: the core call's continuation inputs, its outputs, the videos it
+seeks, the chunk-length policy and the input checks.
 """
 
 import logging
 
 # torch and comfy.* are imported inside the functions that use them, so this
 # module (and the package __init__) imports without a ComfyUI install.
-from ..libs.chunking import format_plan, next_chunk_length, plan_chunks, produced_frames, snap_down
+from ..libs.chunking import format_plan, plan_chunks, produced_frames, snap_down
 from ..libs.log import active_bar, log_beside_bar
 from ..libs.sigmas import WAN_BETA, wan_beta_sigmas
 from ..libs.video import hold_last
 from ..models.common import registry
 from ..models.common.core_nodes import call_node, node_class
-
-ANIMATE_OUTPUTS = 6  # positive, negative, latent, trim_latent, trim_image, video_frame_offset
-UPDATE_HINT = "Update ComfyUI: this node needs the {} that returns trim_latent / trim_image / video_frame_offset."
 
 
 class _StepLogger:
@@ -87,39 +85,34 @@ def generate(
 
     adapter = registry.get("animate", animate_node).implementation(node_name)
     log_prefix = "[{}]".format(node_name)
-    update_hint = UPDATE_HINT.format(animate_node)
+    update_hint = adapter.UPDATE_HINT.format(animate_node)
 
     animate_cls = node_class(animate_node)
-    if len(animate_cls.RETURN_TYPES) < ANIMATE_OUTPUTS:
-        raise RuntimeError("{} returns {} outputs, {} expected. {}".format(animate_node, len(animate_cls.RETURN_TYPES), ANIMATE_OUTPUTS, update_hint))
-    overlap = adapter.prepare(animate_cls, animate_inputs)
+    if len(animate_cls.RETURN_TYPES) < adapter.OUTPUTS:
+        raise RuntimeError("{} returns {} outputs, {} expected. {}".format(animate_node, len(animate_cls.RETURN_TYPES), adapter.OUTPUTS, update_hint))
+    overlap = adapter.prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)
 
     pose_frames = int(pose_video.shape[0])
     if pose_frames < 1:
         raise ValueError("pose_video has no frames.")
     total = int(total_frames) if total_frames > 0 else pose_frames
 
-    plan = plan_chunks(total, frames_per_chunk, overlap)
+    plan = plan_chunks(total, frames_per_chunk, overlap, adapter.chunk_length)
     logging.info("%s chunk plan: %s", log_prefix, format_plan(plan, produced_frames(plan, overlap), total, pose_frames, overlap))
 
     # Every video must reach the last frame the plan samples: past total_frames
     # (longer than the input) and past total itself when the last chunk is snapped
-    # up to 4k+1. Core holds only the pose within a chunk; once the offset runs past
-    # a video it errors (Animate 2 pose) or drops it (Animate: pose, face,
-    # background, mask), and inside the last chunk a short face video loses its
-    # motion, a background turns grey and the mask rows turn unknown. Hold the last
-    # frame up front instead. The mask is not held: past its end the character may be
-    # anywhere, so core leaves those rows unknown. It says where the character goes in
-    # each background frame, so a mask video must be as long as the background.
-    character_mask, background = animate_inputs.get("character_mask"), animate_inputs.get("background_video")
-    if (character_mask is not None and background is not None and character_mask.ndim >= 3
-            and character_mask.shape[0] > 1 and character_mask.shape[0] != background.shape[0]):
-        raise ValueError("character_mask has {} frames but background_video has {}: the mask marks where the character "
-                         "goes in each background frame, so connect the two from the same video.".format(
-                             int(character_mask.shape[0]), int(background.shape[0])))
+    # up to 4k+1 (or run at full length, as the adapter's chunk_length says). Core holds
+    # only the pose within a chunk; once the offset runs past a video it errors (Animate 2
+    # pose) or drops it (Animate: pose, face, background, mask; SCAIL-2: pose, pose mask), and
+    # inside the last chunk a short face video loses its motion, a background turns grey and
+    # the mask rows turn unknown. Hold the last frame of the adapter's HELD_VIDEOS up front
+    # instead. The Animate character mask is not held: past its end the character may be
+    # anywhere, so core leaves those rows unknown.
+    adapter.check_videos(pose_video, animate_inputs)
     reach = max(total, produced_frames(plan, overlap))
     short = {}
-    for name in ("pose_video", "face_video", "background_video"):
+    for name in adapter.HELD_VIDEOS:
         video = pose_video if name == "pose_video" else animate_inputs.get(name)
         if video is None or video.shape[0] >= reach:
             continue
@@ -132,7 +125,7 @@ def generate(
         shorter_than_total = [name for name, frames in short.items() if frames < total]
         why = ["total_frames ({}) exceeds {}".format(total, ", ".join(shorter_than_total))] if shorter_than_total else []
         if reach > total:
-            why.append("the last chunk is snapped up to 4k+1 and runs {} frames past total_frames".format(reach - total))
+            why.append("{} and runs {} frames past total_frames".format(adapter.OVERSHOOT, reach - total))
         (logging.warning if shorter_than_total else logging.info)(
             "%s last frame held to %d frames: %s (%s).", log_prefix, reach,
             ", ".join("{} +{}".format(name, reach - frames) for name, frames in short.items()), "; ".join(why))
@@ -159,7 +152,7 @@ def generate(
     while produced < total:
         comfy.model_management.throw_exception_if_processing_interrupted()
         index = len(lengths)
-        length = next_chunk_length(produced, total, frames_per_chunk, overlap)
+        length = adapter.chunk_length(produced, total, frames_per_chunk, overlap)
         chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
         pose_offset = offset
         chunk_inputs = dict(animate_inputs, **adapter.chunk_inputs(index, offset, anchor, pose_video, animate_inputs))
@@ -175,13 +168,12 @@ def generate(
             batch_size=1,
             reference_image=reference_image,
             pose_video=pose_video,
-            continue_motion=anchor,
-            video_frame_offset=offset,
+            **adapter.continuation(anchor, offset),
             **chunk_inputs,
         )
-        if len(animate) < ANIMATE_OUTPUTS:
-            raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), ANIMATE_OUTPUTS, update_hint))
-        chunk_positive, chunk_negative, latent, trim_latent, trim_image, offset = animate[:ANIMATE_OUTPUTS]
+        if len(animate) < adapter.OUTPUTS:
+            raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), adapter.OUTPUTS, update_hint))
+        chunk_positive, chunk_negative, latent, trim_latent, trim_image, offset = adapter.unpack(animate, anchor)
         adapter.after_animate(chunk_positive, chunk_negative, trim_image, length, pose_offset, animate_inputs)
 
         # 1-based frame span this chunk adds to the output, as the plan expects it.

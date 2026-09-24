@@ -92,6 +92,12 @@
   "d751713988987e9331980363e24189ce",
   "d41d8cd98f00b204e9800998ecf8427e"
  ],
+ "error_old_core_s2": [
+  "RuntimeError",
+  "WanSCAILToVideo returns 3 outputs, 4 expected. Update ComfyUI: this node needs the WanSCAILToVideo of SCAIL-2 (previous_frames, pose_video_mask).",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
  "error_overlap_not_below_chunk": [
   "ValueError",
   "frames_per_chunk (77 -> 77 on the 4k+1 grid) must exceed the overlap (77).",
@@ -104,12 +110,65 @@
   "d751713988987e9331980363e24189ce",
   "d41d8cd98f00b204e9800998ecf8427e"
  ],
+ "error_s2_mask_length": [
+  "ValueError",
+  "pose_video_mask has 80 frames but pose_video has 100: both come from the same driving video; re-run the preprocess (SCAIL-2 Preprocess).",
+  "64d2ad47d2f27752b003851831a17486",
+  "690b8631ab3b6ba84bf6154a1b096f81"
+ ],
+ "error_s2_mode_mismatch": [
+  "ValueError",
+  "reference_image_mask was rendered for animation mode (white background) but replacement_mode is True: set replacement_mode to False, or re-render the masks (SCAIL-2 Colored Mask) with replacement_mode True.",
+  "d751713988987e9331980363e24189ce",
+  "86ce33b581ee49d0bb1f9ee684100ce9"
+ ],
+ "error_s2_size_not_32": [
+  "ValueError",
+  "width and height must be divisible by 32 for SCAIL-2 (the pose runs at half resolution through the /16 patch grid); use e.g. 512x896 or 704x1280. Found 48x64.",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
  "overlap_self_correction": [
   "10e7f5721851094ff8cd84c740094c06",
   "331ff8ac52d0700f8ee0973f0084a5b0",
   "49 + 49 + 49 + 49 + 25 -> 201 produced -> 200 frames (pose 200, overlap 5)",
   "torch.float32",
   "9ba9709b5ead28e80bcc62acfbf108cc"
+ ],
+ "s2_default": [
+  "a2a489f639e339a3e60b992d0e0fa0c1",
+  "e2a4e1fa98026469ebd10cbdac2c1796",
+  "81 -> 81 produced -> 81 frames (pose 81, overlap 5)",
+  "torch.float32",
+  "8fc4d03fa6397c8e2f5ad1ea6a0969ae"
+ ],
+ "s2_hold": [
+  "95d2cc5b05d9df9060c0d2fa96f817d1",
+  "6c349409730890ee97e01c5fa7ab5777",
+  "81 + 81 + 81 + 81 -> 309 produced -> 250 frames (pose 100, overlap 5)",
+  "torch.float32",
+  "f242212072882c976a10aa0def5dcb79"
+ ],
+ "s2_long": [
+  "af5e654435bfecbbc3322f9cff4c7909",
+  "f3cfdb734fc37267a4a49413f66b5e6f",
+  "81 + 81 + 81 + 81 + 81 + 81 -> 461 produced -> 450 frames (pose 450, overlap 5)",
+  "torch.float32",
+  "f95e6103f02003155a0bdd6b40945177"
+ ],
+ "s2_overlap_9": [
+  "372cff29cb76229d1e756fdd0d248386",
+  "aa07a391945b60fdad4883c36d7a62b1",
+  "81 + 81 + 81 -> 225 produced -> 200 frames (pose 200, overlap 9)",
+  "torch.float32",
+  "6a3030ae563122cd04650d31ce7e942f"
+ ],
+ "s2_replacement": [
+  "2504d289b0911e69d31e375e42b8ce94",
+  "baf0ba2bb7d9575bf182a35976b11c1e",
+  "81 + 81 + 81 -> 233 produced -> 200 frames (pose 200, overlap 5)",
+  "torch.float32",
+  "4f30b348e76308eadf49e9c37b3cc931"
  ],
  "seed_2_64_minus_1_increment": [
   "8ad50bd60c808737174b6418843722b4",

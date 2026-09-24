@@ -28,6 +28,14 @@
    "E1": true,
    "E3": true
   },
+  "BCVSCAIL2ColoredMask": {
+   "E1": false,
+   "E3": false
+  },
+  "BCVSCAIL2Preprocess": {
+   "E1": true,
+   "E3": true
+  },
   "BCVWanAnimate2LongVideoSampler": {
    "E1": false,
    "E3": false
@@ -41,6 +49,10 @@
    "E3": true
   },
   "BCVWanAnimatePreprocessGuard": {
+   "E1": false,
+   "E3": false
+  },
+  "BCVWanSCAIL2LongVideoSampler": {
    "E1": false,
    "E3": false
   }

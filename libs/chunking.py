@@ -1,4 +1,4 @@
-"""Chunk length math for chaining Wan Animate / Wan Animate 2 generations.
+"""Chunk length math for chaining Wan Animate / Wan Animate 2 / SCAIL-2 generations.
 
 Pure Python on purpose: no torch, no ComfyUI. The long-video loop
 (pipelines/long_video.py) and the Wan Animate adapters import this; the
@@ -55,13 +55,7 @@ def next_chunk_length(produced, total_frames, frames_per_chunk, overlap):
     this with the real produced count each iteration is what keeps the loop
     exact even if the overlap assumption turns out wrong.
     """
-    chunk = snap_down(frames_per_chunk)
-    if overlap >= chunk:
-        raise ValueError(
-            "frames_per_chunk ({} -> {} on the 4k+1 grid) must exceed the overlap ({}).".format(
-                frames_per_chunk, chunk, overlap
-            )
-        )
+    chunk = _grid_chunk(frames_per_chunk, overlap)
     need = int(total_frames) - int(produced)
     if need <= 0:
         return 0
@@ -70,15 +64,36 @@ def next_chunk_length(produced, total_frames, frames_per_chunk, overlap):
     return min(chunk, snap_up(need + overlap))
 
 
-def plan_chunks(total_frames, frames_per_chunk, overlap):
-    """Chunk lengths that cover total_frames, as the loop would run them."""
+def full_chunk_length(produced, total_frames, frames_per_chunk, overlap):
+    """Like next_chunk_length, but every chunk, the last one included, is frames_per_chunk on the
+    4k+1 grid: for a model trained on full-length segments only. The last chunk then runs past
+    total_frames and the caller cuts the output back to it."""
+    chunk = _grid_chunk(frames_per_chunk, overlap)
+    return chunk if int(total_frames) > int(produced) else 0
+
+
+def _grid_chunk(frames_per_chunk, overlap):
+    """frames_per_chunk on the 4k+1 grid; raises when it does not exceed the overlap."""
+    chunk = snap_down(frames_per_chunk)
+    if overlap >= chunk:
+        raise ValueError(
+            "frames_per_chunk ({} -> {} on the 4k+1 grid) must exceed the overlap ({}).".format(
+                frames_per_chunk, chunk, overlap
+            )
+        )
+    return chunk
+
+
+def plan_chunks(total_frames, frames_per_chunk, overlap, chunk_length=next_chunk_length):
+    """Chunk lengths that cover total_frames, as the loop would run them with the length policy
+    `chunk_length` (next_chunk_length or full_chunk_length)."""
     total_frames = int(total_frames)
     if total_frames < 1:
         raise ValueError("total_frames must be at least 1.")
     plan = []
     produced = 0
     while produced < total_frames:
-        length = next_chunk_length(produced, total_frames, frames_per_chunk, overlap)
+        length = chunk_length(produced, total_frames, frames_per_chunk, overlap)
         plan.append(length)
         produced += length if len(plan) == 1 else length - overlap
     return plan

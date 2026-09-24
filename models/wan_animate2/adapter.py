@@ -5,8 +5,8 @@ a connected clip_vision re-encodes the pose CLIP embedding per chunk."""
 import logging
 
 from ...libs.chunking import overlap_for_motion_frames
-from ..common.animate import AnimateAdapter
-from ..common.core_nodes import call_node, node_class
+from ..common.animate import AnimateAdapter, check_pose_percents
+from ..common.core_nodes import clip_vision_encode, node_class
 from .attention import seed_frame_attention_bias
 
 
@@ -18,10 +18,8 @@ def continue_motion_frames(animate_cls):
 class WanAnimate2Adapter(AnimateAdapter):
     ANIMATE_NODE = "WanAnimate2ToVideo"
 
-    def prepare(self, animate_cls, animate_inputs):
-        start, end = animate_inputs["pose_start_percent"], animate_inputs["pose_end_percent"]
-        if start > end:
-            raise ValueError("pose_start_percent ({}) must not be greater than pose_end_percent ({}).".format(start, end))
+    def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
+        check_pose_percents(animate_inputs["pose_start_percent"], animate_inputs["pose_end_percent"])
         self._log_scale = float(animate_inputs.pop("attn_log_scale", -1.3))
         self._clip_vision = animate_inputs.pop("clip_vision", None)
         if self._clip_vision is not None:
@@ -46,5 +44,4 @@ class WanAnimate2Adapter(AnimateAdapter):
         # the core node moves the offset back by the seed frame before it reads the pose video; encode that same first frame
         seed = 0 if anchor is None else min(int(anchor.shape[0]), continue_motion_frames(node_class(self.ANIMATE_NODE)))
         first = min(max(0, offset - seed), int(pose_video.shape[0]) - 1)
-        encoded = call_node("CLIPVisionEncode", clip_vision=self._clip_vision, image=pose_video[first:first + 1], crop="none")[0]
-        return {"clip_vision_output_pose": encoded}
+        return {"clip_vision_output_pose": clip_vision_encode(self._clip_vision, pose_video[first:first + 1])}

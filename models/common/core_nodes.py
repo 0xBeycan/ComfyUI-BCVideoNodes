@@ -1,4 +1,5 @@
-"""Running a ComfyUI core node outside the graph: node_class, with_schema_defaults, call_node."""
+"""Running a ComfyUI core node outside the graph: node_class, with_schema_defaults, call_node, and
+clip_vision_encode on top of it."""
 
 import inspect
 
@@ -44,3 +45,9 @@ def call_node(node_id, **kwargs):
     if isinstance(result, dict):
         return tuple(result["result"])
     return tuple(result)
+
+
+def clip_vision_encode(clip_vision, image):
+    """Core CLIPVisionEncode of ``image`` with crop "none": the image is stretched to CLIP's square
+    instead of center-cropped, as Wan Animate 2 and SCAIL-2 were trained."""
+    return call_node("CLIPVisionEncode", clip_vision=clip_vision, image=image, crop="none")[0]

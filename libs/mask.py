@@ -1,6 +1,8 @@
-"""Masks at a frame's resolution: mask logits resized to the frame and cut, and a person's binary
-mask cleaned of small enclosed holes and of islands far smaller than the body."""
+"""Masks at a frame's resolution: mask logits resized to the frame and cut, a person's binary
+mask cleaned of small enclosed holes and of islands far smaller than the body, and a mask
+rendered as a colored image."""
 import numpy as np
+import torch
 import torch.nn.functional as F
 
 
@@ -50,3 +52,12 @@ def fill_holes(mask, max_fraction):
 def clean_mask(mask, config):
     """A person's mask: no small enclosed holes, no islands far smaller than the body."""
     return drop_islands(fill_holes(mask.astype(np.uint8), config.max_hole_fraction), config.min_island_fraction)
+
+
+def render_identity(mask, color, background, threshold=0.5):
+    """A [T, H, W] mask as a [T, H, W, 3] float32 image: `color` where the mask is above
+    `threshold`, `background` elsewhere. Both colours are RGB in 0..1."""
+    on = (mask.float() > threshold).unsqueeze(-1)
+    color = torch.tensor(color, dtype=torch.float32, device=mask.device)
+    background = torch.tensor(background, dtype=torch.float32, device=mask.device)
+    return torch.where(on, color, background)

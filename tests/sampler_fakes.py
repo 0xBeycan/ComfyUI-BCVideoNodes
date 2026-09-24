@@ -19,11 +19,13 @@ PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ANIMATE1 = "BCVWanAnimateLongVideoSampler"
 ANIMATE2 = "BCVWanAnimate2LongVideoSampler"
+SCAIL2 = "BCVWanSCAIL2LongVideoSampler"
 CONTINUE_MOTION_FRAMES = 1  # WanAnimate2ToVideo's class constant
 LATENT_DOWN = 8
 
 sampler = Names("sampler", {
-    **refs("nodes.sampler", "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "_combo_default"),
+    **refs("nodes.sampler", "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "BCVWanSCAIL2LongVideoSampler",
+           "_combo_default"),
     "_StepLogger": Ref("pipelines.long_video", "_StepLogger"),
     "_fix_replacement_mask": Ref("models.wan_animate.mask_repair", "fix_replacement_mask"),
     "_replacement_mask_rows": Ref("models.wan_animate.mask_repair", "replacement_mask_rows"),
@@ -189,6 +191,77 @@ class FakeWanAnimate2ToVideo:
         return FakeNodeOutput(positive, negative, latent, trim_latent, max(0, ref_motion_latent_length * 4 - 3), video_frame_offset + length)
 
 
+class FakeWanSCAILToVideo:
+    """Mirrors comfy_extras/nodes_scail.py WanSCAILToVideo.execute where the loop depends on it:
+    4 outputs; the last previous_frame_count of previous_frames are kept, the offset moves back
+    by as many; the pose video and its mask are seeked by that offset (dropped once it runs past
+    them) and cut jointly to the shorter one on the 4k+1 grid, capped at length; the kept frames
+    are VAE-encoded into the first latent frames, which a noise_mask marks known; the returned
+    offset is the moved-back offset + length. The pose video goes into the conditioning as
+    pose_video_latent, VAE-encoded (without core's half-resolution resize) and scaled by
+    pose_strength."""
+
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT", "INT")
+    FUNCTION = "EXECUTE_NORMALIZED"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"width": ("INT", {"default": 512}), "height": ("INT", {"default": 896}), "length": ("INT", {"default": 81}),
+                             "batch_size": ("INT", {"default": 1}), "pose_strength": ("FLOAT", {"default": 1.0}),
+                             "pose_start": ("FLOAT", {"default": 0.0}), "pose_end": ("FLOAT", {"default": 1.0}),
+                             "video_frame_offset": ("INT", {"default": 0}), "previous_frame_count": ("INT", {"default": 5})},
+                "optional": {"pose_video": ("IMAGE", {}), "pose_video_mask": ("IMAGE", {}), "replacement_mode": ("BOOLEAN", {"default": False}),
+                             "reference_image": ("IMAGE", {}), "reference_image_mask": ("IMAGE", {}),
+                             "clip_vision_output": ("CLIP_VISION_OUTPUT", {}), "previous_frames": ("IMAGE", {})}}
+
+    @classmethod
+    def EXECUTE_NORMALIZED(cls, positive, negative, vae, width, height, length, batch_size, pose_strength, pose_start, pose_end,
+                           video_frame_offset, previous_frame_count, replacement_mode=False, reference_image=None,
+                           clip_vision_output=None, pose_video=None, pose_video_mask=None, reference_image_mask=None,
+                           previous_frames=None):
+        latent = torch.zeros(batch_size, 16, ((length - 1) // 4) + 1, height // LATENT_DOWN, width // LATENT_DOWN)
+        pose_in = None if pose_video is None else pose_video.shape[0]
+        previous = None
+        if previous_frames is not None and previous_frames.shape[0] > 0:
+            previous = previous_frames[-previous_frame_count:]
+            video_frame_offset = max(0, video_frame_offset - previous.shape[0])
+        if pose_video is not None:
+            pose_video = None if pose_video.shape[0] <= video_frame_offset else pose_video[video_frame_offset:]
+        if pose_video_mask is not None:
+            pose_video_mask = None if pose_video_mask.shape[0] <= video_frame_offset else pose_video_mask[video_frame_offset:]
+        kept = [v.shape[0] for v in (pose_video, pose_video_mask) if v is not None]
+        if kept:
+            kept = ((min(min(kept), length) - 1) // 4) * 4 + 1
+            pose_video = None if pose_video is None else pose_video[:kept]
+            pose_video_mask = None if pose_video_mask is None else pose_video_mask[:kept]
+        Calls.animate.append({
+            "length": length, "offset_in": video_frame_offset, "width": width, "height": height,
+            "previous": None if previous is None else previous.shape[0],
+            "previous_first": None if previous is None else float(previous[0, 0, 0, 0]),
+            "pose": None if pose_video is None else float(pose_video[0, 0, 0, 0]),
+            "pose_frames": None if pose_video is None else pose_video.shape[0],
+            "pose_in": pose_in,
+            "mask": None if pose_video_mask is None else float(pose_video_mask[0, 0, 0, 0]),
+            "mask_frames": None if pose_video_mask is None else pose_video_mask.shape[0],
+            "replacement_mode": replacement_mode, "pose_strength": pose_strength, "pose_start": pose_start, "pose_end": pose_end,
+            "previous_frame_count": previous_frame_count, "clip": clip_vision_output, "reference_mask": reference_image_mask,
+        })
+        values = {"ref_mask_flag": not replacement_mode}
+        if pose_video is not None:
+            values["pose_video_latent"] = vae.encode(pose_video[:, :, :, :3]) * pose_strength
+        positive = [[c[0], {**c[1], **values}] for c in positive]
+        negative = [[c[0], {**c[1], **values}] for c in negative]
+        out = {"samples": latent}
+        if previous is not None:
+            encoded = vae.encode(previous[:, :, :, :3])
+            frames = min(encoded.shape[2], latent.shape[2])
+            latent[:, :, :frames] = encoded[:, :, :frames]
+            noise_mask = torch.ones(1, 1, latent.shape[2], latent.shape[-2], latent.shape[-1])
+            noise_mask[:, :, :frames] = 0.0
+            out["noise_mask"] = noise_mask
+        return FakeNodeOutput(positive, negative, out, video_frame_offset + length)
+
+
 class FakeCLIPVisionEncode:
     FUNCTION = "EXECUTE_NORMALIZED"
 
@@ -330,6 +403,7 @@ def node_module(monkeypatch):
     core_nodes.NODE_CLASS_MAPPINGS = {
         "WanAnimateToVideo": FakeWanAnimateToVideo,
         "WanAnimate2ToVideo": FakeWanAnimate2ToVideo,
+        "WanSCAILToVideo": FakeWanSCAILToVideo,
         "SamplerCustom": FakeSamplerCustom,
         "CLIPVisionEncode": FakeCLIPVisionEncode,
         "KSamplerSelect": FakeKSamplerSelect,
@@ -365,7 +439,18 @@ def node_module(monkeypatch):
 NODE_DEFAULTS = {
     ANIMATE1: dict(continue_motion_max_frames=5),
     ANIMATE2: dict(reference_image_strength=1.0, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=0.0),
+    SCAIL2: dict(clip_vision="cv", replacement_mode=False, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0,
+                 previous_frame_count=5),
 }
+
+
+def reference_mask(replacement_mode=False, frames=1):
+    """A colored reference mask of run()'s 64 x 32 size: a blue person in the middle, on white
+    (animation mode) or black (replacement mode)."""
+    background = 0.0 if replacement_mode else 1.0
+    mask = torch.full((frames, 64, 32, 3), background)
+    mask[:, 16:48, 8:24] = torch.tensor([0.0, 0.0, 1.0])
+    return mask
 
 
 def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81, seed=7, seed_mode="increment", **overrides):
@@ -390,5 +475,9 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
         seed_mode=seed_mode,
     )
     kwargs.update(NODE_DEFAULTS[node])
+    if node == SCAIL2:
+        # the colored driving mask: the frame index as well, so its seek is visible
+        kwargs["pose_video_mask"] = kwargs["pose_video"].clone()
+        kwargs["reference_image_mask"] = reference_mask(overrides.get("replacement_mode", False))
     kwargs.update(overrides)
     return getattr(module, node)().generate(**kwargs)

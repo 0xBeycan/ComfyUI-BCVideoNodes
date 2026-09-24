@@ -64,7 +64,8 @@ HEAVY = [
 NODE_KEYS = [
     "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "BCVPoseDetection", "BCVPoseConfig",
     "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop", "BCVPoseGuard", "BCVMaskGuard",
-    "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard",
+    "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVWanSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
+    "BCVSCAIL2Preprocess",
 ]
 # each exception's trigger module
 E1_MODULE = "models.common.download"
@@ -103,6 +104,7 @@ CHECK3_MODULES = [
     "pipelines.sam3_1_multiplex.prompt",
     "pipelines.sam3_1_multiplex.pose",
     "pipelines.sam3_1_multiplex.track",
+    "pipelines.scail2",
     "models",
     "models.common",
     "models.common.registry",
@@ -136,6 +138,8 @@ CHECK3_MODULES = [
     "models.wan_animate2",
     "models.wan_animate2.adapter",
     "models.wan_animate2.attention",
+    "models.wan_scail2",
+    "models.wan_scail2.adapter",
 ]
 # check 3: the heavy modules a checked module may pull in; every other module may pull in none.
 # "cv2" is the vendored pose_utils' cv2 and its submodules (E2).

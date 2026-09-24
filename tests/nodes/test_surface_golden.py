@@ -1,4 +1,4 @@
-"""G2, the surface of the 11 nodes: everything ComfyUI reads from the pack and a saved workflow
+"""G2, the surface of the 14 nodes: everything ComfyUI reads from the pack and a saved workflow
 depends on. Per node key, the md5 of the repr of its full INPUT_TYPES (sections, names, order,
 types and every option: defaults, ranges, tooltips, round, forceInput, control_after_generate),
 RETURN_TYPES, RETURN_NAMES, FUNCTION, CATEGORY, DESCRIPTION, OUTPUT_NODE (absent) and display
@@ -6,7 +6,7 @@ name; and the repr of the key list of both mappings, which keeps their order. Re
 code after the SAM naming step, so the two SAM 3.1 Multiplex display names and texts are pinned
 in that form.
 
-The mappings are read from the root package, as ComfyUI reads them. The two samplers are read
+The mappings are read from the root package, as ComfyUI reads them. The three samplers are read
 under the sampler_fakes stubs, so the lists and ranges they take from ComfyUI (SAMPLER_NAMES,
 SCHEDULER_NAMES, MAX_RESOLUTION) are the stubs' fixed values. The preprocess nodes read the
 real modules, two of which import ComfyUI at their top (models/common/download.py and
@@ -27,11 +27,12 @@ pytest.importorskip("folder_paths")
 import bcvideonodes as pack  # noqa: E402
 
 import golden  # noqa: E402
-from sampler_fakes import ANIMATE1, ANIMATE2, node_module  # noqa: E402,F401
+from sampler_fakes import ANIMATE1, ANIMATE2, SCAIL2, node_module  # noqa: E402,F401
 
-SAMPLERS = [ANIMATE1, ANIMATE2]
+SAMPLERS = [ANIMATE1, ANIMATE2, SCAIL2]
 PREPROCESS = ["BCVPoseDetection", "BCVPoseConfig", "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop",
-              "BCVPoseGuard", "BCVMaskGuard", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard"]
+              "BCVPoseGuard", "BCVMaskGuard", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard",
+              "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess"]
 
 ABSENT = "<absent>"
 

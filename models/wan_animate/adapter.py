@@ -12,7 +12,7 @@ from .mask_repair import fix_replacement_mask, replacement_mask_rows
 class WanAnimateAdapter(AnimateAdapter):
     ANIMATE_NODE = "WanAnimateToVideo"
 
-    def prepare(self, animate_cls, animate_inputs):
+    def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         # The overlap is a widget here (continue_motion_max_frames): the core
         # node keeps that many frames of continue_motion, moves the offset back
         # by the same amount and trims their decoded span off again. Off the
@@ -26,6 +26,16 @@ class WanAnimateAdapter(AnimateAdapter):
         if animate_inputs.get("character_mask") is not None:
             logging.info("[%s] character_mask connected: realigning the core node's mask rows (see _fix_replacement_mask).", self.node_name)
         return motion_frames
+
+    def check_videos(self, pose_video, animate_inputs):
+        # The mask says where the character goes in each background frame, so a mask video must
+        # be as long as the background.
+        character_mask, background = animate_inputs.get("character_mask"), animate_inputs.get("background_video")
+        if (character_mask is not None and background is not None and character_mask.ndim >= 3
+                and character_mask.shape[0] > 1 and character_mask.shape[0] != background.shape[0]):
+            raise ValueError("character_mask has {} frames but background_video has {}: the mask marks where the character "
+                             "goes in each background frame, so connect the two from the same video.".format(
+                                 int(character_mask.shape[0]), int(background.shape[0])))
 
     def after_animate(self, positive, negative, trim_image, length, offset, animate_inputs):
         character_mask = animate_inputs.get("character_mask")

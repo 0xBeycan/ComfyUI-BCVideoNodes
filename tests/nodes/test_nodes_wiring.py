@@ -31,7 +31,8 @@ from pose_fakes import FakeDetector, FakePose, frames, loader, pose  # noqa: E40
 
 
 PREPROCESS_NODES = ["BCVPoseDetection", "BCVPoseConfig", "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop",
-                    "BCVPoseGuard", "BCVMaskGuard", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard"]
+                    "BCVPoseGuard", "BCVMaskGuard", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard",
+                    "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess"]
 
 
 def widget_defaults(node_id):

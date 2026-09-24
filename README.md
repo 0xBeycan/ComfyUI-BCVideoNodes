@@ -2,9 +2,9 @@
 
 Video nodes for ComfyUI: a Wan Animate preprocess built from small nodes that
 are usable in any video pipeline (wholebody pose, SAM 3.1 person tracking,
-face crops, pose and mask checks), and two samplers that turn a reference
-image plus a pose video of any length into a Wan Animate video of exactly
-that length.
+face crops, pose and mask checks), a SCAIL-2 preprocess, and three samplers
+that turn a reference image plus a driving video of any length into a Wan
+Animate or SCAIL-2 video of exactly that length.
 
 | Node | Id | Category |
 |------|----|----------|
@@ -19,6 +19,9 @@ that length.
 | **WanAnimate Preprocess Guard** | `BCVWanAnimatePreprocessGuard` | `BCVideoNodes/Wan/Animate` |
 | **Wan Animate Long Video Sampler** | `BCVWanAnimateLongVideoSampler` | `BCVideoNodes/Wan/Animate` |
 | **Wan Animate 2 Long Video Sampler** | `BCVWanAnimate2LongVideoSampler` | `BCVideoNodes/Wan/Animate` |
+| **SCAIL-2 Colored Mask** | `BCVSCAIL2ColoredMask` | `BCVideoNodes/Wan/SCAIL` |
+| **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/Wan/SCAIL` |
+| **Wan SCAIL-2 Long Video Sampler** | `BCVWanSCAIL2LongVideoSampler` | `BCVideoNodes/Wan/SCAIL` |
 
 ## Preprocess nodes
 
@@ -149,6 +152,34 @@ the chained nodes produce with the same settings.
   report. Inputs `mask`, `pose_data`, both switches and all thresholds;
   outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`.
 
+### SCAIL-2 Colored Mask and SCAIL-2 Preprocess
+
+The inputs of the Wan SCAIL-2 Long Video Sampler, one person (multi-person
+is a later phase).
+
+- **SCAIL-2 Colored Mask**: `driving_mask` (MASK), `replacement_mode`,
+  optional `reference_mask` (MASK) -> `pose_video_mask`,
+  `reference_image_mask` (IMAGE). The person is rendered in blue, the first
+  colour of the palette SCAIL-2 was trained on, on the background of the mode:
+  animation mode = driving mask on black, reference mask on white;
+  replacement mode = driving mask on white, reference mask on black. Masks
+  are cut at 0.5; the colours are pure, as core's `SCAIL2ColoredMask` renders
+  them, so `WanSCAILToVideo`'s 28-channel extraction reads them exactly.
+  Without a reference mask (or with an empty one) the reference mask is the
+  background alone, as in core: in animation mode that is logged, since the
+  mode can then collapse into replacement behaviour (SCAIL-2 README); in
+  replacement mode it is an error, since the reference would be cut out to
+  black.
+- **SCAIL-2 Preprocess** = SAM 3.1 Multiplex Video Track (prompt mode, one
+  object) on the whole driving video once, and on the reference image unless
+  `reference_mask` is connected, then SCAIL-2 Colored Mask. Tracking the
+  whole clip once keeps the mask's shape and colour the same across the
+  sampler's chunks (the official template re-tracks every segment). Widgets:
+  `replacement_mode`, `prompt`; optional `reference_mask`, `sam3_config`.
+  Outputs: `pose_video` (the driving video unchanged: SCAIL-2's end-to-end
+  mode reads the raw driving video as its pose input in both modes),
+  `pose_video_mask`, `reference_image_mask`, `mask`, `reference_mask`.
+
 ### Models
 
 Everything is downloaded on first use; nothing has to be fetched by hand.
@@ -166,19 +197,20 @@ Everything is downloaded on first use; nothing has to be fetched by hand.
 
 ## Long video samplers
 
-The two samplers, one for each core conditioning node:
+The three samplers, one for each core conditioning node:
 
 | Node                              | Wraps                | Model             |
 |-----------------------------------|----------------------|-------------------|
 | **Wan Animate Long Video Sampler** (`BCVWanAnimateLongVideoSampler`)   | `WanAnimateToVideo`  | Wan 2.2 Animate   |
 | **Wan Animate 2 Long Video Sampler** (`BCVWanAnimate2LongVideoSampler`) | `WanAnimate2ToVideo` | Wan Animate 2     |
+| **Wan SCAIL-2 Long Video Sampler** (`BCVWanSCAIL2LongVideoSampler`) | `WanSCAILToVideo` | Wan 2.1 SCAIL-2 |
 
-Both depend on ComfyUI core and torch only.
+All three depend on ComfyUI core and torch only.
 
 Internally each node samples fixed-size chunks and chains them: every chunk
 after the first is seeded with the last frames of the previous one
-(`continue_motion`) and reads the driving videos from where the previous
-chunk stopped (`video_frame_offset`). This is the "original long generation"
+(`continue_motion`, `previous_frames` for SCAIL-2) and reads the driving
+videos from where the previous chunk stopped (`video_frame_offset`). This is the "original long generation"
 method from the official templates, wrapped so you place one node instead of
 copying the template's subgraph once per 5 seconds.
 
@@ -198,16 +230,18 @@ These nodes are the per-segment method with the loop inside. Each chunk is a
 complete, independent sample of `frames_per_chunk` frames; VRAM is that of one
 chunk no matter how long the video is; decoded frames accumulate on CPU. The
 seam between chunks is the frames the core node carries over and trims back
-off (1 for Animate 2, `continue_motion_max_frames` for Animate), so there is
-no cross-window blending and no re-denoising.
+off (1 for Animate 2, `continue_motion_max_frames` for Animate,
+`previous_frame_count` for SCAIL-2), so there is no cross-window blending and
+no re-denoising.
 
 What they do not do, on purpose: no colour matching between chunks (it
-degraded output on earlier Wan Animate models), no `continue_video` input,
-no external `SAMPLER` / `total_frames` links.
+degraded output on earlier Wan Animate models; the SCAIL-2 reference code has
+none either), no `continue_video` input, no external `SAMPLER` /
+`total_frames` links.
 
 ### Wiring
 
-Shared by both nodes:
+Shared by all three nodes:
 
 | Input             | Type                | From                                                        |
 |-------------------|---------------------|-------------------------------------------------------------|
@@ -227,12 +261,12 @@ Shared widgets:
 
 | Widget                     | Default        | Meaning                                                                 |
 |----------------------------|----------------|-------------------------------------------------------------------------|
-| `width`, `height`          | 720 x 1280     | Output size. Multiples of 16 are ideal; the VAE crops to a multiple of 8. |
+| `width`, `height`          | 720 x 1280     | Output size. Multiples of 16 are ideal; the VAE crops to a multiple of 8. (SCAIL-2: 704 x 1280, multiples of 32.) |
 | `frames_per_chunk`         | 81             | Frames sampled per chunk. Rounded down to the 4k+1 grid, minimum 5.    |
 | `total_frames`             | 81             | Exact output length. 0 = the pose video's frame count; normally linked. |
 | `shift`                    | see per node   | `ModelSamplingSD3` shift, applied before the schedule is built.          |
 | `sampler_name`             | euler          | Any sampler ComfyUI has; list comes from `comfy.samplers`.               |
-| `scheduler`                | wan_beta       | Any scheduler ComfyUI has, plus `wan_beta` (see below).                  |
+| `scheduler`                | wan_beta       | Any scheduler ComfyUI has, plus `wan_beta` (see below). (SCAIL-2: simple.) |
 | `steps`, `denoise`         | 6, 1.0         | Schedule length (`BasicScheduler`).                                      |
 | `cfg`                      | 1.0            |                                                                          |
 | `seed`, `seed_mode`        | -, increment   | `increment`: chunk i uses `seed + i`. `fixed`: every chunk uses `seed`.  |
@@ -326,6 +360,68 @@ The base Animate 2 checkpoint with a Wan 2.1 I2V distill LoRA (lightx2v) is
 not a combination the official repository runs; its fast path is the
 distilled checkpoint.
 
+#### Wan SCAIL-2 Long Video Sampler (`WanSCAILToVideo`)
+
+Wan 2.1 SCAIL-2 in either of its two modes, from the same node:
+
+- **Animation mode** (`replacement_mode` off): the reference character is
+  animated by the driving video. Needs the reference image with its own
+  background, the driving video as `pose_video`, and the colored masks
+  rendered for animation mode (driving mask on black, reference mask on
+  white). For a stable background, black out the driving video's background:
+  SCAIL-2's training pose videos had black backgrounds (zai-org/SCAIL-2 issue
+  #17).
+- **Replacement mode** (`replacement_mode` on): the character replaces the
+  person in the driving video, which keeps its background. Needs the colored
+  masks rendered for replacement mode (driving mask on white, reference mask
+  on black). The authors expect the reference posed like the first driving
+  frame (issue #25).
+
+SCAIL-2 Preprocess makes all three inputs. A reference mask rendered for the
+other mode is an error (the mode is read from the mask's border).
+
+Defaults: `frames_per_chunk` 81, `width` x `height` 704 x 1280, `shift` 8,
+`euler` / `simple`, 6 steps, cfg 1, `previous_frame_count` 5. With the
+distill LoRA this reproduces exactly the sigmas the official ComfyUI SCAIL-2
+template samples with: its `BasicScheduler` takes the model before
+`ModelSamplingSD3(5)`, so it runs on the model's default shift 8
+(1, 0.9757, 0.9413, 0.8889, 0.8005, 0.616, 0). `tests/nodes/test_nodes_scail2.py`
+checks that list with ComfyUI's own scheduler.
+
+| Input / widget              | Type                | Notes                                                                 |
+|-----------------------------|---------------------|-----------------------------------------------------------------------|
+| `clip_vision`               | CLIP_VISION         | `clip_vision_h`. The reference is encoded once per run, stretched (crop `none`) as SCAIL-2 was trained; in replacement mode with the character on black (pixels whose reference mask has no channel above 0.1, core's rule for the VAE reference), as the authors require (issue #30). |
+| `pose_video_mask`           | IMAGE               | Colored driving mask, as long as `pose_video` (a mismatch is an error). Held on its last frame like the pose. |
+| `reference_image_mask`      | IMAGE               | Colored reference mask.                                               |
+| `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for.                     |
+| `pose_strength`             | FLOAT, default 1.0  | Passed to `WanSCAILToVideo`.                                          |
+| `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Passed as `pose_start` / `pose_end`. start > end is an error. |
+| `previous_frame_count`      | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off. SCAIL-2 was trained with 5. Snapped down to the 4k+1 grid. |
+
+`width` and `height` must be divisible by 32 (the pose runs at half
+resolution through the /16 patch grid); anything else is an error. 512 x 896
+and 704 x 1280 are the sizes the authors use.
+
+Every chunk runs the full `frames_per_chunk`, the last one too: SCAIL-2 was
+trained on 65-81 frame segments (issue #16) and a short last chunk is off its
+training distribution. The pose and its mask are held on their last frame up
+to the end of the last chunk, and the output is cut to `total_frames`. A
+`frames_per_chunk` outside 65-81 is logged. The anchor is the raw decoded
+frames, with no colour correction; `seed_mode` increment gives every chunk a
+new seed, the authors' fix for brightness drift in loops (issue #11).
+
+Recommended LoRAs and settings, with their sources:
+
+| Setup | LoRAs | Sampling | Source |
+|-------|-------|----------|--------|
+| Default (animation or replacement) | `lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16` @ 0.8 + `wan2.1_SCAIL_2_DPO_lora_bf16` @ 1.0 | the node's defaults: shift 8, euler / simple, 6 steps, cfg 1 | official ComfyUI template, Kijai's core PR tests |
+| Replacement, optionally with relight | `lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16` (+ `wan2.1_SCAIL_2_relight_lora_bf16`) | not published: strengths and steps are not given; the defaults above are a starting point | SCAIL-2 authors (issues #21, #25, #30) |
+| The authors' LoRA example | lightx2v I2V rank128 @ 1.0 | shift 1, 8 steps, cfg 1, `uni_pc` | SCAIL-2 README |
+| No distill LoRA | - | shift 5, 40-50 steps, cfg 4 | SCAIL-2 authors (issue #29) |
+
+Prompt: SCAIL-2 wants a long, descriptive prompt that describes the resulting
+video; in replacement mode, the video after the replacement.
+
 ### frames_per_chunk by VRAM
 
 Per-chunk VRAM is what one plain core-node -> `SamplerCustom` run of that
@@ -359,6 +455,8 @@ not new.
   produced and cropped. Examples for 15 s at 24 fps = 360 frames:
   Animate 2, chunk 81: `81 + 81 + 81 + 81 + 41 -> 361 produced -> 360 frames`;
   Animate, chunk 77, overlap 5: `77 + 77 + 77 + 77 + 73 -> 361 produced -> 360 frames`.
+  SCAIL-2 is the exception: its last chunk runs the full length too,
+  `81 + 81 + 81 + 81 + 81 -> 385 produced -> 360 frames`.
 - The loop is driven by the frames actually decoded, not by the plan, so the
   output is exactly `total_frames` long.
 - If `total_frames` exceeds the pose video, a warning is printed and the last
@@ -385,10 +483,10 @@ python -m pytest tests
 ```
 
 `tests/libs/test_chunking.py` covers the length math and
-`tests/test_package.py` the node contract of all eleven nodes, both without
+`tests/test_package.py` the node contract of all fourteen nodes, both without
 torch or ComfyUI:
 `python -m pytest tests/test_package.py tests/libs/test_chunking.py`.
-`tests/pipelines/test_long_video.py` runs both samplers' chunk loop against
+`tests/pipelines/test_long_video*.py` run the samplers' chunk loop against
 stubbed core nodes with real CPU tensors; it is skipped when torch is not
 installed. The preprocess tests (`tests/nodes/test_nodes_*.py`,
 `tests/pipelines/test_pose.py`, `tests/pipelines/test_sam3_1_multiplex_*.py`,

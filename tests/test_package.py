@@ -7,9 +7,11 @@ import inspect
 
 import pytest
 
+# id -> (display name, core node, category)
 SAMPLERS = {
-    "BCVWanAnimateLongVideoSampler": ("Wan Animate Long Video Sampler", "WanAnimateToVideo"),
-    "BCVWanAnimate2LongVideoSampler": ("Wan Animate 2 Long Video Sampler", "WanAnimate2ToVideo"),
+    "BCVWanAnimateLongVideoSampler": ("Wan Animate Long Video Sampler", "WanAnimateToVideo", "BCVideoNodes/Wan/Animate"),
+    "BCVWanAnimate2LongVideoSampler": ("Wan Animate 2 Long Video Sampler", "WanAnimate2ToVideo", "BCVideoNodes/Wan/Animate"),
+    "BCVWanSCAIL2LongVideoSampler": ("Wan SCAIL-2 Long Video Sampler", "WanSCAILToVideo", "BCVideoNodes/Wan/SCAIL"),
 }
 
 # id -> (display name, category, output names)
@@ -26,6 +28,9 @@ PREPROCESS = {
                                 ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes")),
     "BCVWanAnimatePreprocessGuard": ("WanAnimate Preprocess Guard", "BCVideoNodes/Wan/Animate",
                                      ("mask", "pose_data", "report", "metrics", "timeline")),
+    "BCVSCAIL2ColoredMask": ("SCAIL-2 Colored Mask", "BCVideoNodes/Wan/SCAIL", ("pose_video_mask", "reference_image_mask")),
+    "BCVSCAIL2Preprocess": ("SCAIL-2 Preprocess", "BCVideoNodes/Wan/SCAIL",
+                            ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")),
 }
 
 
@@ -38,20 +43,20 @@ def test_mappings():
 @pytest.mark.parametrize("node_id", sorted(SAMPLERS))
 def test_node_contract(node_id):
     nodes = importlib.import_module("bcvideonodes")
-    display_name, animate_node = SAMPLERS[node_id]
+    display_name, animate_node, category = SAMPLERS[node_id]
     assert nodes.NODE_DISPLAY_NAME_MAPPINGS[node_id] == display_name
 
     cls = nodes.NODE_CLASS_MAPPINGS[node_id]
     assert cls.__name__ == node_id
     assert cls.ANIMATE_NODE == animate_node
-    assert cls.CATEGORY == "BCVideoNodes/Wan/Animate"
+    assert cls.CATEGORY == category
     assert cls.DESCRIPTION
     assert len(cls.RETURN_TYPES) == len(cls.RETURN_NAMES) == 3
     assert callable(getattr(cls, cls.FUNCTION))
     assert inspect.ismethod(cls.INPUT_TYPES)
     # the node-specific inputs are widgets/links the core node also has
     required, optional = cls._animate_inputs(16384)
-    assert required and optional
+    assert required
     assert not (set(required) & set(optional))
 
 
