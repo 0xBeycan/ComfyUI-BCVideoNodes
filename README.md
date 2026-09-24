@@ -19,9 +19,9 @@ Animate or SCAIL-2 video of exactly that length.
 | **WanAnimate Preprocess Guard** | `BCVWanAnimatePreprocessGuard` | `BCVideoNodes/Wan/Animate` |
 | **Wan Animate Long Video Sampler** | `BCVWanAnimateLongVideoSampler` | `BCVideoNodes/Wan/Animate` |
 | **Wan Animate 2 Long Video Sampler** | `BCVWanAnimate2LongVideoSampler` | `BCVideoNodes/Wan/Animate` |
-| **SCAIL-2 Colored Mask** | `BCVSCAIL2ColoredMask` | `BCVideoNodes/Wan/SCAIL` |
-| **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/Wan/SCAIL` |
-| **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/Wan/SCAIL` |
+| **SCAIL-2 Colored Mask** | `BCVSCAIL2ColoredMask` | `BCVideoNodes/SCAIL` |
+| **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/SCAIL` |
+| **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/SCAIL` |
 
 ## Preprocess nodes
 
@@ -203,7 +203,7 @@ The three samplers, one for each core conditioning node:
 |-----------------------------------|----------------------|-------------------|
 | **Wan Animate Long Video Sampler** (`BCVWanAnimateLongVideoSampler`)   | `WanAnimateToVideo`  | Wan 2.2 Animate   |
 | **Wan Animate 2 Long Video Sampler** (`BCVWanAnimate2LongVideoSampler`) | `WanAnimate2ToVideo` | Wan Animate 2     |
-| **SCAIL-2 Long Video Sampler** (`BCVSCAIL2LongVideoSampler`) | `WanSCAILToVideo` | Wan 2.1 SCAIL-2 |
+| **SCAIL-2 Long Video Sampler** (`BCVSCAIL2LongVideoSampler`) | `WanSCAILToVideo` | SCAIL-2 |
 
 All three depend on ComfyUI core and torch only.
 
@@ -362,7 +362,7 @@ distilled checkpoint.
 
 #### SCAIL-2 Long Video Sampler (`WanSCAILToVideo`)
 
-Wan 2.1 SCAIL-2 in either of its two modes, from the same node:
+SCAIL-2 in either of its two modes, from the same node:
 
 - **Animation mode** (`replacement_mode` off): the reference character is
   animated by the driving video. Needs the reference image with its own

@@ -36,7 +36,7 @@ pipelines/           long_video (the chunk loop), pose, face, scail2 (the colore
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, rtmw/, yolo/, sam3_1_multiplex/ (adapter, loader,
-                     postprocess), wan_animate/, wan_animate2/, wan_scail2/
+                     postprocess), wan_animate/, wan_animate2/, scail2/
 libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, config_widgets, pose_data,
                      pose_utils/ (vendored, with its LICENSE)
 scripts/             offline model conversion and upload (ComfyUI-free)
@@ -100,7 +100,7 @@ and patch underscore names through the `Names` tables.
   `tests/test_package.py` and in the gate's `NODE_KEYS`.
 - The chunk loop (`pipelines/long_video.py`) knows the core node only through the adapter. The
   base class is the Wan Animate contract; a node with another contract overrides what differs
-  (`models/wan_scail2/adapter.py` overrides all of them):
+  (`models/scail2/adapter.py` overrides all of them):
   - `OUTPUTS` / `UPDATE_HINT`: the fewest outputs the core node must return, and the error hint;
   - `HELD_VIDEOS`: the videos the core node seeks by offset, held on their last frame up to the
     plan's reach; `OVERSHOOT`: why the plan runs past `total_frames`, for that log line;

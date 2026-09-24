@@ -2,8 +2,8 @@
 
 One node per core conditioning node: BCVWanAnimateLongVideoSampler wraps
 WanAnimateToVideo (Wan 2.2 Animate), BCVWanAnimate2LongVideoSampler wraps
-WanAnimate2ToVideo and BCVSCAIL2LongVideoSampler wraps WanSCAILToVideo (Wan 2.1
-SCAIL-2). The chunk loop is pipelines/long_video.py.
+WanAnimate2ToVideo and BCVSCAIL2LongVideoSampler wraps WanSCAILToVideo
+(SCAIL-2). The chunk loop is pipelines/long_video.py.
 """
 
 # comfy.* is imported inside the functions that use it, so this
@@ -164,7 +164,7 @@ class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
 
 class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanSCAILToVideo"
-    MODEL_TOOLTIP = "Wan 2.1 SCAIL-2 model. LoRA (lightx2v distill, SCAIL-2 DPO / relight) and model patches pass through unchanged; shift is applied here."
+    MODEL_TOOLTIP = "SCAIL-2 model. LoRA (lightx2v distill, SCAIL-2 DPO / relight) and model patches pass through unchanged; shift is applied here."
     DEFAULT_SHIFT = 8.0
     DEFAULT_SCHEDULER = "simple"
     DEFAULT_WIDTH = 704
@@ -172,8 +172,8 @@ class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     SIZE_MIN = 32
     SIZE_STEP = 32
     SIZE_TOOLTIP = "Must be divisible by 32 (the pose runs at half resolution through the /16 patch grid). 704x1280 (the authors: replacement and pose-driven are better at 704p) or 512x896 (less VRAM)."
-    CATEGORY = "BCVideoNodes/Wan/SCAIL"
-    DESCRIPTION = ("Generates an arbitrarily long Wan 2.1 SCAIL-2 video (animation or replacement mode) by chaining fixed-size "
+    CATEGORY = "BCVideoNodes/SCAIL"
+    DESCRIPTION = ("Generates an arbitrarily long SCAIL-2 video (animation or replacement mode) by chaining fixed-size "
                    "chunks internally, each seeded with the previous chunk's last previous_frame_count frames. Every chunk runs "
                    "the full frames_per_chunk (SCAIL-2 was trained on 65-81 frame segments); the output is cut to total_frames "
                    "(or the pose video length) exactly. Defaults: shift 8, simple, euler, 6 steps, cfg 1 give the sigmas the "

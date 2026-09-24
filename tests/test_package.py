@@ -11,7 +11,7 @@ import pytest
 SAMPLERS = {
     "BCVWanAnimateLongVideoSampler": ("Wan Animate Long Video Sampler", "WanAnimateToVideo", "BCVideoNodes/Wan/Animate"),
     "BCVWanAnimate2LongVideoSampler": ("Wan Animate 2 Long Video Sampler", "WanAnimate2ToVideo", "BCVideoNodes/Wan/Animate"),
-    "BCVSCAIL2LongVideoSampler": ("SCAIL-2 Long Video Sampler", "WanSCAILToVideo", "BCVideoNodes/Wan/SCAIL"),
+    "BCVSCAIL2LongVideoSampler": ("SCAIL-2 Long Video Sampler", "WanSCAILToVideo", "BCVideoNodes/SCAIL"),
 }
 
 # id -> (display name, category, output names)
@@ -28,8 +28,8 @@ PREPROCESS = {
                                 ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes")),
     "BCVWanAnimatePreprocessGuard": ("WanAnimate Preprocess Guard", "BCVideoNodes/Wan/Animate",
                                      ("mask", "pose_data", "report", "metrics", "timeline")),
-    "BCVSCAIL2ColoredMask": ("SCAIL-2 Colored Mask", "BCVideoNodes/Wan/SCAIL", ("pose_video_mask", "reference_image_mask")),
-    "BCVSCAIL2Preprocess": ("SCAIL-2 Preprocess", "BCVideoNodes/Wan/SCAIL",
+    "BCVSCAIL2ColoredMask": ("SCAIL-2 Colored Mask", "BCVideoNodes/SCAIL", ("pose_video_mask", "reference_image_mask")),
+    "BCVSCAIL2Preprocess": ("SCAIL-2 Preprocess", "BCVideoNodes/SCAIL",
                             ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")),
 }
 

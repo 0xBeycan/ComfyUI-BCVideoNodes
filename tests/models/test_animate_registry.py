@@ -10,7 +10,7 @@ pytest.importorskip("torch")
 from bcvideonodes.models.common import registry  # noqa: E402
 from bcvideonodes.models.wan_animate.adapter import WanAnimateAdapter  # noqa: E402
 from bcvideonodes.models.wan_animate2.adapter import WanAnimate2Adapter  # noqa: E402
-from bcvideonodes.models.wan_scail2.adapter import WanSCAIL2Adapter  # noqa: E402
+from bcvideonodes.models.scail2.adapter import SCAIL2Adapter  # noqa: E402
 
 
 def test_animate_family_in_registration_order():
@@ -20,6 +20,6 @@ def test_animate_family_in_registration_order():
 def test_animate_entries_are_the_adapters_under_their_core_node_ids():
     assert registry.get("animate", "WanAnimateToVideo") == registry.Entry(WanAnimateAdapter, None)
     assert registry.get("animate", "WanAnimate2ToVideo") == registry.Entry(WanAnimate2Adapter, None)
-    assert registry.get("animate", "WanSCAILToVideo") == registry.Entry(WanSCAIL2Adapter, None)
+    assert registry.get("animate", "WanSCAILToVideo") == registry.Entry(SCAIL2Adapter, None)
     for name in registry.names("animate"):
         assert registry.get("animate", name).implementation.ANIMATE_NODE == name

@@ -1,4 +1,4 @@
-"""WanSCAILToVideo (Wan 2.1 SCAIL-2) in the long-video loop.
+"""WanSCAILToVideo (SCAIL-2) in the long-video loop.
 
 The core node's chaining contract differs from Wan Animate's: it is seeded with previous_frames
 (the last previous_frame_count of them, VAE-encoded into the first latent frames and kept clean
@@ -59,7 +59,7 @@ def mask_convention(reference_mask):
     return None
 
 
-class WanSCAIL2Adapter(AnimateAdapter):
+class SCAIL2Adapter(AnimateAdapter):
     ANIMATE_NODE = "WanSCAILToVideo"
     OUTPUTS = 4  # positive, negative, latent, video_frame_offset
     UPDATE_HINT = "Update ComfyUI: this node needs the {} of SCAIL-2 (previous_frames, pose_video_mask)."

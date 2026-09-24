@@ -138,8 +138,8 @@ CHECK3_MODULES = [
     "models.wan_animate2",
     "models.wan_animate2.adapter",
     "models.wan_animate2.attention",
-    "models.wan_scail2",
-    "models.wan_scail2.adapter",
+    "models.scail2",
+    "models.scail2.adapter",
 ]
 # check 3: the heavy modules a checked module may pull in; every other module may pull in none.
 # "cv2" is the vendored pose_utils' cv2 and its submodules (E2).

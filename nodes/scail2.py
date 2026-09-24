@@ -4,7 +4,7 @@ chained nodes compute."""
 
 from .sam3_1_multiplex import BCVSAM3VideoTrack
 
-SCAIL = "BCVideoNodes/Wan/SCAIL"
+SCAIL = "BCVideoNodes/SCAIL"
 
 
 class BCVSCAIL2ColoredMask:
