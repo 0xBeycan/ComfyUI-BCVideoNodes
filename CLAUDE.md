@@ -203,6 +203,17 @@ multi-person) default to "ours" and are bit-identical there; features the owner 
 (the ViTPose flip test, the other SAM A/B switches, the M4 mask-threshold options) are removed;
 multi-person is phase 2; a failed download keeps its `.part` file.
 
+## Roadmap
+
+- SCAIL-2 pose-driven mode (planned, not started): the SCAIL-Pose pipeline
+  (https://github.com/zai-org/SCAIL-Pose/tree/519c7f54cb972e7f92684213b7ef6c3e05a8f3b2): SAM3
+  per person, NLF `nlf_l_multi_0.3.2` 3D pose, 3D cylinder render plus DWPose hands and face in
+  2D, and the skeleton in the person's colour on black as the driving mask. The pack runs
+  end-to-end mode only (the raw driving video as the pose input). When it is built it follows the
+  layers: the NLF model as its own `models/` package, the render in `pipelines/`, new preprocess
+  nodes; the SCAIL-2 sampler needs no change (it takes any pose video and colored mask).
+- Multi-person: phase 2 (see Closed decisions).
+
 ## Git and process
 
 - The owner's global rules (his user-level Claude configuration) apply: no commits on `main`,

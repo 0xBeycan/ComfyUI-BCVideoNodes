@@ -474,6 +474,21 @@ not new.
 - If `total_frames` exceeds the pose video, a warning is printed and the last
   pose frame is held for the remainder.
 
+## Roadmap
+
+- **SCAIL-2 pose-driven mode.** Today the pack runs SCAIL-2's end-to-end mode:
+  the raw driving video is the pose input. The pose-driven mode drives the
+  model with a rendered 3D skeleton instead, the pipeline of
+  [zai-org/SCAIL-Pose](https://github.com/zai-org/SCAIL-Pose/tree/519c7f54cb972e7f92684213b7ef6c3e05a8f3b2):
+  SAM3 isolates each person, NLF (`nlf_l_multi_0.3.2`) estimates the 3D pose,
+  the limbs are rendered as 3D cylinders and DWPose draws the hands and face
+  in 2D on top, and the driving mask is the skeleton itself in the person's
+  colour on black. It keeps the driving person's body shape and clothing
+  out of the result, and the SCAIL-2 authors report it works better at 704p.
+  Core's `SAM3DBody_Render` has a "scail" style as a lighter alternative;
+  its parity with the NLF render is unverified.
+- **Multi-person** (all nodes): a later phase.
+
 ## Install
 
 Clone into `ComfyUI/custom_nodes/`, install the requirements into ComfyUI's
