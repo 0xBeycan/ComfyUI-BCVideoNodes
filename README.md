@@ -270,7 +270,8 @@ Shared widgets:
 | `steps`, `denoise`         | 6, 1.0         | Schedule length (`BasicScheduler`).                                      |
 | `cfg`                      | 1.0            |                                                                          |
 | `seed`, `seed_mode`        | -, increment   | `increment`: chunk i uses `seed + i`. `fixed`: every chunk uses `seed`.  |
-| `last_chunk`               | fit (SCAIL-2: full) | How long the last chunk runs. `fit`: it shrinks to the frames still needed, snapped up to 4k+1. `full`: it runs the full `frames_per_chunk`, with the driving inputs held on their last frame. Either way the output is exactly `total_frames`; the extra frames are cut. See Length math. The last widget of every sampler. |
+| `last_chunk`               | fit (SCAIL-2: full) | How long the last chunk runs. `fit`: it shrinks to the frames still needed, snapped up to 4k+1. `full`: it runs the full `frames_per_chunk`, with the driving inputs extended past their end (`tail_padding`). Either way the output is exactly `total_frames`; the extra frames are cut. See Length math. |
+| `tail_padding`             | last_frame     | How the driving inputs are extended past their last frame when a chunk needs frames beyond them. `last_frame`: the last frame is repeated (the motion stops). `ping_pong`: the input plays backwards from its end, as the official Wan Animate code pads (the motion continues along the same path in reverse). See Tail padding. The last widget of every sampler. |
 
 The sampling stack is built once per run in this order:
 `ModelSamplingSD3(model, shift)` -> `BasicScheduler(patched, ...)` (or
@@ -392,7 +393,7 @@ checks that list with ComfyUI's own scheduler.
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|
 | `clip_vision`               | CLIP_VISION         | `clip_vision_h`. The reference is encoded once per run, stretched (crop `none`) as SCAIL-2 was trained; in replacement mode with the character on black (pixels whose reference mask has no channel above 0.1, core's rule for the VAE reference), as the authors require (issue #30). |
-| `pose_video_mask`           | IMAGE               | Colored driving mask, as long as `pose_video` (a mismatch is an error). Held on its last frame like the pose. |
+| `pose_video_mask`           | IMAGE               | Colored driving mask, as long as `pose_video` (a mismatch is an error). Extended past its end like the pose (`tail_padding`). |
 | `reference_image_mask`      | IMAGE               | Colored reference mask.                                               |
 | `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for.                     |
 | `pose_strength`             | FLOAT, default 1.0  | Passed to `WanSCAILToVideo`.                                          |
@@ -406,7 +407,7 @@ and 704 x 1280 are the sizes the authors use.
 `last_chunk` defaults to `full` here: every chunk runs the full
 `frames_per_chunk`, the last one too, because SCAIL-2 was trained on 65-81
 frame segments (issue #16) and a short last chunk is off its training
-distribution. The pose and its mask are held on their last frame up to the
+distribution. The pose and its mask are extended past their end (`tail_padding`) up to the
 end of the last chunk, and the output is cut to `total_frames`. `fit` gives
 the Animate behaviour, a last chunk shortened to what is left. A
 `frames_per_chunk` outside 65-81 is logged. The anchor is the raw decoded
@@ -459,8 +460,9 @@ not new.
     `frames_per_chunk`, so at most 3 extra frames are produced and cut.
   - `full` (default of SCAIL-2): the last chunk runs the full
     `frames_per_chunk` like every other; the driving inputs (pose, and face
-    and background for Animate, the pose mask for SCAIL-2) are held on their
-    last frame up to its end, and everything past `total_frames` is cut.
+    and background for Animate, the pose mask for SCAIL-2) are extended past
+    their end up to its end (see Tail padding), and everything past
+    `total_frames` is cut.
 
   Example, 240 frames, chunk 81, overlap 5:
   `fit`: `81 + 81 + 81 + 13 -> 241 produced -> 240 frames`;
@@ -471,8 +473,34 @@ not new.
   Animate, chunk 77, overlap 5: `77 + 77 + 77 + 77 + 73 -> 361 produced -> 360 frames`.
 - The loop is driven by the frames actually decoded, not by the plan, so the
   output is exactly `total_frames` long.
-- If `total_frames` exceeds the pose video, a warning is printed and the last
-  pose frame is held for the remainder.
+- If `total_frames` exceeds the pose video, a warning is printed and the
+  driving inputs are extended for the remainder (see Tail padding); those
+  frames are part of the output.
+
+### Tail padding
+
+Whenever a chunk needs driving frames past the end of an input (the `fit`
+snap-up of at most 3 frames, `last_chunk` `full`, or `total_frames` longer
+than the input) the loop extends the driving inputs up front: the pose, and
+face and background for Animate, the pose mask for SCAIL-2. The Animate
+`character_mask` is never extended: past its end the character may be
+anywhere, so core leaves those mask rows unknown. The `tail_padding` widget
+picks how:
+
+- `last_frame` (default of all three samplers): the last frame is repeated;
+  the motion stops.
+- `ping_pong`: the input plays backwards from its end and turns forward again
+  at its first frame, without repeating the frame it turns on; the padding of
+  the official Wan 2.2 Animate (`inputs_padding`) and Wan-Animate-2
+  (`zigzag_padding`) code. A 10-frame input (frames 0-9) padded by 6 gets
+  `8 7 6 5 4 3`; padded further it goes `... 1 0 1 2 ...`. A 1-frame input
+  repeats its frame.
+
+Padded frames past `total_frames` are cut from the output; they only affect
+the real frames of the same chunk, which attend to them. When `total_frames`
+is longer than the input, the output past the input's end is the padding.
+The log line names the padding used (`last frame held to ...` or
+`ping_pong padded to ...`).
 
 ## Roadmap
 

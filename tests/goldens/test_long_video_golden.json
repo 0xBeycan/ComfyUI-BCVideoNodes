@@ -27,6 +27,20 @@
   "torch.float32",
   "c295587bce8a97af68297fe916f7846f"
  ],
+ "a1_ping_pong_full": [
+  "2faea658103f9d1e244f858630591433",
+  "45edb01ccf4b4257e1e5e5f7393931c0",
+  "81 + 81 + 81 + 81 -> 309 produced -> 240 frames (pose 240, overlap 5)",
+  "torch.float32",
+  "05445e8ff5b0fcacd131f965cd69b27e"
+ ],
+ "a1_ping_pong_hold": [
+  "95d2cc5b05d9df9060c0d2fa96f817d1",
+  "ac638aae5a803964040dbee72d8dbbb9",
+  "81 + 81 + 81 + 25 -> 253 produced -> 250 frames (pose 100, overlap 5)",
+  "torch.float32",
+  "c579b86957ddee0b5dbcc2c514b424b0"
+ ],
  "a1_replacement_mask": [
   "cee0dac92232423cd5a53b5402e6a1ec",
   "3441b2fe623a42094d081dff344baf6b",
@@ -75,6 +89,20 @@
   "81 + 81 + 81 + 81 + 41 -> 361 produced -> 360 frames (pose 360, overlap 1)",
   "torch.float32",
   "e18ca3aa4279ab83928e2b30e4473879"
+ ],
+ "a2_ping_pong_full": [
+  "9ef633684b288678d11ec933cc320914",
+  "a2fa7da1dd67d43beca35a96127a8794",
+  "81 + 81 + 81 + 81 -> 321 produced -> 250 frames (pose 250, overlap 1)",
+  "torch.float32",
+  "7d42f840e740e93859b60796c3821fe7"
+ ],
+ "a2_ping_pong_hold": [
+  "fb8d8ccfc63ad0b3675725dd5dd6cdd6",
+  "e1f0857813735cb4391c95f0373f3455",
+  "49 + 49 + 49 + 49 + 49 + 13 -> 253 produced -> 250 frames (pose 100, overlap 1)",
+  "torch.float32",
+  "b2d1fc6ee4bbb17864865995ac7382dd"
  ],
  "error_empty_schedule": [
   "ValueError",
@@ -183,6 +211,20 @@
   "81 + 81 + 81 -> 225 produced -> 200 frames (pose 200, overlap 9)",
   "torch.float32",
   "04be4a827586f8f422610b68743e5ea4"
+ ],
+ "s2_ping_pong_full": [
+  "2faea658103f9d1e244f858630591433",
+  "352b58cbd14b464e80fe89c867ba33ea",
+  "81 + 81 + 81 + 81 -> 309 produced -> 240 frames (pose 240, overlap 5)",
+  "torch.float32",
+  "ddbdfb1344f47fbfa99ada1c0c39bfee"
+ ],
+ "s2_ping_pong_hold": [
+  "95d2cc5b05d9df9060c0d2fa96f817d1",
+  "d84bd1fed5d8227500fb9b54062a1a06",
+  "81 + 81 + 81 + 81 -> 309 produced -> 250 frames (pose 100, overlap 5)",
+  "torch.float32",
+  "4486827efe0483bddd6779163e07a678"
  ],
  "s2_replacement": [
   "2504d289b0911e69d31e375e42b8ce94",

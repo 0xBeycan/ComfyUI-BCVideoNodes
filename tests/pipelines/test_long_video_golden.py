@@ -178,6 +178,16 @@ SCENARIOS = {
     "a1_last_chunk_full": lambda module: dict(node=ANIMATE1, pose_frames=240, last_chunk="full", **replacement_inputs(240)),
     "a2_last_chunk_full": lambda module: dict(node=ANIMATE2, pose_frames=250, last_chunk="full"),
     "s2_last_chunk_fit": lambda module: dict(node=SCAIL2, pose_frames=240, last_chunk="fit"),
+    # tail_padding ping_pong, on a last chunk run past the input (full) and on total_frames past it
+    "a1_ping_pong_full": lambda module: dict(node=ANIMATE1, pose_frames=240, last_chunk="full", tail_padding="ping_pong",
+                                             **replacement_inputs(240)),
+    "a1_ping_pong_hold": lambda module: dict(node=ANIMATE1, pose_frames=100, total_frames=250, tail_padding="ping_pong",
+                                             **replacement_inputs(100)),
+    "a2_ping_pong_full": lambda module: dict(node=ANIMATE2, pose_frames=250, last_chunk="full", tail_padding="ping_pong"),
+    "a2_ping_pong_hold": lambda module: dict(node=ANIMATE2, pose_frames=100, total_frames=250, frames_per_chunk=49,
+                                             tail_padding="ping_pong"),
+    "s2_ping_pong_full": lambda module: dict(node=SCAIL2, pose_frames=240, tail_padding="ping_pong"),
+    "s2_ping_pong_hold": lambda module: dict(node=SCAIL2, pose_frames=100, total_frames=250, tail_padding="ping_pong"),
 }
 
 ERRORS = {

@@ -9,57 +9,16 @@ frame-index pose video, output frame i must then show driving frame i. Skipped w
 installed.
 """
 
-import sys
-
 import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import (ANIMATE1, ANIMATE2, SCAIL2, Calls, FakeWanAnimate2ToVideo,  # noqa: E402,F401
-                           FakeWanAnimateToVideo, IndexVAE, aligned, node_module, run)
+from sampler_fakes import (ANIMATE1, ANIMATE2, SCAIL2, Calls, IndexVAE, aligned, animate_aligned,  # noqa: E402,F401
+                           driving_videos, node_module, run)
 
 NODES = [ANIMATE1, ANIMATE2, SCAIL2]
 POLICIES = ["fit", "full"]
 OVERLAP = {ANIMATE1: 5, ANIMATE2: 1, SCAIL2: 5}
-
-
-def pose_conditioned(core):
-    """`core` that also puts the pose window it reads (`length` frames from the moved-back
-    offset), VAE-encoded behind the reference latent it trims, into the conditioning as
-    pose_video_latent, and records how long the pose it was handed is."""
-
-    class PoseConditioned(core):
-        @classmethod
-        def EXECUTE_NORMALIZED(cls, **kwargs):
-            output = core.EXECUTE_NORMALIZED(**kwargs)
-            positive, negative, latent, trim_latent, trim_image, offset = output.args
-            length, pose_video, vae = kwargs["length"], kwargs["pose_video"], kwargs["vae"]
-            window = pose_video[offset - length:offset]
-            assert window.shape[0] == length, "the pose must reach the end of every chunk"
-            encoded = vae.encode(window)
-            reference = torch.zeros(*encoded.shape[:2], trim_latent, *encoded.shape[3:])
-            values = {"pose_video_latent": torch.cat((reference, encoded), dim=2)}
-            Calls.animate[-1]["pose_in"] = pose_video.shape[0]
-            positive = [[c[0], {**c[1], **values}] for c in positive]
-            return type(output)(positive, negative, latent, trim_latent, trim_image, offset)
-
-    return PoseConditioned
-
-
-@pytest.fixture
-def animate_aligned(aligned, monkeypatch):
-    """`aligned`, with both Animate fakes pose-conditioned."""
-    mappings = sys.modules["nodes"].NODE_CLASS_MAPPINGS
-    monkeypatch.setitem(mappings, "WanAnimateToVideo", pose_conditioned(FakeWanAnimateToVideo))
-    monkeypatch.setitem(mappings, "WanAnimate2ToVideo", pose_conditioned(FakeWanAnimate2ToVideo))
-    return aligned
-
-
-def driving_videos(frames):
-    """Face and background videos of `frames` frames carrying the frame index, like the pose."""
-    index = torch.arange(frames, dtype=torch.float32)
-    return dict(face_video=index.view(-1, 1, 1, 1).expand(-1, 8, 8, 3).contiguous(),
-                background_video=index.view(-1, 1, 1, 1).expand(-1, 64, 32, 3).contiguous())
 
 
 def test_the_defaults(node_module):

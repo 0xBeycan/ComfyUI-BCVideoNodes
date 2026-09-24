@@ -10,6 +10,7 @@ WanAnimate2ToVideo and BCVSCAIL2LongVideoSampler wraps WanSCAILToVideo
 # module (and the package __init__) imports without a ComfyUI install.
 from ..libs.chunking import FIT, FULL, LAST_CHUNK
 from ..libs.sigmas import WAN_BETA
+from ..libs.video import LAST_FRAME, TAIL_PADDING
 
 
 def _combo_default(options, preferred):
@@ -84,7 +85,8 @@ class _LongVideoSampler:
                 "seed_mode": (["increment", "fixed"], {"default": "increment", "tooltip": "increment: chunk i uses seed + i. fixed: every chunk uses seed."}),
                 **required,
                 # after every node's own widgets: saved workflows store widget values by position
-                "last_chunk": (list(LAST_CHUNK), {"default": cls.DEFAULT_LAST_CHUNK, "tooltip": "fit: the last chunk shrinks to the frames still needed (snapped up to 4k+1). full: the last chunk runs the full frames_per_chunk, with the driving inputs held on their last frame. Either way the output is exactly total_frames; the extra frames are cut."}),
+                "last_chunk": (list(LAST_CHUNK), {"default": cls.DEFAULT_LAST_CHUNK, "tooltip": "fit: the last chunk shrinks to the frames still needed (snapped up to 4k+1). full: the last chunk runs the full frames_per_chunk, with the driving inputs extended past their end as tail_padding says. Either way the output is exactly total_frames; the extra frames are cut."}),
+                "tail_padding": (list(TAIL_PADDING), {"default": LAST_FRAME, "tooltip": "How the driving inputs are extended past their last frame when a chunk needs frames beyond them (the fit snap-up, last_chunk full, or total_frames longer than the input). last_frame: the last frame is repeated (the motion stops). ping_pong: the input plays backwards from its end, as the official Wan Animate code pads (the motion continues along the same path in reverse). Padded frames past total_frames are cut from the output; they only affect the real frames of the same chunk. When total_frames is longer than the input, the output past the input's end is the padding."}),
             },
             "optional": {
                 **optional,
@@ -113,6 +115,7 @@ class _LongVideoSampler:
         seed,
         seed_mode,
         last_chunk,
+        tail_padding,
         sigmas_override=None,
         **animate_inputs,
     ):
@@ -120,7 +123,8 @@ class _LongVideoSampler:
 
         return long_video.generate(self.ANIMATE_NODE, type(self).__name__, model, positive, negative, vae, reference_image,
                                    pose_video, width, height, frames_per_chunk, total_frames, shift, sampler_name, scheduler,
-                                   steps, denoise, cfg, seed, seed_mode, last_chunk, sigmas_override, animate_inputs)
+                                   steps, denoise, cfg, seed, seed_mode, last_chunk, tail_padding, sigmas_override,
+                                   animate_inputs)
 
 
 class BCVWanAnimateLongVideoSampler(_LongVideoSampler):

@@ -20,8 +20,9 @@ class AnimateAdapter:
     # the fewest outputs the core node must return, and what to tell the user when it returns fewer
     OUTPUTS = 6  # positive, negative, latent, trim_latent, trim_image, video_frame_offset
     UPDATE_HINT = "Update ComfyUI: this node needs the {} that returns trim_latent / trim_image / video_frame_offset."
-    # the videos the core node seeks by video_frame_offset: held on their last frame up to the
-    # last frame the plan samples ("pose_video" is the loop's own input, the rest pass through)
+    # the videos the core node seeks by video_frame_offset: extended past their end up to the
+    # last frame the plan samples, as the tail_padding widget says (libs/video.TAIL_PADDING)
+    # ("pose_video" is the loop's own input, the rest pass through)
     HELD_VIDEOS = ("pose_video", "face_video", "background_video")
 
     def __init__(self, node_name, last_chunk):

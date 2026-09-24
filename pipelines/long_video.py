@@ -9,7 +9,8 @@ ComfyUI's own registry, so this stays in step with core. What differs per core
 conditioning node is its animate adapter (models/common/animate.py), picked from
 the registry by the node id: the core call's continuation inputs, its outputs, the videos it
 seeks and the input checks. The chunk-length policy is the node's last_chunk widget
-(libs/chunking.LAST_CHUNK).
+(libs/chunking.LAST_CHUNK); its tail_padding widget (libs/video.TAIL_PADDING) says how the
+driving videos are extended past their end.
 """
 
 import logging
@@ -19,7 +20,7 @@ import logging
 from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frames, snap_down
 from ..libs.log import active_bar, log_beside_bar
 from ..libs.sigmas import WAN_BETA, wan_beta_sigmas
-from ..libs.video import hold_last
+from ..libs.video import TAIL_PADDING
 from ..models.common import registry
 from ..models.common.core_nodes import call_node, node_class
 
@@ -78,6 +79,7 @@ def generate(
     seed,
     seed_mode,
     last_chunk,
+    tail_padding,
     sigmas_override,
     animate_inputs,
 ):
@@ -88,6 +90,9 @@ def generate(
     if last_chunk not in LAST_CHUNK:
         raise ValueError("last_chunk must be one of {}; found {!r}.".format(", ".join(LAST_CHUNK), last_chunk))
     chunk_length, overshoot = LAST_CHUNK[last_chunk]
+    if tail_padding not in TAIL_PADDING:
+        raise ValueError("tail_padding must be one of {}; found {!r}.".format(", ".join(TAIL_PADDING), tail_padding))
+    pad, padded = TAIL_PADDING[tail_padding]
     adapter = registry.get("animate", animate_node).implementation(node_name, last_chunk)
     log_prefix = "[{}]".format(node_name)
     update_hint = adapter.UPDATE_HINT.format(animate_node)
@@ -111,9 +116,10 @@ def generate(
     # only the pose within a chunk; once the offset runs past a video it errors (Animate 2
     # pose) or drops it (Animate: pose, face, background, mask; SCAIL-2: pose, pose mask), and
     # inside the last chunk a short face video loses its motion, a background turns grey and
-    # the mask rows turn unknown. Hold the last frame of the adapter's HELD_VIDEOS up front
-    # instead. The Animate character mask is not held: past its end the character may be
-    # anywhere, so core leaves those rows unknown.
+    # the mask rows turn unknown. Extend the adapter's HELD_VIDEOS up front instead, as
+    # tail_padding says (the last frame held, or the video played backwards from its end). The
+    # Animate character mask is not extended: past its end the character may be anywhere, so
+    # core leaves those rows unknown.
     adapter.check_videos(pose_video, animate_inputs)
     reach = max(total, produced_frames(plan, overlap))
     short = {}
@@ -123,16 +129,16 @@ def generate(
             continue
         short[name] = int(video.shape[0])
         if name == "pose_video":
-            pose_video = hold_last(video, reach)
+            pose_video = pad(video, reach)
         else:
-            animate_inputs[name] = hold_last(video, reach)
+            animate_inputs[name] = pad(video, reach)
     if short:
         shorter_than_total = [name for name, frames in short.items() if frames < total]
         why = ["total_frames ({}) exceeds {}".format(total, ", ".join(shorter_than_total))] if shorter_than_total else []
         if reach > total:
             why.append("{} and runs {} frames past total_frames".format(overshoot, reach - total))
         (logging.warning if shorter_than_total else logging.info)(
-            "%s last frame held to %d frames: %s (%s).", log_prefix, reach,
+            "%s %s to %d frames: %s (%s).", log_prefix, padded, reach,
             ", ".join("{} +{}".format(name, reach - frames) for name, frames in short.items()), "; ".join(why))
 
     patched = adapter.patch_model(call_node("ModelSamplingSD3", model=model, shift=shift)[0], animate_inputs)

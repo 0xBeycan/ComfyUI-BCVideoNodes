@@ -482,6 +482,45 @@ def aligned(node_module, monkeypatch):
     return node_module
 
 
+def pose_conditioned(core):
+    """`core` that also puts the pose window it reads (`length` frames from the moved-back
+    offset), VAE-encoded behind the reference latent it trims, into the conditioning as
+    pose_video_latent, and records how long the pose it was handed is."""
+
+    class PoseConditioned(core):
+        @classmethod
+        def EXECUTE_NORMALIZED(cls, **kwargs):
+            output = core.EXECUTE_NORMALIZED(**kwargs)
+            positive, negative, latent, trim_latent, trim_image, offset = output.args
+            length, pose_video, vae = kwargs["length"], kwargs["pose_video"], kwargs["vae"]
+            window = pose_video[offset - length:offset]
+            assert window.shape[0] == length, "the pose must reach the end of every chunk"
+            encoded = vae.encode(window)
+            reference = torch.zeros(*encoded.shape[:2], trim_latent, *encoded.shape[3:])
+            values = {"pose_video_latent": torch.cat((reference, encoded), dim=2)}
+            Calls.animate[-1]["pose_in"] = pose_video.shape[0]
+            positive = [[c[0], {**c[1], **values}] for c in positive]
+            return type(output)(positive, negative, latent, trim_latent, trim_image, offset)
+
+    return PoseConditioned
+
+
+@pytest.fixture
+def animate_aligned(aligned, monkeypatch):
+    """`aligned`, with both Animate fakes pose-conditioned."""
+    mappings = sys.modules["nodes"].NODE_CLASS_MAPPINGS
+    monkeypatch.setitem(mappings, "WanAnimateToVideo", pose_conditioned(FakeWanAnimateToVideo))
+    monkeypatch.setitem(mappings, "WanAnimate2ToVideo", pose_conditioned(FakeWanAnimate2ToVideo))
+    return aligned
+
+
+def driving_videos(frames):
+    """Face and background videos of `frames` frames carrying the frame index, like the pose."""
+    index = torch.arange(frames, dtype=torch.float32)
+    return dict(face_video=index.view(-1, 1, 1, 1).expand(-1, 8, 8, 3).contiguous(),
+                background_video=index.view(-1, 1, 1, 1).expand(-1, 64, 32, 3).contiguous())
+
+
 NODE_DEFAULTS = {
     ANIMATE1: dict(continue_motion_max_frames=5),
     ANIMATE2: dict(reference_image_strength=1.0, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=0.0),
@@ -522,6 +561,7 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
     )
     kwargs.update(NODE_DEFAULTS[node])
     kwargs["last_chunk"] = getattr(module, node).DEFAULT_LAST_CHUNK  # the widget default, as the graph executor fills it
+    kwargs["tail_padding"] = "last_frame"  # the widget default of every sampler
     if node == SCAIL2:
         # the colored driving mask: the frame index as well, so its seek is visible
         kwargs["pose_video_mask"] = kwargs["pose_video"].clone()
