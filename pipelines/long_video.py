@@ -5,12 +5,15 @@ chunk's last frames (continue_motion, or previous_frames for SCAIL-2) and the dr
 read from the returned video_frame_offset, so they stay aligned across the whole run.
 The sampling stack (ModelSamplingSD3 -> BasicScheduler -> KSamplerSelect ->
 SamplerCustom -> TrimVideoLatent -> VAEDecode) is called node-by-node from
-ComfyUI's own registry, so this stays in step with core. What differs per core
+ComfyUI's own registry, so this stays in step with core (the wan_dpmpp sampler is built the
+way core's SamplerDPMPP_2M_SDE builds its sampler). What differs per core
 conditioning node is its animate adapter (models/common/animate.py), picked from
 the registry by the node id: the core call's continuation inputs, its outputs, the videos it
 seeks and the input checks. The chunk-length policy is the node's last_chunk widget
 (libs/chunking.LAST_CHUNK); its tail_padding widget (libs/video.TAIL_PADDING) says how the
-driving videos are extended past their end.
+driving videos are extended past their end. With its color_anchor_strength widget above 0 every
+chained chunk is colour-matched to the frames it was seeded with (libs/color.py), in the region
+the adapter names.
 """
 
 import logging
@@ -18,15 +21,16 @@ import logging
 # torch and comfy.* are imported inside the functions that use them, so this
 # module (and the package __init__) imports without a ComfyUI install.
 from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frames, snap_down
+from ..libs.color import apply_transfer, feather, lab_transfer
 from ..libs.log import active_bar, log_beside_bar
-from ..libs.sigmas import WAN_BETA, wan_beta_sigmas
+from ..libs.sigmas import WAN_BETA, WAN_DPMPP, wan_beta_sigmas
 from ..libs.video import TAIL_PADDING
 from ..models.common import registry
 from ..models.common.core_nodes import call_node, node_class
 
 
 class _StepLogger:
-    """Wraps the KSamplerSelect sampler so every denoising step is logged with
+    """Wraps the sampler (KSamplerSelect's, or wan_dpmpp's) so every denoising step is logged with
     its chunk and the console bar carries the chunk label. SamplerCustom
     builds its own callback (preview + progress bar) and CFGGuider hands it to
     sampler.sample; that is the one point on the core chain where the step is
@@ -81,10 +85,12 @@ def generate(
     last_chunk,
     tail_padding,
     sigmas_override,
+    color_anchor_strength,
     animate_inputs,
 ):
     import torch
     import comfy.model_management
+    import comfy.samplers
     import comfy.utils
 
     if last_chunk not in LAST_CHUNK:
@@ -152,7 +158,12 @@ def generate(
     if sigmas.numel() < 2:
         raise ValueError("The sigma schedule is empty (denoise too low, or an empty sigmas_override).")
     logging.info("%s sigmas (%s): %s", log_prefix, "override" if sigmas_override is not None else scheduler, ", ".join("{:.4f}".format(float(v)) for v in sigmas))
-    sampler = _StepLogger(call_node("KSamplerSelect", sampler_name=sampler_name)[0], log_prefix)
+    if sampler_name == WAN_DPMPP:
+        # as core's SamplerDPMPP_2M_SDE builds it: eta 0 is the deterministic DPM-Solver++ 2M (libs/sigmas.py)
+        inner = comfy.samplers.ksampler("dpmpp_2m_sde", {"eta": 0.0, "s_noise": 1.0, "solver_type": "midpoint"})
+    else:
+        inner = call_node("KSamplerSelect", sampler_name=sampler_name)[0]
+    sampler = _StepLogger(inner, log_prefix)
 
     progress = comfy.utils.ProgressBar(len(plan))
     chunks = []
@@ -206,10 +217,26 @@ def generate(
         if trim_latent > 0:
             sampled = call_node("TrimVideoLatent", samples=sampled, trim_amount=trim_latent)[0]
         images = call_node("VAEDecode", vae=vae, samples=sampled)[0]
+        if color_anchor_strength > 0 and anchor is not None and trim_image > 0:
+            # one Lab transform from the chunk's regenerated overlap frames onto the frames it was
+            # seeded with, applied to the whole chunk before it is trimmed and carried: the next
+            # chunk is seeded with corrected frames, so the chain stays anchored to the first
+            region = adapter.anchor_region(max(0, pose_offset - trim_image), length, images.shape[1], images.shape[2], animate_inputs)
+            weight = None if region is None else feather(region).to(images.device)
+            transfer = lab_transfer(images[:trim_image], anchor[-trim_image:].to(images.device), None if weight is None else weight[:trim_image])
+            if transfer is None:
+                logging.warning("%s %s color anchor skipped: the character region is empty in the %d overlap frames.",
+                                log_prefix, sampler.label, trim_image)
+            else:
+                images = apply_transfer(images, transfer, color_anchor_strength, weight)
+                logging.info("%s %s color anchor %.2f on the %s: mean dL %+.2f da %+.2f db %+.2f, std ratio L %.3f a %.3f b %.3f",
+                             log_prefix, sampler.label, color_anchor_strength, "whole frame" if region is None else "character region",
+                             *(transfer.target_mean - transfer.source_mean).tolist(), *transfer.ratio.tolist())
         if trim_image > 0:
             images = images[trim_image:]
         images = images.cpu()
         del sampled, latent
+        adapter.after_chunk(index)
 
         if images.shape[0] == 0:
             raise RuntimeError("Chunk {} (length {}) contributed no frames after trimming {}; the overlap exceeds the chunk.".format(index, length, trim_image))

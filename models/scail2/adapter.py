@@ -15,7 +15,7 @@ import logging
 import torch
 
 from ...libs.chunking import FULL, overlap_for_motion_frames, snap_down
-from ..common.animate import AnimateAdapter, check_pose_percents
+from ..common.animate import AnimateAdapter, check_pose_percents, mask_window
 from ..common.core_nodes import clip_vision_encode
 
 SIZE_MULTIPLE = 32  # the pose runs at half resolution through the /16 patch grid
@@ -136,3 +136,11 @@ class SCAIL2Adapter(AnimateAdapter):
         # as conditioning, so no latent frame is dropped
         trim_image = 0 if anchor is None else min(self._previous, int(anchor.shape[0]))
         return positive, negative, latent, 0, trim_image, offset
+
+    def anchor_region(self, first, length, height, width, animate_inputs):
+        if not animate_inputs["replacement_mode"]:
+            return None  # animation mode generates the whole frame
+        # replacement mode keeps the driving video's background: the character is every pixel of the
+        # colored driving mask (held like the pose) that is not its white background
+        window = animate_inputs["pose_video_mask"][first:first + length, ..., :3]
+        return mask_window((window <= ON).any(dim=-1).float(), 0, length, height, width)

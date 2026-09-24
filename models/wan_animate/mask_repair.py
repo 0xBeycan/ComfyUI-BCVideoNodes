@@ -1,6 +1,8 @@
 """Wan Animate's concat-mask repair: the rows the reference implementation builds for one window,
 written over the video part of the concat mask WanAnimateToVideo returns."""
 
+from ..common.animate import mask_window
+
 
 def replacement_mask_rows(character_mask, offset, length, seed_frames, lat_h, lat_w):
     """The concat-mask rows for one window, built the way the reference
@@ -9,21 +11,11 @@ def replacement_mask_rows(character_mask, offset, length, seed_frames, lat_h, la
     the mask does not cover unknown (1). The pixel mask -> latent grid step
     uses core's filter and crop (nearest-exact, center). Returns None when the mask does not
     reach this window, which is when core does not apply it either."""
-    import comfy.utils
     import torch
 
-    mask = character_mask
-    if mask.ndim == 2:
-        mask = mask.unsqueeze(0)
-    if mask.shape[0] == 1:
-        mask = mask.expand(length, -1, -1)
-    elif mask.shape[0] > offset:
-        mask = mask[offset:offset + length]
-    else:
+    frames = mask_window(character_mask, offset, length, lat_h, lat_w)
+    if frames is None:
         return None
-    mask = comfy.utils.common_upscale(mask.unsqueeze(1).float(), lat_w, lat_h, "nearest-exact", "center").squeeze(1)
-    frames = torch.ones((length, lat_h, lat_w), dtype=mask.dtype, device=mask.device)
-    frames[:mask.shape[0]] = mask
     frames[:seed_frames] = 0.0
     return torch.cat((frames[:1].expand(4, -1, -1), frames[1:]), dim=0)
 

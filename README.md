@@ -272,9 +272,10 @@ off (1 for Animate 2, `continue_motion_max_frames` for Animate,
 `previous_frame_count` for SCAIL-2), so there is no cross-window blending and
 no re-denoising.
 
-What they do not do, on purpose: no colour matching between chunks (it
-degraded output on earlier Wan Animate models; the SCAIL-2 reference code has
-none either), no `continue_video` input, no external `SAMPLER` /
+What they do not do, on purpose: no colour matching between chunks by
+default (it degraded output on earlier Wan Animate models; the SCAIL-2
+reference code has none either; `color_anchor_strength` turns on an optional
+anchor, see Color anchor), no `continue_video` input, no external `SAMPLER` /
 `total_frames` links.
 
 ### Wiring
@@ -303,19 +304,20 @@ Shared widgets:
 | `frames_per_chunk`         | 81             | Frames sampled per chunk. Rounded down to the 4k+1 grid, minimum 5.    |
 | `total_frames`             | 81             | Exact output length. 0 = the pose video's frame count; normally linked. |
 | `shift`                    | see per node   | `ModelSamplingSD3` shift, applied before the schedule is built.          |
-| `sampler_name`             | euler          | Any sampler ComfyUI has; list comes from `comfy.samplers`.               |
+| `sampler_name`             | euler          | Any sampler ComfyUI has (list from `comfy.samplers`), plus `wan_dpmpp` (see below). |
 | `scheduler`                | wan_beta       | Any scheduler ComfyUI has, plus `wan_beta` (see below). (SCAIL-2: simple.) |
 | `steps`, `denoise`         | 6, 1.0         | Schedule length (`BasicScheduler`).                                      |
-| `cfg`                      | 1.0            |                                                                          |
+| `cfg`                      | 1.0            | Classifier-free guidance. At 1.0 the negative prompt is not evaluated (one model pass per step, the distilled setting). |
 | `seed`, `seed_mode`        | -, increment   | `increment`: chunk i uses `seed + i`. `fixed`: every chunk uses `seed`.  |
-| `last_chunk`               | fit (SCAIL-2: full) | How long the last chunk runs. `fit`: it shrinks to the frames still needed, snapped up to 4k+1. `full`: it runs the full `frames_per_chunk`, with the driving inputs extended past their end (`tail_padding`). Either way the output is exactly `total_frames`; the extra frames are cut. See Length math. |
-| `tail_padding`             | last_frame     | How the driving inputs are extended past their last frame when a chunk needs frames beyond them. `last_frame`: the last frame is repeated (the motion stops). `ping_pong`: the input plays backwards from its end, as the official Wan Animate code pads (the motion continues along the same path in reverse). See Tail padding. The last widget of every sampler. |
+| `last_chunk`               | fit (SCAIL-2: full) | How long the last chunk runs. `fit`: it shrinks to the frames still needed, snapped up to 4k+1. `full`: it runs the full `frames_per_chunk`, with the driving inputs extended past their end (`tail_padding`). `min29`: like `fit`, but never fewer than 29 frames (capped at `frames_per_chunk`), as the official Wan-Animate-2 pads its last clip. Either way the output is exactly `total_frames`; the extra frames are cut. See Length math. |
+| `tail_padding`             | last_frame     | How the driving inputs are extended past their last frame when a chunk needs frames beyond them. `last_frame`: the last frame is repeated (the motion stops). `ping_pong`: the input plays backwards from its end, as the official Wan Animate code pads (the motion continues along the same path in reverse). See Tail padding. The last required widget of every sampler. |
+| `color_anchor_strength`    | 0.0 (off)      | Optional. Above 0 every chunk after the first is colour-matched to the frames it was seeded with, blended in by this value (1 = fully). In replacement mode only the character. See Color anchor. The last widget of every sampler. |
 
 The sampling stack is built once per run in this order:
 `ModelSamplingSD3(model, shift)` -> `BasicScheduler(patched, ...)` (or
-`wan_beta`, or `sigmas_override`) -> `KSamplerSelect(sampler_name)`;
-every chunk samples with the patched model. The sigma list is logged at the
-start of every run.
+`wan_beta`, or `sigmas_override`) -> `KSamplerSelect(sampler_name)` (or
+`wan_dpmpp`); every chunk samples with the patched model. The sigma list is
+logged at the start of every run.
 
 `wan_beta` is the schedule WanVideoWrapper's `euler/beta` samples with:
 diffusers `FlowMatchEulerDiscreteScheduler(shift, use_beta_sigmas=True)`,
@@ -330,6 +332,17 @@ final step. At shift 5, 4 steps:
 |------------------|---------------------------------|
 | `wan_beta`       | 1.000, 0.731, 0.293, 0.024, 0   |
 | ComfyUI `beta`   | 1.000, 0.959, 0.834, 0.518, 0   |
+
+`wan_dpmpp` is the sampler the official Wan pipelines sample with:
+DPM-Solver++ (2M) in its flow-matching form (Wan `fm_solvers.py`
+`FlowDPMSolverMultistepScheduler`, arXiv 2211.01095). ComfyUI reproduces it as
+`dpmpp_2m_sde` with eta 0 (no noise) and the midpoint solver, built the way
+core's `SamplerDPMPP_2M_SDE` node builds it (a measured relative error of
+4.3e-5 against the native Wan-Animate-2 solver). The listed `dpmpp_2m` is not
+it (it steps in -log sigma, not the flow model's half-log-SNR: 1.3e-2 off), nor
+is the listed `dpmpp_2m_sde` (eta 1, stochastic). Its official pairing is
+scheduler `simple` at the same shift: the native Wan pipelines' sigmas (evenly
+spaced, then shifted).
 
 #### Wan Animate Long Video Sampler (`WanAnimateToVideo`)
 
@@ -368,11 +381,14 @@ reach, core's rows are already right and nothing is touched.
 #### Wan Animate 2 Long Video Sampler (`WanAnimate2ToVideo`)
 
 Defaults: `frames_per_chunk` 81, `shift` 5, `euler` / `wan_beta`, 10 steps,
-cfg 1, `attn_log_scale` -1.3, i.e. the official distilled configuration
-(`Wan-Video/Wan-Animate-2`, `infer/wan_animate_2_gradio_distillation.py`)
-except for the scheduler: the official sigma list (`linspace(1, 0)` then
-shift) is exactly ComfyUI's `simple` at the same shift, `wan_beta` looked
-better in testing. Both are one click apart.
+cfg 1, `attn_log_scale` -1.3. Shift, steps, cfg and `attn_log_scale` follow
+the official distilled configuration (`Wan-Video/Wan-Animate-2`,
+`infer/wan_animate_2_gradio_distillation.py`); the sampler and scheduler do
+not. The native Wan-Animate-2 pipeline samples DPM-Solver++ 2M on the
+`linspace(1, 0)`-then-shift sigmas at 10 steps, here `wan_dpmpp` / `simple`;
+Diffusers' distilled recipe is Euler with `FlowMatchEulerDiscreteScheduler`
+shift 5, here `euler` / `normal`. The node default `euler` / `wan_beta` is
+neither: it looked better in testing. All are a click apart.
 
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|
@@ -432,12 +448,14 @@ border: the reference mask is white in animation mode and black in
 replacement mode, the driving mask the opposite).
 
 Defaults: `frames_per_chunk` 81, `width` x `height` 704 x 1280, `shift` 8,
-`euler` / `simple`, 6 steps, cfg 1, `previous_frame_count` 5. With the
-distill LoRA this reproduces exactly the sigmas the official ComfyUI SCAIL-2
-template samples with: its `BasicScheduler` takes the model before
-`ModelSamplingSD3(5)`, so it runs on the model's default shift 8
-(1, 0.9757, 0.9413, 0.8889, 0.8005, 0.616, 0). `tests/nodes/test_nodes_scail2.py`
-checks that list with ComfyUI's own scheduler.
+`euler` / `simple`, 6 steps, cfg 1 (for a distill LoRA), `previous_frame_count`
+5. They are a starting point, not the SCAIL-2 authors' recipe. With the
+distill LoRA they reproduce the sigmas the official ComfyUI SCAIL-2 templates
+sample with: the templates set `ModelSamplingSD3` to 5, but their
+`BasicScheduler` takes the model before that node, so their schedule runs at
+the model's default shift 8 (1, 0.9757, 0.9413, 0.8889, 0.8005, 0.616, 0).
+`tests/nodes/test_nodes_scail2.py` checks that list with ComfyUI's own
+scheduler. The other references are in the table below.
 
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|
@@ -459,18 +477,21 @@ frame segments (issue #16) and a short last chunk is off its training
 distribution. The pose and its mask are extended past their end (`tail_padding`) up to the
 end of the last chunk, and the output is cut to `total_frames`. `fit` gives
 the Animate behaviour, a last chunk shortened to what is left. A
-`frames_per_chunk` outside 65-81 is logged. The anchor is the raw decoded
-frames, with no colour correction; `seed_mode` increment gives every chunk a
-new seed, the authors' fix for brightness drift in loops (issue #11).
+`frames_per_chunk` outside 65-81 is logged. With `color_anchor_strength` 0
+(the default) the anchor is the raw decoded frames, with no colour
+correction; `seed_mode` increment gives every chunk a new seed, the authors'
+fix for brightness drift in loops (issue #11).
 
-Recommended LoRAs and settings, with their sources:
+LoRAs and settings, with their sources:
 
 | Setup | LoRAs | Sampling | Source |
 |-------|-------|----------|--------|
-| Default (animation or replacement) | `lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16` @ 0.8 + `wan2.1_SCAIL_2_DPO_lora_bf16` @ 1.0 | the node's defaults: shift 8, euler / simple, 6 steps, cfg 1 | official ComfyUI template, Kijai's core PR tests |
+| ComfyUI template, distill on (animation or replacement) | `lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16` @ 0.8 + `wan2.1_SCAIL_2_DPO_lora_bf16` @ 1.0 | `ModelSamplingSD3` 5, effective schedule shift 8 (the node's defaults), euler / simple, 6 steps, cfg 1 | ComfyUI SCAIL-2 templates (`video_wan21_scail2_character_replacement`, fp16 and int8) |
+| ComfyUI template, distill off | `wan2.1_SCAIL_2_DPO_lora_bf16` @ 1.0 | `ModelSamplingSD3` 5, effective schedule shift 8, euler / simple, 40 steps, cfg 5 | the same templates |
 | Replacement, optionally with relight | `lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank64_bf16` (+ `wan2.1_SCAIL_2_relight_lora_bf16`) | not published: strengths and steps are not given; the defaults above are a starting point | SCAIL-2 authors (issues #21, #25, #30) |
-| The authors' LoRA example | lightx2v I2V rank128 @ 1.0 | shift 1, 8 steps, cfg 1, `uni_pc` | SCAIL-2 README |
-| No distill LoRA | - | shift 5, 40-50 steps, cfg 4 | SCAIL-2 authors (issue #29) |
+| The authors' LoRA example | lightx2v I2V rank128 @ 1.0 | shift 1, 8 steps, cfg 1, `uni_pc` | SCAIL-2 README (`zai-org/SCAIL-2`, `wan-scail2` branch) |
+| The authors' base setting | - | shift 3, 40 steps, cfg 5, `uni_pc` (DPM++ as an option) | SCAIL-2 README |
+| The SAT config | - | shift 5, 50 steps, cfg 4 | `sat-scail2` branch, `configs/video_model/Wan2.1-i2v-14Bsc-pose-xc-latent.yaml` |
 
 Prompt: SCAIL-2 wants a long, descriptive prompt that describes the resulting
 video; in replacement mode, the video after the replacement.
@@ -512,6 +533,15 @@ not new.
     and background for Animate, the pose mask for SCAIL-2) are extended past
     their end up to its end (see Tail padding), and everything past
     `total_frames` is cut.
+  - `min29`: `fit`, but the last chunk never runs fewer than 29 frames
+    (capped at `frames_per_chunk`), the official Wan-Animate-2 tail rule
+    (`pipelines/utils/multiclip_utils.py` `get_padding_len` pads the last clip
+    to at least 29 frames); a video shorter than 29 frames runs one 29-frame
+    chunk. The extra frames are padded as `tail_padding` says and cut. 888
+    frames at chunk 81, overlap 1: `fit` ends in a 9-frame chunk
+    (`81 x 11 + 9 -> 889 produced`), `min29` in a 29-frame one
+    (`81 x 11 + 29 -> 909 produced`); at 1110 frames the last chunk is 73
+    frames and the two are the same.
 
   Example, 240 frames, chunk 81, overlap 5:
   `fit`: `81 + 81 + 81 + 13 -> 241 produced -> 240 frames`;
@@ -529,8 +559,9 @@ not new.
 ### Tail padding
 
 Whenever a chunk needs driving frames past the end of an input (the `fit`
-snap-up of at most 3 frames, `last_chunk` `full`, or `total_frames` longer
-than the input) the loop extends the driving inputs up front: the pose, and
+snap-up of at most 3 frames, `last_chunk` `full` or `min29`, or
+`total_frames` longer than the input) the loop extends the driving inputs up
+front: the pose, and
 face and background for Animate, the pose mask for SCAIL-2. The Animate
 `character_mask` is never extended: past its end the character may be
 anywhere, so core leaves those mask rows unknown. The `tail_padding` widget
@@ -550,6 +581,28 @@ the real frames of the same chunk, which attend to them. When `total_frames`
 is longer than the input, the output past the input's end is the padding.
 The log line names the padding used (`last frame held to ...` or
 `ping_pong padded to ...`).
+
+### Color anchor
+
+`color_anchor_strength` (optional, the last widget; default 0 = off) keeps
+the colours of a long video on those of its first chunk. Every chunk after
+the first regenerates the frames it was seeded with (the overlap) before its
+own; the loop estimates one per-channel transform in CIE Lab (mean and std,
+the std ratio clamped to 0.5-2 so a flat frame cannot blow it up) that maps
+those regenerated frames onto the frames that were carried in, and applies it
+to the whole decoded chunk before it is trimmed and carried:
+`out = x + strength * (T(x) - x)`, clamped to 0..1. The next chunk is seeded
+with the corrected frames, so the chain stays anchored to chunk 1. One line
+per chunk logs the mean dL / da / db, the std ratios and the strength.
+
+In replacement mode the background is taken from the source again every
+chunk, so only the character is measured and corrected, with a soft edge:
+Wan Animate with `background_video` and `character_mask` connected (the
+character mask's frames of the chunk), SCAIL-2 with `replacement_mode` on
+(every pixel of the driving mask that is not its white background). Wan
+Animate 2 has no replacement mode. A chunk whose overlap frames have no
+character is left uncorrected, with a warning. At 0 the loop is exactly the
+loop without the widget.
 
 ## Roadmap
 

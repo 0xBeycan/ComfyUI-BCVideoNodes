@@ -133,4 +133,46 @@ def test_last_chunk_policies_240_at_81_overlap_5(policy, plan):
 
 
 def test_last_chunk_values_are_the_widget_options():
-    assert list(LAST_CHUNK) == ["fit", "full"]
+    assert list(LAST_CHUNK) == ["fit", "full", "min29"]
+
+
+def test_min29_888_at_81_overlap_1():
+    # fit ends in a 9-frame chunk; min29 runs it at 29, as the official Wan-Animate-2 pads its last clip
+    fit, _ = LAST_CHUNK["fit"]
+    min29, _ = LAST_CHUNK["min29"]
+    assert plan_chunks(888, 81, 1, fit) == [81] * 11 + [9]  # 81 + 80 * 10 = 881, then 7 more
+    assert plan_chunks(888, 81, 1, min29) == [81] * 11 + [29]
+    assert produced_frames([81] * 11 + [29], 1) == 909
+
+
+def test_min29_is_fit_when_the_last_chunk_is_long_enough():
+    fit, _ = LAST_CHUNK["fit"]
+    min29, _ = LAST_CHUNK["min29"]
+    assert plan_chunks(1110, 81, 1, min29) == plan_chunks(1110, 81, 1, fit) == [81] * 13 + [73]  # 1041, then 69 more
+
+
+def test_min29_single_chunk_shorter_than_29():
+    min29, _ = LAST_CHUNK["min29"]
+    assert plan_chunks(10, 81, 1, min29) == [29]
+    assert plan_chunks(3, 81, 5, min29) == [29]
+
+
+def test_min29_is_capped_at_frames_per_chunk():
+    fit, _ = LAST_CHUNK["fit"]
+    min29, _ = LAST_CHUNK["min29"]
+    # 100 frames at 17, overlap 1: 17 + 16 * 5 = 97, then 3 more: fit runs 5 frames, min29 the full 17
+    assert plan_chunks(100, 17, 1, fit) == [17] * 6 + [5]
+    assert plan_chunks(100, 17, 1, min29) == [17] * 7
+    assert plan_chunks(10, 17, 1, min29) == [17]
+
+
+@pytest.mark.parametrize("overlap", OVERLAPS)
+@pytest.mark.parametrize("chunk", CHUNKS)
+@pytest.mark.parametrize("total", TOTALS)
+def test_min29_plan_covers_total(total, chunk, overlap):
+    min29, _ = LAST_CHUNK["min29"]
+    plan = plan_chunks(total, chunk, overlap, min29)
+    assert all((length - 1) % 4 == 0 and length <= chunk for length in plan)
+    assert all(length == snap_down(chunk) for length in plan[:-1])
+    assert plan[-1] >= min(29, snap_down(chunk))
+    assert produced_frames(plan, overlap) >= total

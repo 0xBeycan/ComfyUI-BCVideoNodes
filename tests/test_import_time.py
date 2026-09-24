@@ -68,6 +68,7 @@ CHECK3_MODULES = [
     "libs.mask",
     "libs.chunking",
     "libs.sigmas",
+    "libs.color",
     "libs.video",
     "libs.config_widgets",
     "libs.pose_data",

@@ -1,6 +1,6 @@
 """The last_chunk widget of the three long-video samplers: fit shortens the last chunk to the
-frames still needed, full runs it at frames_per_chunk with the driving inputs held; either way
-the output is exactly total_frames.
+frames still needed, full runs it at frames_per_chunk with the driving inputs held, min29 is fit
+with a last chunk of at least 29 frames; either way the output is exactly total_frames.
 
 ComfyUI itself is stubbed (comfy.*, nodes); torch is real. For the end-to-end alignment the
 `aligned` fixture and IndexVAE (sampler_fakes) stand in for the model; the Animate fakes are
@@ -17,7 +17,7 @@ from sampler_fakes import (ANIMATE1, ANIMATE2, SCAIL2, Calls, IndexVAE, aligned,
                            driving_videos, node_module, run)
 
 NODES = [ANIMATE1, ANIMATE2, SCAIL2]
-POLICIES = ["fit", "full"]
+POLICIES = ["fit", "full", "min29"]
 OVERLAP = {ANIMATE1: 5, ANIMATE2: 1, SCAIL2: 5}
 
 
@@ -25,7 +25,7 @@ def test_the_defaults(node_module):
     assert [getattr(node_module, node).DEFAULT_LAST_CHUNK for node in NODES] == ["fit", "fit", "full"]
 
 
-# --- output frame i is driving frame i, under both policies ------------------------------------
+# --- output frame i is driving frame i, under every policy ------------------------------------
 
 @pytest.mark.parametrize("total", [81, 157, 240, 301, 450])
 @pytest.mark.parametrize("policy", POLICIES)
@@ -39,10 +39,11 @@ def test_output_frame_i_shows_driving_frame_i(animate_aligned, node, policy, tot
     assert lengths[:-1] == [81] * (len(lengths) - 1)
     if policy == "full":
         assert lengths[-1] == 81
-    else:  # the need left before the last chunk, plus its overlap, snapped up to 4k+1
+    else:  # the need left before the last chunk, plus its overlap, snapped up to 4k+1 (min29: at least 29)
         produced = 81 + (81 - OVERLAP[node]) * (len(lengths) - 2) if len(lengths) > 1 else 0
         need = total - produced + (OVERLAP[node] if produced else 0)
-        assert lengths[-1] == min(81, -(-(need - 1) // 4) * 4 + 1)
+        fit = min(81, -(-(need - 1) // 4) * 4 + 1)
+        assert lengths[-1] == (fit if policy == "fit" else max(fit, 29))
 
 
 # --- the plans ---------------------------------------------------------------------------------
@@ -54,6 +55,9 @@ def test_output_frame_i_shows_driving_frame_i(animate_aligned, node, policy, tot
     (ANIMATE2, 250, "full", "81 + 81 + 81 + 81 -> 321 produced -> 250 frames (pose 250, overlap 1)"),
     (SCAIL2, 240, "fit", "81 + 81 + 81 + 13 -> 241 produced -> 240 frames (pose 240, overlap 5)"),
     (SCAIL2, 240, "full", "81 + 81 + 81 + 81 -> 309 produced -> 240 frames (pose 240, overlap 5)"),
+    (ANIMATE1, 240, "min29", "81 + 81 + 81 + 29 -> 257 produced -> 240 frames (pose 240, overlap 5)"),
+    (ANIMATE2, 888, "min29", " + ".join(["81"] * 11) + " + 29 -> 909 produced -> 888 frames (pose 888, overlap 1)"),
+    (SCAIL2, 240, "min29", "81 + 81 + 81 + 29 -> 257 produced -> 240 frames (pose 240, overlap 5)"),
 ])
 def test_the_plan_follows_last_chunk(node_module, caplog, node, total, policy, plan):
     caplog.set_level("INFO")
@@ -61,7 +65,8 @@ def test_the_plan_follows_last_chunk(node_module, caplog, node, total, policy, p
     assert found == plan and count == total
     assert [c["length"] for c in Calls.animate] == [int(length) for length in plan.split(" -> ")[0].split(" + ")]
     held = [line for line in caplog.text.splitlines() if "held" in line]
-    reason = {"fit": "the last chunk is snapped up to 4k+1", "full": "the last chunk runs the full frames_per_chunk"}[policy]
+    reason = {"fit": "the last chunk is snapped up to 4k+1", "full": "the last chunk runs the full frames_per_chunk",
+              "min29": "the last chunk is snapped up to 4k+1, at least 29 frames"}[policy]
     produced = int(plan.split(" -> ")[1].split()[0])
     assert len(held) == 1 and "{} and runs {} frames past total_frames".format(reason, produced - total) in held[0]
 
@@ -113,6 +118,6 @@ def test_fit_runs_a_short_last_chunk_for_scail2(node_module):
 
 @pytest.mark.parametrize("node", NODES)
 def test_an_unknown_last_chunk_is_an_error(node_module, node):
-    with pytest.raises(ValueError, match=r"last_chunk must be one of fit, full; found 'fitted'"):
+    with pytest.raises(ValueError, match=r"last_chunk must be one of fit, full, min29; found 'fitted'"):
         run(node_module, pose_frames=240, node=node, last_chunk="fitted")
     assert Calls.animate == []

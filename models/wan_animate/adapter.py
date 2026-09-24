@@ -5,7 +5,7 @@ is connected (mask_repair.py)."""
 import logging
 
 from ...libs.chunking import overlap_for_motion_frames
-from ..common.animate import AnimateAdapter
+from ..common.animate import AnimateAdapter, mask_window
 from .mask_repair import fix_replacement_mask, replacement_mask_rows
 
 
@@ -51,3 +51,12 @@ class WanAnimateAdapter(AnimateAdapter):
         seen = set()
         fix_replacement_mask(positive, rows, seen)
         fix_replacement_mask(negative, rows, seen)
+
+    def anchor_region(self, first, length, height, width, animate_inputs):
+        # replacement mode: core takes the background from background_video again every chunk and
+        # generates only where the character mask is 1, so only the character is anchored; frames
+        # past the mask's end are generated whole (core leaves their rows unknown)
+        character_mask, background = animate_inputs.get("character_mask"), animate_inputs.get("background_video")
+        if character_mask is None or background is None:
+            return None
+        return mask_window(character_mask, first, length, height, width)

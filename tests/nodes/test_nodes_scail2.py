@@ -127,7 +127,8 @@ def test_the_sampler_widgets_and_defaults(node_module):
     assert list(required) == SHARED + ["clip_vision", "pose_video_mask", "reference_image_mask", "replacement_mode",
                                        "pose_strength", "pose_start_percent", "pose_end_percent", "previous_frame_count",
                                        "last_chunk", "tail_padding"]
-    assert list(spec["optional"]) == ["sigmas_override"]
+    assert list(spec["optional"]) == ["sigmas_override", "color_anchor_strength"]
+    assert spec["optional"]["color_anchor_strength"][1]["default"] == 0.0
     defaults = {name: required[name][1]["default"] for name in ("width", "height", "frames_per_chunk", "shift", "sampler_name",
                                                                 "scheduler", "steps", "cfg", "seed_mode", "replacement_mode",
                                                                 "pose_strength", "pose_start_percent", "pose_end_percent",

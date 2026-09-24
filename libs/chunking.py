@@ -11,6 +11,7 @@ chunk only contributes ``length - overlap`` new frames.
 """
 
 MIN_CHUNK = 5
+MIN_LAST_CHUNK = 29  # last_chunk min29: the official Wan-Animate-2 shortest last clip, on the 4k+1 grid
 
 
 def snap_down(frames):
@@ -72,6 +73,16 @@ def full_chunk_length(produced, total_frames, frames_per_chunk, overlap):
     return chunk if int(total_frames) > int(produced) else 0
 
 
+def min_last_chunk_length(produced, total_frames, frames_per_chunk, overlap):
+    """Like next_chunk_length, but no chunk runs fewer than MIN_LAST_CHUNK frames, capped at
+    frames_per_chunk on the 4k+1 grid. Only the last chunk is ever shorter, so only it changes: the
+    official Wan-Animate-2 tail rule (pipelines/utils/multiclip_utils.py get_padding_len pads the last
+    clip to at least 29 frames), for a video shorter than that too. The chunk then runs past
+    total_frames and the caller cuts the output back to it."""
+    length = next_chunk_length(produced, total_frames, frames_per_chunk, overlap)
+    return min(_grid_chunk(frames_per_chunk, overlap), max(length, MIN_LAST_CHUNK)) if length else 0
+
+
 def _grid_chunk(frames_per_chunk, overlap):
     """frames_per_chunk on the 4k+1 grid; raises when it does not exceed the overlap."""
     chunk = snap_down(frames_per_chunk)
@@ -84,18 +95,19 @@ def _grid_chunk(frames_per_chunk, overlap):
     return chunk
 
 
-FIT, FULL = "fit", "full"
+FIT, FULL, MIN29 = "fit", "full", "min29"
 # the last_chunk widget: its values, each with the chunk length policy the plan and the loop share
 # and why the plan then samples past total_frames (for the hold log line)
 LAST_CHUNK = {
     FIT: (next_chunk_length, "the last chunk is snapped up to 4k+1"),
     FULL: (full_chunk_length, "the last chunk runs the full frames_per_chunk"),
+    MIN29: (min_last_chunk_length, "the last chunk is snapped up to 4k+1, at least 29 frames"),
 }
 
 
 def plan_chunks(total_frames, frames_per_chunk, overlap, chunk_length=next_chunk_length):
     """Chunk lengths that cover total_frames, as the loop would run them with the length policy
-    `chunk_length` (next_chunk_length or full_chunk_length)."""
+    `chunk_length` (next_chunk_length, full_chunk_length or min_last_chunk_length)."""
     total_frames = int(total_frames)
     if total_frames < 1:
         raise ValueError("total_frames must be at least 1.")

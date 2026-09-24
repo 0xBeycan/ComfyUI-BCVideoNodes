@@ -38,7 +38,7 @@ models/              __init__ (imports the model packages in registration order)
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, yolo/, sam3_1_multiplex/ (adapter, loader,
                      postprocess), wan_animate/, wan_animate2/, scail2/
-libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, config_widgets, pose_data,
+libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, color, config_widgets, pose_data,
                      pose_utils/ (vendored, with its LICENSE)
 scripts/             offline model conversion and upload (ComfyUI-free)
 tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test
@@ -117,11 +117,17 @@ and patch underscore names through the `Names` tables.
     `video_frame_offset`), spliced after `pose_video`, before `chunk_inputs`;
   - `chunk_inputs`: per-chunk inputs; `after_animate`: conditioning repairs before sampling;
   - `unpack(outputs, anchor)`: the outputs as (positive, negative, latent, trim_latent,
-    trim_image, video_frame_offset).
+    trim_image, video_frame_offset);
+  - `anchor_region(first, length, height, width, animate_inputs)`: where the colour anchor
+    measures and corrects a chunk whose decoded frames show driving frames `first` onwards,
+    [length, height, width] weights, or None (the default) for the whole frame; the character
+    only where core re-feeds the background every chunk (replacement mode);
+  - `after_chunk(index)`: called once per chunk after it is sampled and decoded (no-op default).
   A change to a default is a change to both Wan Animate samplers.
 - The chunk length policy is not the adapter's: it is the samplers' `last_chunk` widget,
   `libs/chunking.LAST_CHUNK` (`fit`: the last chunk fitted to what is left; `full`: every chunk
-  full length, the output cut to `total_frames`), with the reason the hold log line gives. The node's default is its `DEFAULT_LAST_CHUNK` (`fit` for both Wan
+  full length, the output cut to `total_frames`; `min29`: `fit`, but the last chunk never under 29
+  frames, capped at `frames_per_chunk`, the official Wan-Animate-2 tail rule), with the reason the hold log line gives. The node's default is its `DEFAULT_LAST_CHUNK` (`fit` for both Wan
   Animate samplers, `full` for SCAIL-2). The adapter gets the value (`self.last_chunk`) for its
   log lines only.
 - How `HELD_VIDEOS` are extended is not the adapter's either: it is the samplers'
@@ -129,6 +135,9 @@ and patch underscore names through the `Names` tables.
   (`last_frame`: `hold_last`, the default of all three; `ping_pong`: the official Wan Animate
   padding, backwards from the end), with the words the hold log line names it by. The Wan
   Animate `character_mask` is never extended.
+- The colour anchor is not the adapter's either, beyond its region: it is the samplers'
+  `color_anchor_strength` widget (optional, the last widget, after the `sigmas_override` link;
+  default 0 = off, and 0 skips the code path), `libs/color.py`.
 
 ## Coding style
 

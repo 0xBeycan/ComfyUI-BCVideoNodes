@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from names import Names, Ref, refs
+from names import Names, Ref, refs, seams
 
 torch = pytest.importorskip("torch")
 
@@ -33,6 +33,12 @@ sampler = Names("sampler", {
     **refs("models.wan_animate2.adapter", "WanAnimate2Adapter"),
     "_call_node": Ref("models.common.core_nodes", "call_node"),
     **refs("libs.sigmas", "wan_beta_sigmas"),
+    **refs("models.common.animate", "AnimateAdapter"),
+    "registry": Ref("models.common.registry"),
+    **refs("models.wan_animate.adapter", "WanAnimateAdapter"),
+    **refs("models.scail2.adapter", "SCAIL2Adapter"),
+    **refs("libs.color", "srgb_to_lab"),
+    **seams("pipelines.long_video", "lab_transfer"),
 }, alias="walong")
 
 

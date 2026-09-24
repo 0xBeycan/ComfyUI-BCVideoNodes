@@ -1,7 +1,15 @@
-"""wan_beta, the schedule the long-video samplers offer beside ComfyUI's own: the sigmas
-WanVideoWrapper's euler/beta scheduler samples with."""
+"""wan_beta and wan_dpmpp, the schedule and the sampler the long-video samplers offer beside
+ComfyUI's own: the sigmas WanVideoWrapper's euler/beta scheduler samples with, and the official
+Wan DPM-Solver++."""
 
 WAN_BETA = "wan_beta"
+# the sampler_name entry for the DPM-Solver++ (2M) the official Wan pipelines sample with (Wan
+# fm_solvers.py FlowDPMSolverMultistepScheduler, arXiv 2211.01095), in its flow-matching form:
+# ComfyUI's dpmpp_2m_sde with eta 0 (no noise, so the deterministic 2M) and the midpoint solver
+# reproduces it; the chunk loop builds it as core's SamplerDPMPP_2M_SDE does. Plain dpmpp_2m steps
+# in -log(sigma) (the variance-exploding form), not in the flow model's half-log-SNR, and the
+# listed dpmpp_2m_sde samples with eta 1 (stochastic).
+WAN_DPMPP = "wan_dpmpp"
 
 
 def wan_beta_sigmas(steps, shift, denoise=1.0, alpha=0.6, beta=0.6):

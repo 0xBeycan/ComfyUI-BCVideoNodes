@@ -12,6 +12,28 @@ def check_pose_percents(start, end):
         raise ValueError("pose_start_percent ({}) must not be greater than pose_end_percent ({}).".format(start, end))
 
 
+def mask_window(mask, first, length, height, width):
+    """Frames ``first`` .. ``first + length`` of the mask video ``mask`` [T, H, W] (a single frame,
+    [1, H, W] or [H, W], is repeated) resized to ``height`` x ``width`` as core resizes a mask
+    (nearest-exact, center crop), [length, height, width]; the frames past its end are 1. None when
+    a mask video ends before ``first``."""
+    import comfy.utils
+    import torch
+
+    if mask.ndim == 2:
+        mask = mask.unsqueeze(0)
+    if mask.shape[0] == 1:
+        mask = mask.expand(length, -1, -1)
+    elif mask.shape[0] > first:
+        mask = mask[first:first + length]
+    else:
+        return None
+    mask = comfy.utils.common_upscale(mask.unsqueeze(1).float(), width, height, "nearest-exact", "center").squeeze(1)
+    frames = torch.ones((length, height, width), dtype=mask.dtype, device=mask.device)
+    frames[:mask.shape[0]] = mask
+    return frames
+
+
 class AnimateAdapter:
     """The hooks of one core conditioning node, for one run: the loop creates an instance per
     generate call, so per-run state set in ``prepare`` lives on it."""
@@ -62,4 +84,15 @@ class AnimateAdapter:
     def after_animate(self, positive, negative, trim_image, length, offset, animate_inputs):
         """Repairs on the core node's conditioning before it is sampled.
         ``offset`` is the video_frame_offset the core node was called with."""
+        return None
+
+    def anchor_region(self, first, length, height, width, animate_inputs):
+        """Where the colour anchor (the samplers' color_anchor_strength) measures and corrects a
+        chunk: [length, height, width] weights in 0..1 for its ``length`` decoded frames, which show
+        driving frames ``first`` onwards, or None for the whole frame. Only the character where the
+        core node takes the background from the source again every chunk (replacement mode)."""
+        return None
+
+    def after_chunk(self, index):
+        """Called once per chunk after it is sampled and decoded; ``index`` counts the chunks from 0."""
         return None
