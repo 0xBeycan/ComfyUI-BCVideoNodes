@@ -391,8 +391,17 @@ read from the class at run time.
 `attn_log_scale` is applied as an attention override
 (`transformer_options["optimized_attention_override"]`): generation
 self-attention calls are recognised by shape and run through PyTorch SDPA
-with an additive mask on the seed frame's keys; cross-attention and the pose
-branch pass through untouched. Without it the distilled
+with an additive mask on the seed frame's keys; every other call
+(cross-attention, the pose branch) goes to the attention override installed
+before this node, so a sage / flash / NABLA attention patch keeps working
+there, or to core's attention when there is none. The biased calls always run
+on PyTorch SDPA, even with a sage or flash patch connected, because those
+kernels take no additive mask; set `attn_log_scale` to 0.0 to keep the patched
+backend for every call. An attention patch that installs itself on top during
+sampling (core's block-sparse attention does) takes the calls it handles before
+this override sees them, and those get no bias. Each chunk logs how many
+attention calls got the bias, and warns when a nonzero `attn_log_scale`
+matched none. Without the bias the distilled
 model attends to the previous chunk's last frame e^1.3 = 3.7x harder than it
 was trained to, which is what made chained chunks drift soft.
 

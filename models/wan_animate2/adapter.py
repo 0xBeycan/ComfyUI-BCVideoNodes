@@ -21,6 +21,7 @@ class WanAnimate2Adapter(AnimateAdapter):
     def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         check_pose_percents(animate_inputs["pose_start_percent"], animate_inputs["pose_end_percent"])
         self._log_scale = float(animate_inputs.pop("attn_log_scale", -1.3))
+        self._attention = None  # the installed override, whose count after_chunk logs
         self._clip_vision = animate_inputs.pop("clip_vision", None)
         if self._clip_vision is not None:
             animate_inputs.pop("clip_vision_output_pose", None)
@@ -34,9 +35,23 @@ class WanAnimate2Adapter(AnimateAdapter):
         if self._log_scale == 0.0:
             return patched
         patched = patched.clone()
-        patched.model_options.setdefault("transformer_options", {})["optimized_attention_override"] = seed_frame_attention_bias(self._log_scale)
+        options = patched.model_options.setdefault("transformer_options", {})
+        # an override another node installed earlier keeps every call the bias is not for
+        self._attention = seed_frame_attention_bias(self._log_scale, options.get("optimized_attention_override"))
+        options["optimized_attention_override"] = self._attention
         logging.info("[%s] attn_log_scale %.2f on the seed frame (official distilled config: -1.3).", self.node_name, self._log_scale)
         return patched
+
+    def after_chunk(self, index):
+        calls = 0
+        if self._attention is not None:
+            calls, self._attention.biased = self._attention.biased, 0
+        logging.info("[%s] attn_log_scale %.2f applied to %d attention calls in chunk %d.", self.node_name, self._log_scale, calls, index + 1)
+        if self._log_scale != 0.0 and calls == 0:
+            logging.warning("[%s] attn_log_scale %.2f matched no attention call in chunk %d: the seed-frame bias was not applied. "
+                            "The model is not Wan Animate 2, core changed its attention shapes, or an attention patch "
+                            "that installs itself on top during sampling (core's block-sparse attention does) took these calls; "
+                            "set attn_log_scale to 0 to run without the bias.", self.node_name, self._log_scale, index + 1)
 
     def chunk_inputs(self, index, offset, anchor, pose_video, animate_inputs):
         if self._clip_vision is None:

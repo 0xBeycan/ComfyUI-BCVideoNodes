@@ -31,7 +31,7 @@ MIN_BOX_SIDE = 10
 EDGE_SNAP = 0.15
 # key_frame_body_points: the frame it is taken from (easy-sam3 prompts frame_index 0 by
 # default) and the body keypoints it exports, in the AAPose body layout - nose, neck, the
-# shoulders, the hips and the knees, the set the upstream node exported.
+# shoulders, the hips and the ankles, the set the upstream node exported.
 KEY_FRAME = 0
 KEY_FRAME_BODY_POINTS = (0, 1, 2, 5, 8, 11, 10, 13)
 

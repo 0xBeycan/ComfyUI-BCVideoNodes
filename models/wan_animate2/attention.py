@@ -1,7 +1,7 @@
 """Wan Animate 2's seed-frame attention bias, installed as an attention override."""
 
 
-def seed_frame_attention_bias(log_scale):
+def seed_frame_attention_bias(log_scale, inner=None):
     """Wan Animate 2's ``log_scale`` (wanxiang/models/wan_animate_2_model.py
     _score_mod_impl): in every generation self-attention the keys of latent
     frame 1 - the previous chunk's last frame on chained chunks, grey fill on
@@ -14,7 +14,14 @@ def seed_frame_attention_bias(log_scale):
     generation calls are told apart by shape: per frame (q = hw tokens, k =
     all gen tokens, plus that frame's pose tokens) or the whole clip when the
     pose branch is windowed out; cross-attention and the pose branch have
-    other shapes and pass through untouched."""
+    other shapes and pass through untouched.
+
+    Only the biased calls are taken over, and they stay on core's SDPA: sage
+    and flash take no additive mask, so the bias would be lost. Every other
+    call goes to ``inner``, the override installed before this one (KJNodes'
+    sage / flash / NABLA patches write the same slot), or to core's attention
+    when there is none. ``override.biased`` counts the biased calls; the
+    adapter reads and resets it after every chunk."""
 
     def override(func, q, k, v, **kwargs):
         options = kwargs.get("transformer_options") or {}
@@ -27,9 +34,13 @@ def seed_frame_attention_bias(log_scale):
             if (lq == hw and lk in (tokens, tokens + hw)) or (lq == tokens and lk == tokens):
                 import comfy.ldm.modules.attention
 
+                override.biased += 1
                 bias = q.new_zeros(1, 1, 1, lk)
                 bias[..., hw:2 * hw] = log_scale
                 return comfy.ldm.modules.attention.attention_pytorch(q, k, v, mask=bias, **kwargs)
+        if inner is not None:
+            return inner(func, q, k, v, **kwargs)
         return func(q, k, v, **kwargs)
 
+    override.biased = 0
     return override
