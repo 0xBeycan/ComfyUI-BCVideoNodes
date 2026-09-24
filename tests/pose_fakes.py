@@ -1,8 +1,8 @@
-"""Pose fakes shared by the pose, pose-flip and node tests, and the `pose`, `loader`, `wrappers`
-and `vitpose` Names the test bodies read pack names through (tests/names.py).
+"""Pose fakes shared by the pose and node tests, and the `pose`, `loader` and `wrappers` Names
+the test bodies read pack names through (tests/names.py).
 
-FakePose, FakeDetector and frames stand in for the models and the clip; FakeViTPose, peaks and
-mirrored drive ViTPose's test-time flip. No ComfyUI and no real model.
+FakePose, FakeDetector and frames stand in for the models and the clip; peaks gives heatmaps for
+the decode golden. No ComfyUI and no real model.
 
 ScriptedDetector and RecordingPose script a clip's person boxes and keypoints for the pose goldens.
 """
@@ -16,9 +16,6 @@ from names import Names, Ref, Seam, Value, refs, seams
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("cv2")
-
-from bcvideonodes.models.vitpose.decode import decode_heatmaps  # noqa: E402
-from bcvideonodes.models.vitpose.wrapper import ViTPose  # noqa: E402
 
 try:
     import comfy.utils  # noqa: F401
@@ -35,8 +32,6 @@ except ImportError:
 pose = Names("pose", {
     **refs("pipelines.pose", "KEY_FRAME_BODY_POINTS", "PoseConfig", "asdict", "detect", "draw",
            "key_frame_body_points", "pose_detection"),
-    # the method ViTPose.flip_keypoints as a plain function: flip_test_keypoints(model, x, center, scale)
-    "flip_test_keypoints": Value(lambda: wrappers.ViTPose.flip_keypoints),
     **refs("pipelines.pose", "snap_to_frame"),
     **refs("libs.temporal", "widen_over_time"),
     **seams("pipelines.pose", "_to_device"),
@@ -59,7 +54,6 @@ wrappers = Names("wrappers", {
     **refs("models.yolo.wrapper", "Yolo"),
     **refs("models.common.wrapper", "load_models"),
 })
-vitpose = Names("vitpose", refs("models.vitpose.flip", "FLIP_INDEX", "flip_back"))
 
 B, H, W = 12, 160, 120
 
@@ -106,7 +100,7 @@ def frames():
     return torch.rand(B, H, W, 3)
 
 
-# --- ViTPose's test-time flip --------------------------------------------------------------
+# --- heatmaps ----------------------------------------------------------------------------------
 
 K, h, w = 133, 64, 48
 
@@ -120,39 +114,6 @@ def peaks():
         cy, cx = rng.uniform(8, h - 8), rng.uniform(8, w - 8)
         out[0, k] = np.exp(-((ys - cy) ** 2 + (xs - cx) ** 2) / 8.0) * rng.uniform(0.5, 0.95)
     return out
-
-
-def mirrored(heatmaps):
-    """What a model sees in the mirrored crop, as flip_back undoes it: the map a column left,
-    then mirrored with partners swapped."""
-    out = heatmaps.copy()
-    out[..., :-1] = heatmaps[..., 1:]
-    return out[:, list(vitpose.FLIP_INDEX), :, ::-1].copy()
-
-
-class FakeViTPose:
-    """A heatmap model that sees the mirrored crop as the mirror of what it sees in the crop."""
-
-    architecture = "vitpose"
-    input_shape = [1, 3, 256, 192]
-    # the production flip, run on this fake's `run`: pose.detect tests for the capability
-    flip_keypoints = ViTPose.flip_keypoints
-
-    def __init__(self):
-        self.maps = peaks()
-        self.first = None
-        self.runs = self.calls = 0
-
-    def run(self, x):
-        self.runs += 1
-        if self.first is None or not np.array_equal(x, self.first[..., ::-1]):
-            self.first = x.copy()
-            return self.maps.copy()
-        return mirrored(self.maps)
-
-    def __call__(self, img, center, scale):
-        self.calls += 1
-        return decode_heatmaps(self.run(img), center, scale)
 
 
 # --- the pose goldens' scripted clip ---------------------------------------------------------

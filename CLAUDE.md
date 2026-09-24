@@ -173,8 +173,10 @@ Do not reopen or "improve" them. They live in the owner's closed-decision docume
 repo: the plan, the guard, pose-process and mask-process specs, and the review report whose open
 items are decided elsewhere). In short: the guard judges pose and mask only and counts at
 `draw_threshold`; the guard's warning set; ViTPose-H is the default pose model and RTMW-l
-optional; `flip_test` and the SAM A/B switches default to off and "ours" and are bit-identical
-there; multi-person is phase 2; a failed download keeps its `.part` file.
+optional; the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
+multi-person) default to "ours" and are bit-identical there; features the owner did not adopt
+(the ViTPose flip test, the other SAM A/B switches, the M4 mask-threshold options) are removed;
+multi-person is phase 2; a failed download keeps its `.part` file.
 
 ## Git and process
 

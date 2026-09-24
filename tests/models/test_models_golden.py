@@ -5,7 +5,7 @@ G16 the Yolo wrapper's postprocess and person selection on scripted detector row
     whole-frame box for a frame whose rows all fall below the threshold; the ViTPose, RTMW and
     YOLOv10 nets' raw forwards, bit exact, on seeded tiny configs in fp32 and fp16 through a
     written and loaded model file, with their state_dict names and shapes and the metadata
-    written; ViTPose's test-time flip on a real wrapper; `load_pose_models`' files, its cache
+    written; the ViTPose wrapper on a real module; `load_pose_models`' files, its cache
     and its unknown-name text; `checkpoint.build`'s unknown-architecture text; the Yolo
     wrapper's refusal of a detector that does not take 640x640.
 G19 `scripts/convert_models.py`: `pose_crops` at both crop sizes and `detect_person` on a
@@ -30,7 +30,7 @@ pytest.importorskip("safetensors")
 mm = pytest.importorskip("comfy.model_management")
 
 from golden import check, digest, log_text  # noqa: E402
-from pose_fakes import loader, pose, wrappers  # noqa: E402
+from pose_fakes import loader, wrappers  # noqa: E402
 # the tiny configs and the seeded weights of the model-file tests, shared rather than copied
 from test_models_checkpoint import conv_cfg, filled, tiny_vitpose  # noqa: E402
 from test_models_wrappers import tiny_rtmw  # noqa: E402
@@ -127,18 +127,15 @@ def test_raw_forward_golden(architecture, dtype, tmp_path):
     check(__file__, f"{name}.metadata", checkpoint.read_metadata(path))
 
 
-def test_vitpose_flip_on_a_real_module_golden(tmp_path, cpu):
+def test_vitpose_wrapper_on_a_real_module_golden(tmp_path, cpu):
     config = tiny_vitpose()
-    config["head"][-1] = {"type": "conv", **conv_cfg(8, 133, 1)}   # the 133 keypoints the flip mirrors
+    config["head"][-1] = {"type": "conv", **conv_cfg(8, 133, 1)}   # the 133 COCO-WholeBody keypoints
     _, path = written(tmp_path, "vitpose", config, torch.float32, seed=4)
     model = wrappers.ViTPose(path)
     x = np.random.default_rng(4).standard_normal((1, 3, 32, 24)).astype(np.float32)
     center, scale = np.array([[60.0, 80.0]]), np.array([[0.6, 0.8]])
     with pytest.warns(DeprecationWarning):
-        flipped = pose.flip_test_keypoints(model, x, center, scale)
-    with pytest.warns(DeprecationWarning):
         plain = model(x, center, scale)
-    check(__file__, "vitpose.flip_test_keypoints", digest(flipped))
     check(__file__, "vitpose.wrapper", digest(plain))
 
 

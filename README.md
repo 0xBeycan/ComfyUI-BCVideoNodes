@@ -48,10 +48,7 @@ Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `pipelines/pose.py`: `confidence_scale` (RTMW only: the divisor of its raw
 SimCC score, 0 keeps the default 4.6; ignored with ViTPose, with one console
-line saying so), `flip_test` (ViTPose only: also runs the mirrored crop and
-averages the heatmaps, the way ViTPose's published accuracy is measured;
-about doubles pose time; RTMW ignores it with one console line),
-`min_keypoint_conf`, `detection_threshold`, `temporal`,
+line saying so), `min_keypoint_conf`, `detection_threshold`, `temporal`,
 `temporal_max_gap`, `temporal_max_step`, `temporal_max_residual`,
 `box_window`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
@@ -86,13 +83,11 @@ connected, so the behaviour can be switched without rewiring:
 Optional; generated from `SAM3_1MultiplexConfig` in `pipelines/sam3_1_multiplex/config.py`. Each tooltip
 starts with the mode it affects.
 
-The `[prompt]` fields `anchor_memory`, `anchor_output`, `conditioning_frames`,
-`memory_selection`, `anchor_score_gate`, `anchor_matching`,
-`unmatched_counting` and `seed_cleaning` switch one step of the tracking
-policy between this pack's (`ours`, the default) and Meta's (`meta`), for the
-A/B in the mask spec. `uniform_mask_threshold` makes `mask_threshold` the one
-cut for every frame of both modes (off: prompt mode cuts at 0, box_keypoint
-cuts prompted frames at `mask_threshold` and propagated ones at 0).
+The `[prompt]` fields `anchor_matching` and `unmatched_counting` switch one
+step of the tracking policy between this pack's (`ours`, the default) and
+Meta's (`meta`), for the multi-person A/B. Prompt mode cuts every frame's
+mask logits at 0; box_keypoint cuts its prompted frames at `mask_threshold`
+and its propagated ones at 0.
 
 ### Input precedence
 

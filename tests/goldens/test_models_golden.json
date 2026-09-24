@@ -35,7 +35,6 @@
   "source": "golden"
  },
  "rtmw.float32.state_dict": "4471d9b8f2b7987f7ee1d82608624f30",
- "vitpose.flip_test_keypoints": "a8560a3ccd15af68f8093567b01e63e9",
  "vitpose.float16.forward": "b879e9c777a10352dbff7a523e291067",
  "vitpose.float16.metadata": {
   "architecture": "vitpose",

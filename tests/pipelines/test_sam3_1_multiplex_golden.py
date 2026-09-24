@@ -11,7 +11,7 @@ scene, and with stand-ins that keep everything they are handed:
   the decoder, the prompts and the boxes), the ProgressBar totals and updates, the log (the "not
   used" lines and the closing `log.step` line with the result counts and the coverage string),
   the logits sink, and every error text;
-- prompt mode under every non-default A/B switch and M4; several objects: the cap, a duplicate,
+- prompt mode under the A/B switches (A6, A7); several objects: the cap, a duplicate,
   two people crossing, one under another, object_index;
 - box_keypoint mode's branches GOLDEN["pose"] does not reach: the anchor re-seed, undetected
   frames, temporal off, refine off, max_propagate, the annexed background, the carried frame;
@@ -40,7 +40,7 @@ from golden import check, digest, log_text  # noqa: E402
 from sam3_1_multiplex_fakes import sam3  # noqa: E402
 from test_sam3_1_multiplex_ab import (  # noqa: E402
     H, LOW, N, W, FakeSam3, FakeTracker, anchor_taller, box, default_detections, position, probation_detections,
-    ringed_detections, two_agreeing, two_people)
+    two_agreeing, two_people)
 
 MARK = 64.0   # frame f carries f / MARK in its first value, so a stand-in can tell which frame it holds
 
@@ -318,33 +318,17 @@ def config(**kwargs):
     return sam3.SAM3_1MultiplexConfig(**kwargs)
 
 
-# --- prompt mode, one object: every A/B switch and M4 -------------------------------------------
+# --- prompt mode, one object: the defaults on each scenario, and the A/B switches ----------------
 
 GONE = {20: -5.0, 21: -5.0, 22: -5.0}
 SINGLE = {
-    "a1_clear_past": dict(config=dict(anchor_memory="clear_past")),
-    "a1_meta": dict(config=dict(anchor_memory="meta")),
     "a2_ours_taller": dict(detections=anchor_taller),
-    "a2_meta": dict(config=dict(anchor_output="meta"), detections=anchor_taller),
     "a3_ours_every_4": dict(config=dict(recondition_every=4)),
-    "a3_meta": dict(config=dict(recondition_every=4, conditioning_frames="meta")),
     "a4_ours_absent": dict(config=dict(recondition_every=100), tracker=dict(scores=GONE)),
-    "a4_meta": dict(config=dict(recondition_every=100, memory_selection="meta"), tracker=dict(scores=GONE)),
-    "a5_meta": dict(config=dict(anchor_score_gate="meta"), tracker=dict(scores={16: 0.5})),
     "a6_ours_two_agreeing": dict(detections=two_agreeing),
     "a6_meta": dict(config=dict(anchor_matching="meta"), detections=two_agreeing),
     "a7_meta": dict(config=dict(unmatched_counting="meta"), detections=probation_detections,
                     tracker=dict(empty=range(3, 10))),
-    "a9_meta": dict(config=dict(seed_cleaning="meta")),
-    "m4_uniform": dict(config=dict(uniform_mask_threshold=True), tracker=dict(ring=2)),
-    "m4_uniform_cut_0": dict(config=dict(uniform_mask_threshold=True, mask_threshold=0.0), tracker=dict(ring=2)),
-    "m4_uniform_cut_1": dict(config=dict(uniform_mask_threshold=True, mask_threshold=1.0), tracker=dict(ring=2)),
-    "m4_speck": dict(config=dict(uniform_mask_threshold=True), tracker=dict(ring=2, speck=True)),
-    "m4_output": dict(config=dict(uniform_mask_threshold=True, m4_anchor_frames="output"),
-                      detections=ringed_detections, tracker=dict(ring=2)),
-    "m4_meta_birth_and_anchor": dict(config=dict(uniform_mask_threshold=True, seed_cleaning="meta",
-                                                 anchor_output="meta"),
-                                     detections=ringed_detections, tracker=dict(ring=2)),
     "probation_no_sink": dict(detections=probation_detections, tracker=dict(empty=range(3, 10)), sink=False),
     "no_person_no_sink": dict(detections=lambda real: [], sink=False),
     "rgba_fp16": dict(channels=4, model_dtype=torch.float16),
@@ -372,7 +356,6 @@ MULTI = {
     "duplicate": dict(scene=GHOST, max_objects=2),
     "crossing": dict(scene=CROSSING, max_objects=2),
     "crossing_meta": dict(scene=CROSSING, max_objects=2, config=dict(anchor_matching="meta", unmatched_counting="meta")),
-    "crossing_uniform": dict(scene=CROSSING, max_objects=2, config=dict(uniform_mask_threshold=True)),
     "shrink": dict(scene=SHRINK, max_objects=2),
     "late": dict(scene=LATE, max_objects=2),
     "late_object_1": dict(scene=LATE, max_objects=2, object_index=1),
@@ -410,8 +393,6 @@ POSE = {
     "hand_points_frame_0_undetected": dict(data=dict(undetected={0}), positive_coords='[{"x": 20, "y": 16}]'),
     "supplied_bboxes": dict(bboxes=[4, 8, 28, 24]),
     "fp16_rgba": dict(model_dtype=torch.float16, channels=4),
-    "uniform": dict(config=dict(uniform_mask_threshold=True)),
-    "uniform_cut_0": dict(config=dict(uniform_mask_threshold=True, mask_threshold=0.0)),
 }
 
 
@@ -435,13 +416,9 @@ def test_box_keypoint_mode(rig, name):
 def test_prompt_mode_names_what_it_does_not_read(rig):
     base = dict(pose_data=pose_data(), bboxes=[2, 2, 6, 6], positive_coords='[{"x": 1, "y": 1}]', negative_coords="[]")
     runs = {
-        "one_object": dict(config=config(reseed_interval=5, mask_threshold=0.5, m4_anchor_frames="output", assoc_iou=0.2,
-                                         negative_points=4), **base),
-        "one_object_uniform": dict(config=config(uniform_mask_threshold=True, mask_threshold=0.5,
-                                                 m4_anchor_frames="output", temporal=False), **base),
-        "several_objects": dict(config=config(anchor_output="meta", seed_cleaning="meta", memory_gap=3,
-                                              m4_anchor_frames="output"),
-                                max_objects=2, detections=two_people, sink=True),
+        "one_object": dict(config=config(reseed_interval=5, mask_threshold=0.5, assoc_iou=0.2, negative_points=4),
+                           **base),
+        "several_objects": dict(config=config(memory_gap=3), max_objects=2, detections=two_people, sink=True),
     }
     for name, kwargs in runs.items():
         out = rig.track(FakeTracker(), clip(seed=1), **kwargs)
@@ -453,7 +430,7 @@ def test_prompt_mode_names_what_it_does_not_read(rig):
 def test_box_keypoint_mode_names_what_it_does_not_read(rig):
     out = rig.track(FakeTracker(), clip(seed=2), mode="box_keypoint", pose_data=pose_data(), prompt="a dog",
                     max_objects=3, object_index=2, bboxes=[4, 8, 28, 24],
-                    config=config(birth_threshold=0.6, new_object_threshold=0.7, anchor_memory="meta", temporal=False,
+                    config=config(birth_threshold=0.6, new_object_threshold=0.7, anchor_matching="meta", temporal=False,
                                   reseed_interval=5, negative_points=4))
     assert out["error"] is None
     out["not_used"] = [line for line in rig.lines if "not used" in line]
@@ -515,7 +492,7 @@ def test_track_error_texts(rig, name):
 
 
 def test_config_choice_error_names_the_class():
-    for name, value in (("anchor_memory", "theirs"), ("m4_anchor_frames", "both"), ("seed_cleaning", None)):
+    for name, value in (("anchor_matching", "theirs"), ("unmatched_counting", None)):
         with pytest.raises(ValueError) as caught:
             config(**{name: value})
         golden(f"config_choice/{name}", str(caught.value))
@@ -778,10 +755,6 @@ def test_mask_operations_on_irregular_shapes():
         other = torch.from_numpy(rng.normal(0, 4, (4, *low))).float()
         values["to_frame_size"] = [digest(sam3.to_frame_size(logits[:1, None], *shape, t)) for t in (0.0, -1.0, 0.5)]
         values["clean_logits"] = [digest(sam3.clean_logits(logits, a)) for a in (0, 4, 16)]
-        cleaned = sam3.clean_logits(logits, 16).unsqueeze(1)
-        values["shown_logits"] = [digest(sam3.shown_logits(logits[:, None], cut, 16)) for cut in (0, -1.0, 1.0)]
-        values["shown_logits_cleaned"] = [digest(sam3.shown_logits(logits[:, None], cut, 16, cleaned))
-                                          for cut in (0, -1.0)]
         values["low_res_logits"] = [digest(sam3.low_res_logits(logits[:1, None])), digest(sam3.low_res_logits(logits[:1]))]
         values["iou"] = digest(sam3.iou(logits, other))
         binary = other > 0

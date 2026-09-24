@@ -19,7 +19,7 @@ from ...libs.mask import clean_mask
 from ...libs.pose_data import PoseMeta
 from ...models.sam3_1_multiplex.adapter import SAM3_1_MULTIPLEX_SIZE, decode, multiplex_parts, propagate
 from ...models.sam3_1_multiplex.postprocess import low_res_logits
-from .config import logits_record, output_cut, report_counts
+from .config import logits_record, report_counts
 
 
 # Body keypoints used as positive points: nose, neck, both shoulders, both hips, both ankles
@@ -293,7 +293,6 @@ def segment_by_pose(model, images, bboxes, pose_metas: list[PoseMeta], config, m
     i = 0
     seed_frame, seed_count = -1, 0
     annexed = None
-    cut = output_cut(c)
     record = logits_record(logits, N)
 
     def keep(index, mask, low=None, how=None):
@@ -355,7 +354,7 @@ def segment_by_pose(model, images, bboxes, pose_metas: list[PoseMeta], config, m
         while i < N:
             end = min(i + c.reseed_interval, N)
             lows = [] if record is not None else None
-            tracked = propagate(sam3, frames_chw[i - 1:end], masks[i - 1], device, dtype, H, W, cut, lows)
+            tracked = propagate(sam3, frames_chw[i - 1:end], masks[i - 1], device, dtype, H, W, lows)
             stop = False
             start = i
             for k, mask in enumerate(tracked, start=start):

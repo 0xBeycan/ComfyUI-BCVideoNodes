@@ -1,5 +1,5 @@
 """The SAM 3.1 Multiplex tunables, SAM3_1MultiplexConfig, and what both modes share: the fields a
-run does not read, the cut of the output logits, and the record of the logits dump."""
+run does not read and the record of the logits dump."""
 from dataclasses import dataclass, field, fields
 
 
@@ -60,18 +60,11 @@ class SAM3_1MultiplexConfig:
     # The tracker reads the last num_maskmem - 1 frames of non-conditioning memory; clearing
     # that many frames either side of a fresh anchor is what makes it an anchor.
     memory_gap: int = _field(7, 0, 64, 1, "[prompt] frames of non-conditioning memory cleared either side of a fresh anchor")
-    # --- [prompt] A/B against Meta's policy (specs/mask-process.md, A1-A9) ---
+    # --- [prompt] A/B against Meta's policy (specs/mask-process.md, A6 and A7) ---
     # Each switch defaults to ours; "meta" is Meta's behaviour ported onto core's primitives.
-    # Which side wins is decided by the A/B on the test clips, not here. A6 and A7 are read with
-    # any max_objects, the others with max_objects 1 only.
-    anchor_memory: str = _choice(OURS, (OURS, "clear_past", META), "[prompt] A1, memory around a re-anchor. ours: the stored non-conditioning memory is cleared and none is encoded for memory_gap frames after; clear_past: cleared, then encoded as usual; meta: neither (Meta clears only its per-object copies, which propagation does not read)")
-    anchor_output: str = _choice(OURS, (OURS, META), "[prompt] A2, a re-anchor frame. ours: outputs the detection and stores it as conditioning memory; meta: outputs the propagated mask and stores that mask's memory in the conditioning entry")
-    conditioning_frames: str = _choice(OURS, (OURS, META), "[prompt] A3, conditioning frames attended. ours: the birth frame and the newest anchor; meta: the 4 newest, the birth frame not kept")
-    memory_selection: str = _choice(OURS, (OURS, META), "[prompt] A4, spatial memory read. ours: the last 6 frames; meta: the last 6 frames whose object score says the person was there (Meta's memory selection, by object score alone: core does not return the decoder's IoU)")
-    anchor_score_gate: str = _choice(OURS, (OURS, META), "[prompt] A5, re-anchoring. ours: any agreeing detection; meta: only while the tracker's own object-score logit is above 0.8")
+    # Read with any max_objects.
     anchor_matching: str = _choice(OURS, (OURS, META), "[prompt] A6, which detection re-anchors which track. ours: each track takes the best-scoring detection agreeing with it; meta: each detection goes to the one track it overlaps most (the last such detection wins)")
     unmatched_counting: str = _choice(OURS, (OURS, META), "[prompt] A7, probation. ours: a frame the detector misses counts as unmatched even when the track's mask is empty; meta: only when the mask is not empty")
-    seed_cleaning: str = _choice(OURS, (OURS, META), "[prompt] A9, a detection that starts or re-anchors a track. ours: its specks and pinholes are removed before it conditions the tracker; meta: the tracker gets it raw and only the birth frame's output is cleaned")
     # --- [prompt, max_objects > 1]: only read when several objects are tracked ---
     # Every track runs the single-object policy above unchanged; these decide between tracks.
     # A further person is born from a detection this confident while another track is live
@@ -139,7 +132,7 @@ class SAM3_1MultiplexConfig:
     # Where the mask logits are cut. Slightly below zero because the boundary is soft exactly
     # where the thin parts are - loose hair, fingers, the edge of a foot - and they were left
     # a few pixels outside the mask, which the block mask downstream then makes obvious.
-    mask_threshold: float = _field(-1.0, -10.0, 10.0, 0.1, "[box_keypoint] the prompted mask's logits are cut here; with uniform_mask_threshold on, every frame of both modes")
+    mask_threshold: float = _field(-1.0, -10.0, 10.0, 0.1, "[box_keypoint] the prompted mask's logits are cut here")
     # Islands smaller than this fraction of the largest region are decoder noise (specks in
     # shadows and edges), not the person; downstream block masks would blow them up.
     min_island_fraction: float = _field(0.01, 0.0, 1.0, 0.005, "[box_keypoint] regions smaller than this share of the largest one are removed")
@@ -152,17 +145,6 @@ class SAM3_1MultiplexConfig:
     refine: bool = field(default=True, metadata={"tooltip": "[box_keypoint] feed the prompted mask back to the decoder once to refine it"})
     temporal: bool = field(default=True, metadata={"tooltip": "[box_keypoint] propagate with the tracker between prompts; off prompts every frame on its own (not Pose Config's temporal)"})
 
-    # --- [all modes] (specs/mask-process.md M4) ---
-    # Off keeps each mode's own cuts: prompt mode at 0 everywhere, box_keypoint at
-    # mask_threshold on the frames it prompts and at 0 on the frames the tracker propagates -
-    # which is why its mask gains area at every re-seed. On, one threshold cuts everything.
-    uniform_mask_threshold: bool = field(default=False, metadata={"tooltip": "[all modes] M4, on: mask_threshold cuts every frame's mask logits in both modes (prompted, propagated, tracked backwards, every object); off: prompt mode cuts at 0, box_keypoint cuts its prompted frames at mask_threshold and its propagated frames at 0"})
-    # Prompt mode's birth frame and every re-anchor frame show the mask the tracker is
-    # conditioned with, binarised at 0 to +/-10, so with M4 on mask_threshold does not move
-    # their boundary and the area steps every recondition_every frames. Last, after the M4
-    # switch it depends on, so saved workflows keep their widget positions.
-    m4_anchor_frames: str = _choice("mask", ("mask", "output"), "[prompt] M4, with uniform_mask_threshold on and max_objects 1: what the birth and re-anchor frames show. mask: the binarised mask the tracker is conditioned with, which mask_threshold does not move; output: the detection's logits cut at mask_threshold like every other frame (a birth with seed_cleaning meta and an anchor with anchor_output meta already show that). The tracker is conditioned the same either way")
-
     def __post_init__(self):
         for f in fields(self):
             choices = f.metadata.get("choices")
@@ -173,9 +155,6 @@ class SAM3_1MultiplexConfig:
 # The [box_keypoint] fields only the tracker reads: with `temporal` off nothing is propagated.
 TRACKER_FIELDS = ("reseed_interval", "max_propagate", "min_anchor_keypoints", "min_anchor_conf",
                   "min_anchor_completeness", "min_tracked_recall")
-# The [prompt] A/B switches the single-object policy reads and segment_by_prompt_multi does not.
-SINGLE_OBJECT_FIELDS = ("anchor_memory", "anchor_output", "conditioning_frames", "memory_selection",
-                        "anchor_score_gate", "seed_cleaning", "m4_anchor_frames")
 
 
 def changed_fields(config, tag=None, names=()):
@@ -186,19 +165,13 @@ def changed_fields(config, tag=None, names=()):
             and getattr(config, f.name) != f.default]
 
 
-def output_cut(config):
-    """The logit threshold prompt mode's masks and box_keypoint's propagated masks are cut at:
-    0, or mask_threshold with uniform_mask_threshold on (M4)."""
-    return config.mask_threshold if config.uniform_mask_threshold else 0.0
-
-
 def logits_record(logits, N):
     """The per-frame slots a segment function fills for the logits dump, or None when nobody
     asked: `logits` is the caller's dict, given "logits" (the [h, w] fp16 low-res logits each
     output frame was cut from, None for a frame without output) and "cut" (how: "prompt",
     "prompted" or "propagated"; segment_by_prompt marks its birth frame "birth" and its
     re-anchor frames "anchor"). segment_by_prompt adds "raw": whether a frame's logits are the
-    ones before shown_logits cleaned them."""
+    ones before the output's speck and pinhole cleaning (clean_logits)."""
     if logits is None:
         return None
     logits.update({"logits": [None] * N, "cut": [None] * N})

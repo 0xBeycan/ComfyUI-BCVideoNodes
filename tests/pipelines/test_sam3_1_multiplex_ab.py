@@ -1,5 +1,5 @@
-"""The SAM3 A/B switches (specs/mask-process.md A1-A10, M4) on a scripted stand-in for core's
-tracker and SAM 3.1's detector. No model is loaded: the stand-ins answer the primitives
+"""The SAM3 A/B switches (specs/mask-process.md A6, A7) and the logits dump on a scripted
+stand-in for core's tracker and SAM 3.1's detector. No model is loaded: the stand-ins answer the primitives
 segment_by_prompt / segment_by_prompt_multi / segment_by_pose drive (`_condition_with_masks`,
 `track_step`, `_deferred_memory_encode`, the detections, the box_keypoint decoder) with small
 masks that depend on what the policy fed them - which frames are conditioning, which spatial
@@ -24,7 +24,6 @@ from sam3_1_multiplex_fakes import sam3  # noqa: E402
 
 N, H, W, LOW = 40, 32, 32, 16
 SPECK = (slice(14, 16), slice(0, 2))             # low-res pixels of FakeTracker's speck, clear of the person's ring
-SPECK_FRAME = (slice(28, 32), slice(0, 4))       # and the frame pixels it covers
 
 
 def box(y, x, h=8, w=8, hole=None, value=10.0, ring=0):
@@ -258,12 +257,6 @@ def test_box_keypoint_defaults_are_the_code_before_the_switches(pose_rig):
 
 # --- the switches --------------------------------------------------------------------------
 
-def forward(log, real):
-    """The forward pass's track_step entry for frame `real`: (cond frames, readable memories)."""
-    (entry,) = [e for e in log if e[0] == "track" and e[1] == real and e[2] == real]
-    return entry[3], entry[4]
-
-
 def conditioned(log, real):
     """The mask sum and hash the tracker was conditioned with on frame `real` (forward pass)."""
     (entry,) = [e for e in log if e[0] == "cond" and e[1] == real]
@@ -274,16 +267,6 @@ def config(**kwargs):
     return sam3.SAM3Config(**kwargs)
 
 
-def test_a1_memory_around_an_anchor(rig):
-    _, log, _ = rig(config(anchor_memory="ours"))
-    assert forward(log, 17)[1] == () and forward(log, 22)[1] == ()        # cleared, then held off
-    assert forward(log, 23)[1] == () and forward(log, 25)[1] == (24,)   # 17-23 are held off
-    _, log, _ = rig(config(anchor_memory="clear_past"))
-    assert forward(log, 17)[1] == () and forward(log, 19)[1] == (18, 17)  # cleared, encoded again at once
-    _, log, _ = rig(config(anchor_memory="meta"))
-    assert forward(log, 17)[1] == (15, 14, 13, 12, 11)                    # nothing cleared (16 is conditioning)
-
-
 def anchor_taller(real):
     """As default_detections, but on the anchor frames the detection is one row taller than the
     propagated mask: still the same person (IoU 0.89), a different mask."""
@@ -291,38 +274,6 @@ def anchor_taller(real):
         y, x = position(real)
         return [(box(y, x, h=9), 0.9)]
     return default_detections(real)
-
-
-def test_a2_an_anchor_frame_shows_the_detection_or_the_propagated_mask(rig):
-    masks, log, _ = rig(detections=anchor_taller)
-    assert masks[16].sum() == 2 * 9 * 2 * 8 and ("encode", 16, 64) not in log
-    masks, log, _ = rig(config(anchor_output="meta"), detections=anchor_taller)
-    assert masks[16].sum() == masks[15].sum()        # the propagated mask, the size of every tracked one
-    assert ("encode", 16, 64) in log                 # whose memory the conditioning entry keeps
-    assert conditioned(log, 16)[0] == 72             # the tracker is still conditioned on the detection
-
-
-def test_a3_conditioning_frames(rig):
-    _, log, _ = rig(config(recondition_every=4))
-    assert forward(log, 30)[0] == (2, 28)
-    _, log, _ = rig(config(recondition_every=4, conditioning_frames="meta"))
-    assert forward(log, 30)[0] == (16, 20, 24, 28)
-
-
-def test_a4_memory_selection_skips_frames_the_person_was_absent(rig):
-    gone = {20: -5.0, 21: -5.0, 22: -5.0}
-    rig(config(recondition_every=100), scores=gone)
-    assert rig.tracker.reads[24] == (23, 22, 21, 20, 19, 18)
-    rig(config(recondition_every=100, memory_selection="meta"), scores=gone)
-    assert rig.tracker.reads[24] == (23, 19, 18, 17, 16, 15)
-    # the frame before is read even when absent
-    assert rig.tracker.reads[22][0] == 21
-
-
-def test_a5_the_tracker_score_gate(rig):
-    low = {16: 0.5}
-    assert rig(scores=low)[2]["reconditioned"] == 2
-    assert rig(config(anchor_score_gate="meta"), scores=low)[2]["reconditioned"] == 1
 
 
 def two_agreeing(real):
@@ -362,40 +313,13 @@ def test_a6_a7_are_read_with_several_objects(rig):
     assert ours["false starts"] == 1 and "false starts" not in meta
 
 
-def test_a9_the_tracker_gets_the_raw_detection(rig):
-    masks, log, _ = rig()
-    assert conditioned(log, 2)[0] == 64 and masks[2].sum() == 256
-    masks, log, _ = rig(config(seed_cleaning="meta"))
-    assert conditioned(log, 2)[0] == 63       # the pinhole reaches the tracker
-    assert masks[2].sum() == 256              # the birth frame's output is still cleaned
-    assert conditioned(log, 16)[0] == 63
-
-
-def test_m4_one_threshold_cuts_prompt_mode(rig):
-    masks, _, _ = rig(ring=2)
-    wide, _, _ = rig(config(uniform_mask_threshold=True), ring=2)   # mask_threshold -1.0 takes in the ring
-    assert (wide[10] >= masks[10]).all() and wide[10].sum() > masks[10].sum()
-    same, _, _ = rig(config(uniform_mask_threshold=True, mask_threshold=0.0), ring=2)
-    assert torch.equal(same, masks)
-
-
-def test_m4_one_threshold_cuts_box_keypoints_propagated_frames(pose_rig):
-    masks, _, _ = pose_rig(ring=2)
-    wide, _, _ = pose_rig(config(uniform_mask_threshold=True), ring=2)
-    assert torch.equal(wide[0], masks[0])                        # the prompted frame was at -1.0 already
-    assert wide[10].sum() > masks[10].sum()                      # the propagated ones were at 0
-    tight, _, _ = pose_rig(config(uniform_mask_threshold=True, mask_threshold=0.0), ring=2)
-    assert tight[0].sum() < masks[0].sum() and torch.equal(tight[10], masks[10])
-
-
 def reproduce(low, how, H, W, threshold, mask_threshold, tracker_size, cfg, raw=False):
     """A frame's mask from its dumped logits, by the recipe `track` documents. `raw`: the logits
-    are the ones before prompt mode's output cleaning (info["raw"]), cleaned here relative to
-    the threshold."""
+    are the ones before prompt mode's output cleaning (info["raw"]), cleaned here."""
     low = low.float()[None, None]
     if how == "prompt":
         if raw:
-            low = sam3.shown_logits(low, threshold, cfg.fill_hole_area)
+            low = sam3.clean_channel_logits(low, cfg.fill_hole_area)
         return sam3.to_frame_size(low, H, W, threshold)
     if how == "prompted":
         cut = torch.nn.functional.interpolate(low, size=(H, W), mode="bilinear", align_corners=False)[0, 0] > mask_threshold
@@ -406,21 +330,19 @@ def reproduce(low, how, H, W, threshold, mask_threshold, tracker_size, cfg, raw=
     return torch.from_numpy(sam3.clean_mask(cut.numpy(), cfg)).float()
 
 
-@pytest.mark.parametrize("seed_cleaning", ["ours", "meta"])
-@pytest.mark.parametrize("uniform", [False, True])
-def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch, uniform, seed_cleaning):
+def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch):
     got = {}
-    cfg = config(uniform_mask_threshold=uniform, seed_cleaning=seed_cleaning)
+    cfg = config()
     rig(cfg, ring=2, speck=True)   # installs the stand-ins
     masks = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
                        logits_sink=lambda logits, info: got.update(logits=logits, info=info))
     info = got["info"]
     assert info["mode"] == "prompt" and info["size"] == (H, W)
     assert [info["cut"][f] for f in (2, 16, 32)] == ["birth", "anchor", "anchor"] and set(info["cut"]) == {"prompt", "birth", "anchor"}
-    assert info["threshold"] == (-1.0 if uniform else 0.0) and info["fill_hole_area"] == cfg.fill_hole_area
+    assert info["threshold"] == 0.0 and info["fill_hole_area"] == cfg.fill_hole_area
     # the logits before the output's cleaning, except where the frame shows the conditioning
-    # mask itself: the birth frame (seed_cleaning ours) and the anchors
-    assert [f for f in range(N) if not info["raw"][f]] == ([2] if seed_cleaning == "ours" else []) + [16, 32]
+    # mask itself: the birth frame and the anchors
+    assert [f for f in range(N) if not info["raw"][f]] == [2, 16, 32]
     assert got["logits"][10][SPECK].min() == 5.0
     for f in range(N):
         assert got["logits"][f].dtype == torch.float16 and got["logits"][f].shape == (LOW, LOW)
@@ -436,14 +358,13 @@ def test_the_module_sink_is_used_when_none_is_passed(rig, monkeypatch):
     assert got == [N]
 
 
-@pytest.mark.parametrize("uniform", [False, True])
-def test_the_logits_dump_reproduces_box_keypoint_mode(pose_rig, uniform):
-    cfg = config(uniform_mask_threshold=uniform, mask_threshold=-1.0)
+def test_the_logits_dump_reproduces_box_keypoint_mode(pose_rig):
+    cfg = config(mask_threshold=-1.0)
     dump = {}
     masks, _, _ = pose_rig(cfg, ring=2, logits=dump)
     assert dump["cut"][0] == "prompted" and set(dump["cut"][1:]) == {"propagated"}
     for f in range(N):
-        again = reproduce(dump["logits"][f], dump["cut"][f], H, W, sam3.output_cut(cfg), cfg.mask_threshold,
+        again = reproduce(dump["logits"][f], dump["cut"][f], H, W, 0.0, cfg.mask_threshold,
                           FakeTracker.image_size, cfg)
         assert torch.equal(again, masks[f]), f
 
@@ -465,29 +386,24 @@ def not_used(caplog):
     return " ".join(r.getMessage() for r in caplog.records if "not used" in r.getMessage())
 
 
-def test_the_single_object_switches_are_named_unused_with_several_objects(fake_segments, caplog):
+def test_a6_a7_are_read_and_the_sink_is_named_unused_with_several_objects(fake_segments, caplog):
     with caplog.at_level("INFO"):
         sam3.track((None, None), torch.zeros(2, 8, 8, 3), max_objects=2,
-                   config=config(anchor_output="meta", anchor_matching="meta", unmatched_counting="meta"),
+                   config=config(anchor_matching="meta", unmatched_counting="meta"),
                    logits_sink=lambda *a: None)
     line = not_used(caplog)
-    assert "sam3_config.anchor_output (max_objects > 1)" in line and "logits sink" in line
+    assert "logits sink" in line
     assert "anchor_matching" not in line and "unmatched_counting" not in line
 
 
-def test_mask_threshold_is_read_in_prompt_mode_only_when_uniform(fake_segments, caplog):
+def test_mask_threshold_is_named_unused_in_prompt_mode(fake_segments, caplog):
     with caplog.at_level("INFO"):
         sam3.track((None, None), torch.zeros(2, 8, 8, 3), config=config(mask_threshold=0.0))
     assert "sam3_config.mask_threshold" in not_used(caplog)
-    caplog.clear()
-    with caplog.at_level("INFO"):
-        sam3.track((None, None), torch.zeros(2, 8, 8, 3), config=config(mask_threshold=0.0, uniform_mask_threshold=True))
-    assert "mask_threshold" not in not_used(caplog)
 
 
 @pytest.mark.parametrize("mask_threshold", [-1.0, 0.0])
-@pytest.mark.parametrize("uniform", [False, True])
-def test_a_carried_frame_whose_prompt_failed_is_not_re_seeded_forever(monkeypatch, mask_threshold, uniform):
+def test_a_carried_frame_whose_prompt_failed_is_not_re_seeded_forever(monkeypatch, mask_threshold):
     # box_keypoint: frame 0 is prompted; every later prompt decodes to -0.5 everywhere (empty at
     # a cut of 0, full at -1) and the tracked mask misses the keypoints. Carrying the track on
     # after an empty prompt then broke out at the carried frame itself and came back to it
@@ -500,7 +416,7 @@ def test_a_carried_frame_whose_prompt_failed_is_not_re_seeded_forever(monkeypatc
             raise RuntimeError("segment_by_pose keeps re-seeding the same frame")
         return torch.full((1, 1, LOW, LOW), 5.0 if len(calls) == 1 else -0.5)
 
-    def propagate(model, frames_chw, first_mask, device, dtype, H_, W_, threshold=0.0, logits_out=None):
+    def propagate(model, frames_chw, first_mask, device, dtype, H_, W_, logits_out=None):
         mask = torch.as_tensor(first_mask).bool().cpu().numpy() if not isinstance(first_mask, np.ndarray) else first_mask
         out = [np.asarray(mask, bool).copy() for _ in range(len(frames_chw) - 1)]
         if logits_out is not None:
@@ -517,7 +433,7 @@ def test_a_carried_frame_whose_prompt_failed_is_not_re_seeded_forever(monkeypatc
     monkeypatch.setattr(sam3, "propagate", propagate)
     monkeypatch.setattr(sam3, "keypoint_recall", lambda *a, **k: 0.0)
     metas, boxes = pose_metas_and_boxes()
-    config = sam3.SAM3Config(mask_threshold=mask_threshold, uniform_mask_threshold=uniform)
+    config = sam3.SAM3Config(mask_threshold=mask_threshold)
     result = {}
     masks = sam3.segment_by_pose(FakeModel(), torch.zeros(N, H, W, 3), boxes, metas, config, 0.3, result=result)
     assert masks.shape[0] == N and bool(masks[1:].any())
@@ -536,7 +452,7 @@ def test_only_the_carried_frame_itself_is_exempt_from_the_recall_re_seed(monkeyp
         calls.append(1)
         return torch.full((1, 1, LOW, LOW), -5.0 if len(calls) == 2 else 5.0)
 
-    def propagate(model, frames_chw, first_mask, device, dtype, H_, W_, threshold=0.0, logits_out=None):
+    def propagate(model, frames_chw, first_mask, device, dtype, H_, W_, logits_out=None):
         mask = np.asarray(torch.as_tensor(first_mask).bool().cpu().numpy(), bool)
         out = [mask.copy() for _ in range(len(frames_chw) - 1)]
         if logits_out is not None:
@@ -564,7 +480,7 @@ def test_only_the_carried_frame_itself_is_exempt_from_the_recall_re_seed(monkeyp
     assert len(calls) == 3, result
 
 
-def eager_propagate(sam3_parts, frames_chw, first_mask, device, dtype, H, W, threshold=0.0, logits_out=None):
+def eager_propagate(sam3_parts, frames_chw, first_mask, device, dtype, H, W, logits_out=None):
     """preprocess/sam3.py propagate() before it became a generator, verbatim apart from the
     module prefix: every frame of the window is tracked, then the list is returned."""
     tracker, backbone = sam3_parts.tracker, sam3_parts.detector.backbone["vision_backbone"]
@@ -601,7 +517,7 @@ def eager_propagate(sam3_parts, frames_chw, first_mask, device, dtype, H, W, thr
                 for old in list(output_dict["non_cond_frame_outputs"]):
                     if old < f - lookback:
                         del output_dict["non_cond_frame_outputs"][old]
-            tracked.append((current["pred_masks_high_res"][0, 0] > threshold).to(idev))
+            tracked.append((current["pred_masks_high_res"][0, 0] > 0).to(idev))
         masks = torch.stack(tracked).float()[:, None]
         masks = torch.nn.functional.interpolate(masks, size=(H, W), mode="bilinear", align_corners=False)[:, 0] > 0.5
     return [m.cpu().numpy() for m in masks[1:]]
@@ -633,7 +549,6 @@ def failing_recall(frames):
     ("defaults", {}, ()),
     ("max_propagate", dict(max_propagate=10), ()),
     ("recall", {}, (7, 20, 21)),
-    ("uniform", dict(uniform_mask_threshold=True, mask_threshold=-1.0, max_propagate=13), (5,)),
 ])
 def test_propagate_stops_where_the_caller_stops_with_the_same_output(pose_rig, monkeypatch, name, cfg, fail):
     runs = {}
@@ -673,89 +588,25 @@ def test_per_frame_resize_is_the_batched_one(size):
         assert torch.equal(one, batched[f])
 
 
-# --- M4: specks at a cut away from 0 (item 3) -------------------------------------------------
-
-@pytest.mark.parametrize("scenario", [{}, {"multi": 2}])
-def test_m4_a_cleaned_speck_stays_out_at_a_negative_cut(rig, scenario):
-    # the speck is removed at 0 (-> -0.1): a cut of -1 must not bring it back, on the tracked
-    # frames or on the ones tracked backwards before the birth (frames 0-1)
-    at_zero, log_zero, _ = rig(speck=True, ring=2, **scenario)
-    wide, log_wide, _ = rig(config(uniform_mask_threshold=True), speck=True, ring=2, **scenario)
-    for f in (0, 1, 10, 20):
-        assert wide[f][SPECK_FRAME].sum() == 0, f
-        assert at_zero[f][SPECK_FRAME].sum() == 0, f
-    assert log_wide == log_zero                     # the memory is cleaned as before
-    assert wide[10].sum() > at_zero[10].sum()       # and -1 still takes in the ring
-
-
-def test_m4_speck_cleaning_is_the_same_at_a_cut_of_0(rig):
-    masks, log, _ = rig(speck=True)
-    same, same_log, _ = rig(config(uniform_mask_threshold=True, mask_threshold=0.0), speck=True)
-    assert torch.equal(same, masks) and same_log == log
-
-
-# --- M4: birth and re-anchor frames (item 4) ---------------------------------------------------
-
 def ringed_detections(real):
-    """The person from frame 2 with a pinhole and the same -0.5 ring the tracker's masks have:
-    what a cut of -1 takes in on a detection."""
+    """The person from frame 2 with a pinhole and the same -0.5 ring the tracker's masks have."""
     if real < 2:
         return []
     y, x = position(real)
     return [(box(y, x, hole=(y + 3, x + 3), ring=2), 0.9)]
 
 
-def test_m4_birth_and_anchor_frames_can_show_the_detection_cut_at_the_threshold(rig):
-    uniform = dict(uniform_mask_threshold=True)
-    masks, log, _ = rig(config(**uniform), detections=ringed_detections, ring=2)
-    shown, shown_log, result = rig(config(m4_anchor_frames="output", **uniform), detections=ringed_detections, ring=2)
-    assert result["reconditioned"] == 2
-    assert shown_log == log                                  # the tracker is conditioned as before
-    for f in (2, 16, 32):
-        # before: the binarised conditioning mask, which the cut cannot move - the area dips
-        assert masks[f].sum() < masks[f + 1].sum()
-        y, x = position(f)
-        detection = box(y, x, hole=(y + 3, x + 3), ring=2)[None, None]
-        assert torch.equal(shown[f], sam3.to_frame_size(sam3.shown_logits(detection, -1.0, 16), H, W, -1.0))
-        assert shown[f].sum() > masks[f].sum()
-    others = [f for f in range(N) if f not in (2, 16, 32)]
-    assert torch.equal(shown[others], masks[others])
-
-
-@pytest.mark.parametrize("cfg", [dict(), dict(mask_threshold=0.0)])
-def test_m4_anchor_frames_option_is_read_only_on_the_m4_path(rig, cfg):
-    masks, log, _ = rig(config(**cfg), detections=ringed_detections, ring=2)
-    same, same_log, _ = rig(config(m4_anchor_frames="output", **cfg), detections=ringed_detections, ring=2)
-    assert torch.equal(same, masks) and same_log == log
-
-
-def test_m4_anchor_frames_option_is_named_unused_without_uniform(fake_segments, caplog):
-    with caplog.at_level("INFO"):
-        sam3.track((None, None), torch.zeros(2, 8, 8, 3), config=config(m4_anchor_frames="output"))
-    assert "sam3_config.m4_anchor_frames (uniform_mask_threshold off)" in not_used(caplog)
-    caplog.clear()
-    with caplog.at_level("INFO"):
-        sam3.track((None, None), torch.zeros(2, 8, 8, 3), max_objects=2, config=config(m4_anchor_frames="output",
-                                                                                     uniform_mask_threshold=True))
-    assert "sam3_config.m4_anchor_frames (max_objects > 1)" in not_used(caplog)
-
-
-@pytest.mark.parametrize("option", ["mask", "output"])
-def test_the_logits_dump_names_birth_and_anchor_frames(rig, option):
+def test_the_logits_dump_names_birth_and_anchor_frames(rig):
     got = {}
-    cfg = config(uniform_mask_threshold=True, m4_anchor_frames=option)
+    cfg = config()
     rig(cfg, detections=ringed_detections, ring=2)
     masks = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
                        logits_sink=lambda logits, info: got.update(logits=logits, info=info))
     info = got["info"]
     assert info["cut"][2] == "birth" and info["cut"][16] == info["cut"][32] == "anchor"
     assert {info["cut"][f] for f in range(N) if f not in (2, 16, 32)} == {"prompt"}
-    for f in (2, 16, 32):
-        y, x = position(f)
-        if option == "output":   # the logits the output was cut from: the detection's, before cleaning
-            assert info["raw"][f] and torch.equal(got["logits"][f], box(y, x, hole=(y + 3, x + 3), ring=2).half())
-        else:                    # the conditioning mask
-            assert not info["raw"][f] and set(got["logits"][f].unique().tolist()) == {-10.0, 10.0}
+    for f in (2, 16, 32):   # the conditioning mask
+        assert not info["raw"][f] and set(got["logits"][f].unique().tolist()) == {-10.0, 10.0}
     for f in range(N):
         again = reproduce(got["logits"][f], "prompt", H, W, info["threshold"], None, 0, cfg, info["raw"][f])
         assert torch.equal(again, masks[f]), f

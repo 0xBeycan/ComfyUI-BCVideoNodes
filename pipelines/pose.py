@@ -49,8 +49,6 @@ class PoseConfig:
     min_keypoint_conf: float = field(default=0.3, metadata={
         "min": 0.0, "max": 1.0, "step": 0.05,
         "doc": "Keypoints below this confidence count as not found by SAM 3.1 Multiplex box_keypoint mode, which reads it from pose_data. The drawing and the guards use Pose Detection's draw_threshold"})
-    flip_test: bool = field(default=False, metadata={
-        "doc": "ViTPose only: also run the mirrored crop and average the two heatmaps, as ViTPose's published accuracy is measured; about doubles the pose time. Ignored with RTMW"})
     detection_threshold: float = field(default=0.05, metadata={
         "min": 0.0, "max": 1.0, "step": 0.01,
         "doc": "Person detector (YOLO) score below which a box is discarded. Ignored when bboxes is connected (YOLO does not run)"})
@@ -204,17 +202,10 @@ def detect(detector, pose_model, images, bboxes=None, config=None
                      f"{type(pose_model).__name__} confidences are used as they are")
         else:
             scale_override = _overridden(pose_model, "conf_scale", config.confidence_scale)
-    flip = config.flip_test and callable(getattr(pose_model, "flip_keypoints", None))
-    if config.flip_test and not flip:
-        log.info(f"flip_test ignored: it applies to ViTPose only, {type(pose_model).__name__} runs once per crop")
-    with log.step(f"extracting keypoints on {B} frames" + (" (flip test)" if flip else "")), scale_override:
+    with log.step(f"extracting keypoints on {B} frames"), scale_override:
         for i, (img, bbox) in enumerate(tqdm(zip(images_np, boxes), total=B, desc="Extracting keypoints")):
             img_norm, center, scale = pose_crop(img, bbox, resolution)
-            if flip:
-                kp2ds.append(pose_model.flip_keypoints(img_norm[None], np.array(center)[None],
-                                                       np.array(scale)[None]))
-            else:
-                kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
+            kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
             pbar.update_absolute(B + i + 1)
     kp2ds = np.concatenate(kp2ds, 0)
 

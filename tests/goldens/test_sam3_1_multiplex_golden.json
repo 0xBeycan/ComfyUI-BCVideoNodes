@@ -203,43 +203,8 @@
   ],
   "tracker": "a1501ba458e3de7b5f036bde0d53375a"
  },
- "box_keypoint/uniform": {
-  "calls": "b3aec522675981013cdc83031c10810a",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (box_keypoint) on 40 frames: done in Ns (prompted 2, propagated 38, frames without a mask 0, mask coverage 31.6-39.1%)",
-  "error": null,
-  "log": "fd3eaec2e57d8f8dcf14137963e5e8e5",
-  "masks": "b05798f2a5632940ca38538b0de54472",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "681349827439e2f90eb344b03067dd65",
-  "result": "{'prompted': 2, 'propagated': 38, 'frames without a mask': 0, 'mask coverage': '31.6-39.1%'}",
-  "sink": [
-   [
-    "af0ffb0635ca9761ed56687c9aa33aff",
-    "0231cebba40607c325d6989c382d90ce"
-   ]
-  ],
-  "tracker": "57d90f8a5e5664b2574f8b5af0f50f4c"
- },
- "box_keypoint/uniform_cut_0": {
-  "calls": "b4d081d2116cc94f3aa0627590e413c1",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (box_keypoint) on 40 frames: done in Ns (prompted 2, propagated 38, frames without a mask 0, mask coverage 21.9-31.6%)",
-  "error": null,
-  "log": "8e7b7841c2b50b0250caab5896e00111",
-  "masks": "6a6ed59865a4416ac6159bdcc1894f08",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "681349827439e2f90eb344b03067dd65",
-  "result": "{'prompted': 2, 'propagated': 38, 'frames without a mask': 0, 'mask coverage': '21.9-31.6%'}",
-  "sink": [
-   [
-    "af0ffb0635ca9761ed56687c9aa33aff",
-    "243a7d69b23756c31f79f135a8dc2d60"
-   ]
-  ],
-  "tracker": "57d90f8a5e5664b2574f8b5af0f50f4c"
- },
- "config_choice/anchor_memory": "SAM3_1MultiplexConfig.anchor_memory is 'theirs'; it must be one of ('ours', 'clear_past', 'meta')",
- "config_choice/m4_anchor_frames": "SAM3_1MultiplexConfig.m4_anchor_frames is 'both'; it must be one of ('mask', 'output')",
- "config_choice/seed_cleaning": "SAM3_1MultiplexConfig.seed_cleaning is None; it must be one of ('ours', 'meta')",
+ "config_choice/anchor_matching": "SAM3_1MultiplexConfig.anchor_matching is 'theirs'; it must be one of ('ours', 'meta')",
+ "config_choice/unmatched_counting": "SAM3_1MultiplexConfig.unmatched_counting is None; it must be one of ('ours', 'meta')",
  "decode/interactivity/refine_False/points_0": {
   "backbone": "84672b0c4812e15b9ab31043cac6d645",
   "heads": "06ce6466f03fa4c028e0cc626ada65a5",
@@ -913,15 +878,6 @@
   "f1bcb1343b7da61adfe15062179dad12",
   "7c291b203c181613d26700dddf2b8cc5"
  ],
- "mask_ops/seed0/shown_logits": [
-  "74bf546ad66600a91e8379a5bdfc7fdc",
-  "d18ef3bc6f64a0151e02e1535c28e8ba",
-  "57789be9a86695ff5693809ae88235ef"
- ],
- "mask_ops/seed0/shown_logits_cleaned": [
-  "74bf546ad66600a91e8379a5bdfc7fdc",
-  "d18ef3bc6f64a0151e02e1535c28e8ba"
- ],
  "mask_ops/seed0/suppress_recently_occluded": [
   "641f740719cce180fb28dd9c1730a4e7",
   "641f740719cce180fb28dd9c1730a4e7",
@@ -968,15 +924,6 @@
  "mask_ops/seed1/non_overlapping": [
   "a5e2dc09316bbdb69fe87b2f1dd7d8c5",
   "9263f6aaaab971090004672edb19af88"
- ],
- "mask_ops/seed1/shown_logits": [
-  "1f976f298be26fcc9dc49a817fb74172",
-  "0dd62ad1e096a36a3c495d2a46dd1b45",
-  "6a630987e229ba88d33ec3168a0d192c"
- ],
- "mask_ops/seed1/shown_logits_cleaned": [
-  "1f976f298be26fcc9dc49a817fb74172",
-  "0dd62ad1e096a36a3c495d2a46dd1b45"
  ],
  "mask_ops/seed1/suppress_recently_occluded": [
   "7c7950b986bffba6d71e30d42e68b4a2",
@@ -1025,15 +972,6 @@
   "7a1047578db2bd745c2dd1bd55e8cb67",
   "9bc7f087a81b968336c9d0a6995b92de"
  ],
- "mask_ops/seed2/shown_logits": [
-  "7a9c305e247920779b71cadd7f0ed0c8",
-  "673ca42caeef952881bc2c514f2aff5e",
-  "10e0e298cacdafc13223a2f1da926dd1"
- ],
- "mask_ops/seed2/shown_logits_cleaned": [
-  "7a9c305e247920779b71cadd7f0ed0c8",
-  "673ca42caeef952881bc2c514f2aff5e"
- ],
  "mask_ops/seed2/suppress_recently_occluded": [
   "bb42199de48c27a7e6834b6fc0db8ab8",
   "bb42199de48c27a7e6834b6fc0db8ab8",
@@ -1080,15 +1018,6 @@
  "mask_ops/seed3/non_overlapping": [
   "467be08772c6f8ae7f733292f040fc9f",
   "083b3be273e156f67b3917fc786dd87e"
- ],
- "mask_ops/seed3/shown_logits": [
-  "9573cd06665e7ae5ea368605a10c6f9d",
-  "6bb541d7ea90652c0000f4032f3038ba",
-  "013b72cb3d45c9d3a9da39152032f3d3"
- ],
- "mask_ops/seed3/shown_logits_cleaned": [
-  "9573cd06665e7ae5ea368605a10c6f9d",
-  "6bb541d7ea90652c0000f4032f3038ba"
  ],
  "mask_ops/seed3/suppress_recently_occluded": [
   "52e656f250a912123ff2f0d1d0cf4ec0",
@@ -1171,17 +1100,6 @@
   "result": "{'reconditioned': 4, 'suppressed': 4, 'objects tracked': 2, 'frames segmented': 40, 'frames without a mask': 0, 'mask coverage': '13.7-27.3%'}",
   "tracker": "3cd48882cf5fd289250f670daa90ce69"
  },
- "multi/crossing_uniform": {
-  "calls": "669687e41066179b3e654b2124e5e09c",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 4, suppressed 4, objects tracked 2, frames segmented 40, frames without a mask 0, mask coverage 13.7-30.1%)",
-  "error": null,
-  "log": "e9ebf12d8960d2f84bf4967e7cfa82b0",
-  "masks": "b6c7335042328cbebfe85bae2d06ae31",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "61bb0d8664e41703ba6ee5774ca5f2f5",
-  "result": "{'reconditioned': 4, 'suppressed': 4, 'objects tracked': 2, 'frames segmented': 40, 'frames without a mask': 0, 'mask coverage': '13.7-30.1%'}",
-  "tracker": "3cd48882cf5fd289250f670daa90ce69"
- },
  "multi/duplicate": {
   "calls": "26f0bf719ceaecd88139effa7be81000",
   "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (duplicates 1, reconditioned 2, objects tracked 1, frames segmented 40, frames without a mask 0, mask coverage 25.0-25.0%)",
@@ -1260,10 +1178,10 @@
   "calls": "ef49dcde79aa5c35d50eaa78f3f1aa5f",
   "closing": "[BCVideoNodes] segmenting the person with SAM3 (box_keypoint) on 40 frames: done in Ns (prompted 40, frames without a mask 0, mask coverage 31.6-31.6%)",
   "error": null,
-  "log": "2b2c50ee0220bbd9debf05369aacab73",
+  "log": "22c0c147866534e1e78e4137f8271873",
   "masks": "13ee53a5d3bccb3c22d7b29ef873f232",
   "not_used": [
-   "[BCVideoNodes] box_keypoint mode prompts the one person the pose describes; prompt 'a dog', max_objects 3, object_index 2, pose_data's person boxes (bboxes replace them), sam3_config.birth_threshold, sam3_config.anchor_memory, sam3_config.new_object_threshold, sam3_config.reseed_interval (temporal off) not used"
+   "[BCVideoNodes] box_keypoint mode prompts the one person the pose describes; prompt 'a dog', max_objects 3, object_index 2, pose_data's person boxes (bboxes replace them), sam3_config.birth_threshold, sam3_config.anchor_matching, sam3_config.new_object_threshold, sam3_config.reseed_interval (temporal off) not used"
   ],
   "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
   "reads": "99914b932bd37a50b983c5e7c90ae93b",
@@ -1274,95 +1192,30 @@
   "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
   "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
   "error": null,
-  "log": "51b050f9b8fbe564fad7b9e3adc8349e",
+  "log": "aa2c6b7fd4098acc41d04e3c717ddb49",
   "masks": "62338924cb6fd58b83b0488de87ff422",
   "not_used": [
-   "[BCVideoNodes] prompt mode segments from the text alone; pose_data, bboxes, positive_coords, negative_coords, sam3_config.reseed_interval, sam3_config.negative_points, sam3_config.mask_threshold, sam3_config.m4_anchor_frames (uniform_mask_threshold off), sam3_config.assoc_iou (max_objects 1) not used"
+   "[BCVideoNodes] prompt mode segments from the text alone; pose_data, bboxes, positive_coords, negative_coords, sam3_config.reseed_interval, sam3_config.negative_points, sam3_config.mask_threshold, sam3_config.assoc_iou (max_objects 1) not used"
   ],
   "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
   "reads": "4c1b06d04266f2822617eaa0816a5aab",
   "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "tracker": "4a0fd6c7b53c73f5170becab17596c90"
- },
- "not_used/prompt/one_object_uniform": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.2%)",
-  "error": null,
-  "log": "f618f0c380c25c634263471495bb52f8",
-  "masks": "a324dde01a5264539b10c6d2f1cc9cb2",
-  "not_used": [
-   "[BCVideoNodes] prompt mode segments from the text alone; pose_data, bboxes, positive_coords, negative_coords, sam3_config.temporal not used"
-  ],
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.2%'}",
   "tracker": "4a0fd6c7b53c73f5170becab17596c90"
  },
  "not_used/prompt/several_objects": {
   "calls": "6b0f1debb044c77e6ade18b1a80d7abc",
   "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (duplicates 4, reconditioned 4, objects tracked 2, frames segmented 40, frames without a mask 0, mask coverage 28.1-39.5%)",
   "error": null,
-  "log": "38056ac0f15b6a90b6c812e572b1dea6",
+  "log": "e09c1cd050ed5bc402415abda70074d0",
   "masks": "8fca984c289e30289162d35a87a6923a",
   "not_used": [
-   "[BCVideoNodes] prompt mode segments from the text alone; sam3_config.anchor_output (max_objects > 1), sam3_config.seed_cleaning (max_objects > 1), sam3_config.m4_anchor_frames (max_objects > 1), the logits sink (max_objects > 1) not used"
+   "[BCVideoNodes] prompt mode segments from the text alone; the logits sink (max_objects > 1) not used"
   ],
   "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
   "reads": "5fe3116220486a46b0497aee0c557503",
   "result": "{'duplicates': 4, 'reconditioned': 4, 'objects tracked': 2, 'frames segmented': 40, 'frames without a mask': 0, 'mask coverage': '28.1-39.5%'}",
   "sink": [],
   "tracker": "b44e3978ca3bf15972c4be7b4ebba851"
- },
- "prompt/a1_clear_past": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
-  "error": null,
-  "log": "a9cd20e653bce9b0e6054797e2d450f7",
-  "masks": "511482c46bf0764f349a12864ee56c9f",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "de459fe02d11cd49b87a75aec916d0bc",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "sink": [
-   [
-    "823542418f7749696a29ba0e1a7c69e4",
-    "5fadd4fa076e626ccaec81aeb05d4e23"
-   ]
-  ],
-  "tracker": "afaf32c16da8e79de6a78d22221f38a3"
- },
- "prompt/a1_meta": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
-  "error": null,
-  "log": "a9cd20e653bce9b0e6054797e2d450f7",
-  "masks": "2efeb768ab82bf4a65b90ee53230292b",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "df131fc244220c54cdee2d1a0a0c984c",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "sink": [
-   [
-    "f063e8c16f7efb2018faface32f54454",
-    "5fadd4fa076e626ccaec81aeb05d4e23"
-   ]
-  ],
-  "tracker": "b3ea95542bf4af652c900c707001cc15"
- },
- "prompt/a2_meta": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
-  "error": null,
-  "log": "a9cd20e653bce9b0e6054797e2d450f7",
-  "masks": "e0e1cb1c09e366825e3a7242735a7926",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "sink": [
-   [
-    "9094558d3686577b196f0b90c5d79310",
-    "5fadd4fa076e626ccaec81aeb05d4e23"
-   ]
-  ],
-  "tracker": "da34732249604dcbb4876354a29fb4b7"
  },
  "prompt/a2_ours_taller": {
   "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
@@ -1381,23 +1234,6 @@
   ],
   "tracker": "dc6d0f92bd6208d2208357d3e01e87db"
  },
- "prompt/a3_meta": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 9, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-28.1%)",
-  "error": null,
-  "log": "376c53254aa2bdec7b1e6c37d6c2abd0",
-  "masks": "a65421f4981f57b81a956f276f0e6abd",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "f9e79a36ff8a434e602c1bb0d91f5de9",
-  "result": "{'reconditioned': 9, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-28.1%'}",
-  "sink": [
-   [
-    "1a8c3d5d602758395f8536fe71064c73",
-    "0118c52192778a78870dcc2d7b8e81ee"
-   ]
-  ],
-  "tracker": "71fde9d0afc811fdd28be5303ef578d6"
- },
  "prompt/a3_ours_every_4": {
   "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
   "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 9, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-28.1%)",
@@ -1415,23 +1251,6 @@
   ],
   "tracker": "6584a30207b152b9994cb8cbd1692422"
  },
- "prompt/a4_meta": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
-  "error": null,
-  "log": "c44420d6bc9a0b9164a23f11ab151914",
-  "masks": "00e6749466d5d08c930791f21d715a9f",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "827042f897a42015a325970e9bad0115",
-  "result": "{'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "sink": [
-   [
-    "303f8d04cc69e4d9f70088a3e4ef1ae9",
-    "eebd87beab4d7e24c8fd4132e25ed9bf"
-   ]
-  ],
-  "tracker": "ace29e8df4ac2da854227858ee152635"
- },
  "prompt/a4_ours_absent": {
   "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
   "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
@@ -1448,23 +1267,6 @@
    ]
   ],
   "tracker": "ace29e8df4ac2da854227858ee152635"
- },
- "prompt/a5_meta": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 1, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
-  "error": null,
-  "log": "6efc31c3fa2a074597340868470959d3",
-  "masks": "edb7a3ea78f4c2fa858d347a6df3a86c",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "39e5f17d4055b23a8373bf79a5b748d0",
-  "result": "{'reconditioned': 1, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "sink": [
-   [
-    "701e59fb2eaf4bfdf324b19ecc31f9b7",
-    "e011960ede738610749b9214cb870eed"
-   ]
-  ],
-  "tracker": "c22aaf51a262ef7a43f21db0e1edab3f"
  },
  "prompt/a6_meta": {
   "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
@@ -1516,125 +1318,6 @@
    ]
   ],
   "tracker": "5d12f9b33cf82ddf69b2de5663d5c7fe"
- },
- "prompt/a9_meta": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 24.6-31.6%)",
-  "error": null,
-  "log": "cc244ae25ab504695c6fc28dbd9bb963",
-  "masks": "258c6b4aff2343d4ac0977ea11063d88",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '24.6-31.6%'}",
-  "sink": [
-   [
-    "c75eab0b02d5b5363679a73ff525f0a3",
-    "ebbded42847c2aee6e533299a65555f5"
-   ]
-  ],
-  "tracker": "6eb6c7da61f177130a0943621422bad3"
- },
- "prompt/m4_meta_birth_and_anchor": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 41.0-49.4%)",
-  "error": null,
-  "log": "cd6347b1b0c976ad284afa7b2ae78ec1",
-  "masks": "81d682310fe31972ef7f24f3e54e5f5a",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '41.0-49.4%'}",
-  "sink": [
-   [
-    "4d4a2a068f0db6cc5d8f919aea5dfc89",
-    "f2a3f1555fd068293ae5b65525a2047f"
-   ]
-  ],
-  "tracker": "677fe641b6d5fab8fe7fb22376781a7c"
- },
- "prompt/m4_output": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 41.0-49.4%)",
-  "error": null,
-  "log": "cd6347b1b0c976ad284afa7b2ae78ec1",
-  "masks": "81d682310fe31972ef7f24f3e54e5f5a",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '41.0-49.4%'}",
-  "sink": [
-   [
-    "ffa6474e33e4f5da71d045734491afe9",
-    "9586d170a24299c002a040885e821c14"
-   ]
-  ],
-  "tracker": "4a0fd6c7b53c73f5170becab17596c90"
- },
- "prompt/m4_speck": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-51.4%)",
-  "error": null,
-  "log": "f35904e242e2e947c1814f8831af781a",
-  "masks": "a019742eade8c598949bfeed4bd3773b",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-51.4%'}",
-  "sink": [
-   [
-    "daaf3676b7fc86aa530aecf013ae650e",
-    "f27d8901d309364e614eeba8dc6a033c"
-   ]
-  ],
-  "tracker": "4a0fd6c7b53c73f5170becab17596c90"
- },
- "prompt/m4_uniform": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-49.4%)",
-  "error": null,
-  "log": "4d68a2fda89bb190e12ce6b8c364289b",
-  "masks": "5b407842bbc068e55c0a6829ba1e3b64",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-49.4%'}",
-  "sink": [
-   [
-    "7c6f2d67d2d6936ad46a243934331f2c",
-    "f27d8901d309364e614eeba8dc6a033c"
-   ]
-  ],
-  "tracker": "4a0fd6c7b53c73f5170becab17596c90"
- },
- "prompt/m4_uniform_cut_0": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.6%)",
-  "error": null,
-  "log": "a9cd20e653bce9b0e6054797e2d450f7",
-  "masks": "62338924cb6fd58b83b0488de87ff422",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.6%'}",
-  "sink": [
-   [
-    "7c6f2d67d2d6936ad46a243934331f2c",
-    "920de07ccad1d0a6510898aab1a35eef"
-   ]
-  ],
-  "tracker": "4a0fd6c7b53c73f5170becab17596c90"
- },
- "prompt/m4_uniform_cut_1": {
-  "calls": "7b5a9390dab6d7bc1a472f0d40055d77",
-  "closing": "[BCVideoNodes] segmenting the person with SAM3 (prompt) on 40 frames: done in Ns (reconditioned 2, tracked backwards 2, frames segmented 40, tracked from frame 2, frames without a mask 0, mask coverage 25.0-31.2%)",
-  "error": null,
-  "log": "91bd7c268a8b5ad3d8e6d24eac22dd71",
-  "masks": "a324dde01a5264539b10c6d2f1cc9cb2",
-  "progress": "[(40, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1])]",
-  "reads": "4c1b06d04266f2822617eaa0816a5aab",
-  "result": "{'reconditioned': 2, 'tracked backwards': 2, 'frames segmented': 40, 'tracked from frame': 2, 'frames without a mask': 0, 'mask coverage': '25.0-31.2%'}",
-  "sink": [
-   [
-    "7c6f2d67d2d6936ad46a243934331f2c",
-    "959bcb661bb92ca8b367b0e6a44f7bb1"
-   ]
-  ],
-  "tracker": "4a0fd6c7b53c73f5170becab17596c90"
  },
  "prompt/no_person_no_sink": {
   "calls": "4d410c347f8bcd37ef942b71508cde2f",

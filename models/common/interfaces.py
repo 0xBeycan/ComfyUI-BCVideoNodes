@@ -31,6 +31,3 @@ class PoseEstimator(Protocol):
         """`img` float32 [1, 3, h, w] (the normalised crop), `center` [1, 2], `scale` [1, 2] of the
         crop. Returns [1, 133, 3]: x and y in frame pixels and the confidence, per keypoint."""
         ...
-
-    # An optional capability, on ViTPose only; the pose pipeline runs the flip test when it is there:
-    # def flip_keypoints(self, img, center, scale) -> np.ndarray

@@ -14,7 +14,7 @@ from ...libs.bbox import point_in_frame, supplied_boxes
 from ...libs.pose_data import PoseData
 # re-exported: the node loads the model through this module
 from ...models.sam3_1_multiplex.loader import load_sam3_1_multiplex
-from .config import SINGLE_OBJECT_FIELDS, TRACKER_FIELDS, SAM3_1MultiplexConfig, changed_fields, output_cut
+from .config import TRACKER_FIELDS, SAM3_1MultiplexConfig, changed_fields
 from .pose import segment_by_pose
 from .prompt import PROMPT, segment_by_prompt, segment_by_prompt_multi
 
@@ -129,15 +129,15 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     "fill_hole_area". "cut" says per frame how its mask came from its logits, so a threshold can
     be swept offline:
     - "prompt": bilinear to `size` (H, W), then > threshold; where "raw" is true for the frame,
-      the logits are the ones before the output's speck and pinhole cleaning, cleaned relative
-      to the threshold by `shown_logits(logits, threshold, fill_hole_area)` first
+      the logits are the ones before the output's speck and pinhole cleaning, cleaned by
+      `clean_logits(logits, fill_hole_area)` first
     - "birth" / "anchor": the same as "prompt", on the frame the track was born on and on the
       frames it was re-anchored on (where "raw" is false, the logits are the conditioning mask)
     - "prompted" (box_keypoint): bilinear to `size`, > threshold, then clean_mask
     - "propagated" (box_keypoint): bilinear to the tracker's 1008 x 1008, > threshold, bilinear
       to `size` as 0/1, > 0.5, then clean_mask
-    "threshold" is the cut this run used on "prompt" / "propagated" frames and "mask_threshold"
-    the one on "prompted" frames. Not collected with max_objects above 1."""
+    "threshold" is the cut on "prompt" / "propagated" frames (always 0) and "mask_threshold" the
+    one on "prompted" frames. Not collected with max_objects above 1."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, found {mode!r}")
     if not isinstance(max_objects, int) or max_objects < 1:
@@ -164,16 +164,11 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
         if mode == MODE_PROMPT:
             unused = [n for n, v in (("pose_data", pose_data), ("bboxes", bboxes), ("positive_coords", positive_coords),
                                      ("negative_coords", negative_coords)) if v is not None]
-            unused += [f"sam3_config.{n}" for n in changed_fields(config, "[box_keypoint]")
-                       if not (n == "mask_threshold" and config.uniform_mask_threshold)]
-            if max_objects == 1 and not config.uniform_mask_threshold:
-                unused += [f"sam3_config.{n} (uniform_mask_threshold off)" for n in changed_fields(config, names=("m4_anchor_frames",))]
+            unused += [f"sam3_config.{n}" for n in changed_fields(config, "[box_keypoint]")]
             if max_objects == 1:
                 unused += [f"sam3_config.{n} (max_objects 1)" for n in changed_fields(config, "[prompt, max_objects > 1]")]
-            else:
-                unused += [f"sam3_config.{n} (max_objects > 1)" for n in changed_fields(config, names=SINGLE_OBJECT_FIELDS)]
-                if sink is not None:
-                    unused.append("the logits sink (max_objects > 1)")
+            elif sink is not None:
+                unused.append("the logits sink (max_objects > 1)")
             if unused:
                 log.info(f"prompt mode segments from the text alone; {', '.join(unused)} not used")
             if not prompt or not prompt.strip():
@@ -209,7 +204,7 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
         result["mask coverage"] = f"{coverage.min() * 100:.1f}-{coverage.max() * 100:.1f}%"
     if collected is not None:
         info = {"mode": mode, "cut": collected["cut"], "size": (H, W),
-                "threshold": output_cut(config), "mask_threshold": config.mask_threshold}
+                "threshold": 0.0, "mask_threshold": config.mask_threshold}
         if "raw" in collected:
             info.update(raw=collected["raw"], fill_hole_area=config.fill_hole_area)
         sink(collected["logits"], info)

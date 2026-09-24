@@ -117,7 +117,6 @@ CHECK3_MODULES = [
     "models.common.animate",
     "models.vitpose",
     "models.vitpose.net",
-    "models.vitpose.flip",
     "models.vitpose.decode",
     "models.vitpose.wrapper",
     "models.rtmw",

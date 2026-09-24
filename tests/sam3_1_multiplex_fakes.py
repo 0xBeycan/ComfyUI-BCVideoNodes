@@ -6,7 +6,7 @@ import numpy as np
 from names import Names, Ref, Seam, refs, seams
 
 sam3 = Names("sam3", {
-    **refs("pipelines.sam3_1_multiplex.config", "META", "OURS", "output_cut"),
+    **refs("pipelines.sam3_1_multiplex.config", "META", "OURS"),
     **refs("pipelines.sam3_1_multiplex.prompt",
            "PROMPT", "anchor_detections", "non_overlapping", "suppress_recently_occluded", "suppress_shrunk"),
     **refs("pipelines.sam3_1_multiplex.pose",
@@ -16,7 +16,7 @@ sam3 = Names("sam3", {
            "MODES", "MODE_BOX_KEYPOINT", "MODE_PROMPT", "parse_bboxes", "parse_coords", "pose_inputs"),
     **refs("models.sam3_1_multiplex.adapter", "MASK_LOGIT_SCALE"),
     "_propagation_backbone": Ref("models.sam3_1_multiplex.adapter", "propagation_backbone"),
-    **refs("models.sam3_1_multiplex.postprocess", "low_res_logits", "shown_logits"),
+    **refs("models.sam3_1_multiplex.postprocess", "low_res_logits", "clean_channel_logits"),
     # core's tracker names: the functions import them when called, so they are read and patched on core's module
     **refs("comfy.ldm.sam3.tracker", "fill_holes_in_mask_scores"),
     **seams("comfy.ldm.sam3.tracker", "MultiplexState", "_prep_frame"),

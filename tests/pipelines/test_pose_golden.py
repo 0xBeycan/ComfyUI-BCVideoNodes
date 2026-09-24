@@ -4,7 +4,7 @@
 G4  `pose.detect`: the detector's and the pose model's every call, the models brought to the
     device, pose_metas_original with its dtypes, detections, keypoint_source (RECOVERED,
     REPLACED and DROPPED all fire), pose_config, the returned boxes, the log lines and the
-    ProgressBar, in ten scenarios.
+    ProgressBar, in nine scenarios.
 G5  `pose.draw`: the pose image pixels at 160x120 and 720x1280 (height x width) under each
     drawing switch.
 G14 `key_frame_body_points`: the exact strings, the truncation cases kept and the points
@@ -25,8 +25,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("cv2")
 
 from golden import check, digest, log_text  # noqa: E402
-from pose_fakes import (B, H, W, FakeViTPose, RecordingPose, ScriptedDetector, no_device,  # noqa: E402,F401
-                        pose)
+from pose_fakes import B, H, W, RecordingPose, ScriptedDetector, no_device, pose  # noqa: E402,F401
 
 from bcvideonodes.libs import temporal  # noqa: E402
 from bcvideonodes.libs.pose_utils.pose2d_utils import AAPoseMeta  # noqa: E402
@@ -74,18 +73,6 @@ class ViTPoseLike(RecordingPose):
     conf_scale = None
 
 
-class RecordingViTPose(FakeViTPose):
-    """FakeViTPose with every crop its heatmap run was given recorded."""
-
-    def __init__(self):
-        super().__init__()
-        self.seen = []
-
-    def run(self, x):
-        self.seen.append(np.array(x))
-        return super().run(x)
-
-
 BOXES = [(30.0 + i, 20.0, 90.0 + i, 128.0) for i in range(B)]
 SCENARIOS = {
     "default": (RecordingPose, {}),
@@ -98,7 +85,6 @@ SCENARIOS = {
     "detection_threshold_0.2": (RecordingPose, {"config": {"detection_threshold": 0.2}}),
     "confidence_scale_rtmw": (RTMWLike, {"config": {"confidence_scale": 4.6}}),
     "confidence_scale_vitpose": (ViTPoseLike, {"config": {"confidence_scale": 4.6}}),
-    "flip_test": (RecordingViTPose, {"config": {"flip_test": True}}),
 }
 
 
@@ -137,10 +123,7 @@ def test_detect_golden(name, caplog, monkeypatch):
     assert detector.threshold_conf == ScriptedDetector.threshold_conf
     if name == "confidence_scale_rtmw":
         assert {call[3] for call in model.calls} == {4.6} and model.conf_scale == RTMWLike.conf_scale
-    if name == "flip_test":
-        calls = [digest(x) for x in model.seen]
-    else:
-        calls = [(digest(img), digest(center), digest(scale), *rest) for img, center, scale, *rest in model.calls]
+    calls = [(digest(img), digest(center), digest(scale), *rest) for img, center, scale, *rest in model.calls]
     check(__file__, f"{name}.detector_calls",
           digest([(digest(img), repr(shape.tolist()), threshold) for img, shape, threshold in detector.calls]))
     check(__file__, f"{name}.estimator_calls", digest(calls))

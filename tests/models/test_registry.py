@@ -33,9 +33,6 @@ def test_the_pose_estimators_are_the_combo_values_in_order():
         ("ViTPose-H", registry.Entry(ViTPose, "vitpose_h_wholebody_fp16.safetensors")),
         ("RTMW-l", registry.Entry(RTMW, "rtmw_l_wholebody_384x288_fp32.safetensors")),
     ]
-    # the flip test is a capability: exactly the ViTPose wrapper has it
-    assert [callable(getattr(entry.implementation, "flip_keypoints", None)) for _, entry in entries("pose_estimator")] \
-        == [entry.implementation.architecture == "vitpose" for _, entry in entries("pose_estimator")] == [True, False]
 
 
 def test_the_person_detector_is_yolov10x():

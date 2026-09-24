@@ -5,7 +5,7 @@ mask (`condition_on_mask`), a propagated frame (`track_frame`) and the same with
 cleaned (`track_and_clean`), one frame's mask logits from box and point prompts (`decode`), mask
 propagation (`propagate`) and the helpers over the tracker's memory (`memory_lookback`,
 `new_output_dict`, `new_mux`, `new_memory`, `forget_older`, `store_output`, `encode_memory`,
-`encode_memory_into`, `clear_memory`, `object_score`, `object_logit`).
+`encode_memory_into`, `clear_memory`, `object_score`).
 
 Both modes drive core's primitives (`_compute_backbone_frame`, `track_step`,
 `_condition_with_masks`, `_deferred_memory_encode`, `_forward_sam_heads`) directly. Core's
@@ -204,20 +204,15 @@ def object_score(current):
     return float(current["object_score_logits"].float().sigmoid().flatten()[0])
 
 
-def object_logit(out):
-    """The tracker's raw object-score logit of one output, the largest if it holds several."""
-    return float(out["object_score_logits"].float().max())
-
-
-def propagate(sam3, frames_chw, first_mask, device, dtype, H, W, threshold=0.0, logits_out=None):
+def propagate(sam3, frames_chw, first_mask, device, dtype, H, W, logits_out=None):
     """Masks for frames_chw[1:], propagated by the tracker's memory from `first_mask` on
     frames_chw[0], yielded one [H, W] bool array per frame: a frame is computed only when the
     caller asks for it, so a caller that stops accepting frames stops the tracker there.
 
     This is exactly what core's `track_video_with_detection` computes when it is given an
     initial mask and no detector: the mask conditions frame 0, every later frame is a plain
-    track_step with the pinholes filled, and the output is the tracker's high-res mask cut at
-    `threshold` (0 unless uniform_mask_threshold, M4) and resized to the frame. Written out here
+    track_step with the pinholes filled, and the output is the tracker's high-res mask cut at 0
+    and resized to the frame. Written out here
     so no part of core's detection policy runs. `logits_out`, a list, receives each returned
     frame's low-res logits before the pinholes are filled - the ones the high-res mask was
     upsampled from - before that frame is yielded."""
@@ -250,6 +245,6 @@ def propagate(sam3, frames_chw, first_mask, device, dtype, H, W, threshold=0.0, 
                 encode_memory(tracker, current, vision_feats, feat_sizes, mux, device)
             store_output(output_dict, f, current, lookback)
             # one frame at a time: bilinear resizes every frame of a batch independently
-            mask = (current["pred_masks_high_res"][0, 0] > threshold).to(idev).float()[None, None]
+            mask = (current["pred_masks_high_res"][0, 0] > 0).to(idev).float()[None, None]
             mask = F.interpolate(mask, size=(H, W), mode="bilinear", align_corners=False)[0, 0] > 0.5
         yield mask.cpu().numpy()
