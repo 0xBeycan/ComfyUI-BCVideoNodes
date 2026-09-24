@@ -2,13 +2,12 @@
 production code (specs refactor plan 8.2).
 
 G16 the Yolo wrapper's postprocess and person selection on scripted detector rows, with the
-    whole-frame box for a frame whose rows all fall below the threshold; the ViTPose, RTMW and
+    whole-frame box for a frame whose rows all fall below the threshold; the ViTPose and
     YOLOv10 nets' raw forwards, bit exact, on seeded tiny configs in fp32 and fp16 through a
     written and loaded model file, with their state_dict names and shapes and the metadata
-    written; the ViTPose wrapper on a real module; `load_pose_models`' files, its cache
-    and its unknown-name text; `checkpoint.build`'s unknown-architecture text; the Yolo
+    written; the ViTPose wrapper on a real module; `load_pose_models`' files and its cache; `checkpoint.build`'s unknown-architecture text; the Yolo
     wrapper's refusal of a detector that does not take 640x640.
-G19 `scripts/convert_models.py`: `pose_crops` at both crop sizes and `detect_person` on a
+G19 `scripts/convert_models.py`: `pose_crops` at ViTPose's crop size and `detect_person` on a
     scripted detector.
 
 Everything runs on the CPU: the wrappers are built with ComfyUI's device set to the CPU. The
@@ -33,7 +32,6 @@ from golden import check, digest, log_text  # noqa: E402
 from pose_fakes import loader, wrappers  # noqa: E402
 # the tiny configs and the seeded weights of the model-file tests, shared rather than copied
 from test_models_checkpoint import conv_cfg, filled, tiny_vitpose  # noqa: E402
-from test_models_wrappers import tiny_rtmw  # noqa: E402
 
 from bcvideonodes.models.common import checkpoint  # noqa: E402
 
@@ -106,7 +104,7 @@ def written(tmp_path, architecture, config, dtype, seed=0):
 
 # --- the nets ----------------------------------------------------------------------------------
 
-CONFIGS = {"vitpose": tiny_vitpose, "rtmw": tiny_rtmw, "yolov10": mini_yolo}
+CONFIGS = {"vitpose": tiny_vitpose, "yolov10": mini_yolo}
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16], ids=["fp32", "fp16"])
@@ -119,9 +117,8 @@ def test_raw_forward_golden(architecture, dtype, tmp_path):
     x = torch.randn(2, 3, height, width, generator=torch.Generator().manual_seed(1)).to(dtype)
     with torch.inference_mode():
         out = loaded(x)
-    out = out if isinstance(out, tuple) else (out,)
     name = f"{architecture}.{str(dtype).replace('torch.', '')}"
-    check(__file__, f"{name}.forward", digest([digest(o) for o in out]))
+    check(__file__, f"{name}.forward", digest([digest(out)]))
     check(__file__, f"{name}.state_dict",
           digest(sorted((key, tuple(t.shape)) for key, t in loaded.state_dict().items())))
     check(__file__, f"{name}.metadata", checkpoint.read_metadata(path))
@@ -200,12 +197,9 @@ def test_build_refuses_an_unknown_architecture_golden():
 def test_load_pose_models_golden(monkeypatch):
     calls = []
     monkeypatch.setattr(loader, "_load", lambda cls, filename: calls.append((cls.__name__, filename)) or filename)
-    found = [loader.load_pose_models(name, detector) for name in ("ViTPose-H", "RTMW-l") for detector in (True, False)]
+    found = [loader.load_pose_models(detector) for detector in (True, False)]
     check(__file__, "load_pose_models.calls", repr(calls))
     check(__file__, "load_pose_models.results", repr(found))
-    with pytest.raises(ValueError) as err:
-        loader.load_pose_models("OpenPose")
-    check(__file__, "load_pose_models.unknown", str(err.value))
 
 
 def test_the_loader_cache_golden(monkeypatch, caplog):
@@ -252,7 +246,7 @@ CONVERTER_BOXES = [
 ]
 
 
-@pytest.mark.parametrize("input_size", [(256, 192), (384, 288)], ids=["256x192", "384x288"])
+@pytest.mark.parametrize("input_size", [(256, 192)], ids=["256x192"])
 def test_convert_pose_crops_golden(input_size):
     crops, centers, scales = convert_models().pose_crops(converter_frames(), CONVERTER_BOXES, input_size)
     name = f"convert.pose_crops.{input_size[0]}x{input_size[1]}"

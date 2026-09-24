@@ -144,7 +144,7 @@ class FakeSAM3:
 @pytest.fixture
 def fake_models(monkeypatch):
     monkeypatch.setattr(pose, "_to_device", lambda *models: None)
-    monkeypatch.setattr(loader, "load_pose_models", lambda name, detector=True: (FakeDetector() if detector else None, FakePose()))
+    monkeypatch.setattr(loader, "load_pose_models", lambda detector=True: (FakeDetector() if detector else None, FakePose()))
     fake = FakeSAM3()
     monkeypatch.setattr(sam3, "track", fake)
     monkeypatch.setattr(sam3, "load_sam3", lambda *args: ("model", "clip"))
@@ -168,7 +168,7 @@ def same(a, b):
 @pytest.mark.parametrize("mode", list(sam3.MODES))
 def test_the_preprocess_wrapper_is_the_three_nodes_chained(fake_models, mode):
     images = frames()
-    widgets = dict(pose_model="ViTPose-H", body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5)
+    widgets = dict(body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5)
     config = pose.PoseConfig(temporal=False)
     wrapped = nodes.BCVWanAnimatePreprocess().process(images, face_padding=8, mode=mode, prompt=sam3.PROMPT,
                                                       pose_config=config, **widgets)

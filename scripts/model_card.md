@@ -23,10 +23,9 @@ see exactly which files a node is pulling.
 | file | model | source | licence |
 |---|---|---|---|
 | `vitpose_h_wholebody_fp16.safetensors` | ViTPose-H, 133 COCO-WholeBody keypoints | [Kijai/vitpose_comfy](https://huggingface.co/Kijai/vitpose_comfy) | Apache-2.0 |
-| `rtmw_l_wholebody_384x288_fp32.safetensors` | RTMW-l, 133 COCO-WholeBody keypoints | OpenMMLab's own export, via [bukuroo/RTMW-ONNX](https://huggingface.co/bukuroo/RTMW-ONNX) | Apache-2.0 |
 | `yolov10x_fp32.safetensors` | YOLOv10-X person detection | [onnx-community/yolov10x](https://huggingface.co/onnx-community/yolov10x) | AGPL-3.0 |
 
-`vitpose_h_wholebody` is fp16; the other two are fp32. See below.
+`vitpose_h_wholebody` is fp16; the detector is fp32. See below.
 
 ## Why these are not the original files
 
@@ -41,19 +40,17 @@ but the file.
 
 ## Precision
 
-ViTPose-H is fp16, the other two are fp32, because fp16 is not free and only one of them is
-large enough for it to pay:
+ViTPose-H is fp16, YOLOv10x is fp32, because fp16 is not free and only ViTPose-H is large
+enough for it to pay:
 
 | model | fp32 | fp16 | saved |
 |---|---|---|---|
 | ViTPose-H | 2.43 GB | 1.22 GB | 1.2 GB |
-| RTMW-l | 219 MB | 110 MB | 110 MB |
 | YOLOv10x | 113 MB | 57 MB | 56 MB |
 
 What it costs, measured on 60 real frames over every keypoint the model draws, against the
 same model in fp32 on identical crops: ViTPose-H, 5230 keypoints compared, 20 moved, largest
-move **1 heatmap cell**. RTMW-l, 5012 compared, 401 moved, largest move **1.5 px**. Worth
-paying for 1.2 GB, not worth paying for 110 MB.
+move **1 heatmap cell**. Worth paying for 1.2 GB.
 
 Keypoints the model does not draw are excluded from those figures, and that matters: on
 those the score distribution is flat, so the argmax is noise in either precision, and fp16

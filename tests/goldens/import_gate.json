@@ -13,7 +13,7 @@
    "E3": false
   },
   "BCVPoseDetection": {
-   "E1": true,
+   "E1": false,
    "E3": false
   },
   "BCVPoseGuard": {

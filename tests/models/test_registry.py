@@ -1,6 +1,6 @@
 """The model registry (models/common/registry.py) and the pose families the model packages fill: the
 architecture, pose_estimator and person_detector names in registration order, the class and the
-file each one holds, and the Pose Detection combo list built from them. The animate family is
+file each one holds, and the names the loader reads them by. The animate family is
 tests/models/test_animate_registry.py.
 
     python -m pytest tests/models/test_registry.py
@@ -10,8 +10,6 @@ import pytest
 pytest.importorskip("torch")
 
 from bcvideonodes.models.common import registry  # noqa: E402
-from bcvideonodes.models.rtmw.net import RTMWNet  # noqa: E402
-from bcvideonodes.models.rtmw.wrapper import RTMW  # noqa: E402
 from bcvideonodes.models.vitpose.net import ViTPoseNet  # noqa: E402
 from bcvideonodes.models.vitpose.wrapper import ViTPose  # noqa: E402
 from bcvideonodes.models.yolo.net import YOLOv10Net  # noqa: E402
@@ -24,14 +22,12 @@ def entries(family):
 
 def test_the_architectures_are_the_checkpoint_modules_in_order():
     # the order of checkpoint.ARCHITECTURES before the registry
-    assert entries("architecture") == [("vitpose", registry.Entry(ViTPoseNet)), ("rtmw", registry.Entry(RTMWNet)),
-                                       ("yolov10", registry.Entry(YOLOv10Net))]
+    assert entries("architecture") == [("vitpose", registry.Entry(ViTPoseNet)), ("yolov10", registry.Entry(YOLOv10Net))]
 
 
-def test_the_pose_estimators_are_the_combo_values_in_order():
+def test_the_pose_estimator_is_vitpose_h():
     assert entries("pose_estimator") == [
         ("ViTPose-H", registry.Entry(ViTPose, "vitpose_h_wholebody_fp16.safetensors")),
-        ("RTMW-l", registry.Entry(RTMW, "rtmw_l_wholebody_384x288_fp32.safetensors")),
     ]
 
 
@@ -39,15 +35,12 @@ def test_the_person_detector_is_yolov10x():
     assert entries("person_detector") == [("YOLOv10x", registry.Entry(Yolo, "yolov10x_fp32.safetensors"))]
 
 
-def test_the_pose_model_combo_is_a_new_list_of_the_estimators():
+def test_the_loader_names_are_registered():
     pytest.importorskip("folder_paths")  # the loader imports the download module (E1)
     from bcvideonodes.models.common import loader
 
     assert loader.DETECTOR in registry.names("person_detector")
-    names = loader.pose_model_names()
-    assert names == ["ViTPose-H", "RTMW-l"]
-    names.append("changed")
-    assert loader.pose_model_names() == ["ViTPose-H", "RTMW-l"]
+    assert loader.POSE_ESTIMATOR in registry.names("pose_estimator")
 
 
 def test_the_registry_api(monkeypatch):

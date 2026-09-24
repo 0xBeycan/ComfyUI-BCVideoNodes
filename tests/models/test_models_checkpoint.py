@@ -88,8 +88,8 @@ def test_the_precision_is_the_files(tmp_path):
 
 def test_the_wrong_architecture_is_refused(written):
     _, path = written
-    with pytest.raises(ValueError, match="expected a rtmw model file, found 'vitpose'"):
-        checkpoint.load(path, "rtmw")
+    with pytest.raises(ValueError, match="expected a yolov10 model file, found 'vitpose'"):
+        checkpoint.load(path, "yolov10")
 
 
 def test_a_file_without_metadata_is_refused(tmp_path):

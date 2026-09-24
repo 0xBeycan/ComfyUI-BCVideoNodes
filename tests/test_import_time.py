@@ -122,10 +122,6 @@ CHECK3_MODULES = [
     "models.vitpose.net",
     "models.vitpose.decode",
     "models.vitpose.wrapper",
-    "models.rtmw",
-    "models.rtmw.net",
-    "models.rtmw.decode",
-    "models.rtmw.wrapper",
     "models.yolo",
     "models.yolo.net",
     "models.yolo.wrapper",
@@ -152,7 +148,7 @@ ALLOWED = {
     "libs.pose_utils.pose2d_utils": "cv2",
     "libs.pose_utils.human_visualization": "cv2",
 }
-# check 4: the modules that import without ComfyUI. scripts/ needs the first seven,
+# check 4: the modules that import without ComfyUI. scripts/ needs the first six,
 # test-scripts the guard and the three SAM 3.1 Multiplex helpers, scripts/convert_models.py
 # libs.bbox.
 CHECK4_MODULES = [
@@ -161,7 +157,6 @@ CHECK4_MODULES = [
     "models.common.checkpoint",
     "models.common.pose_input",
     "models.vitpose.decode",
-    "models.rtmw.decode",
     "libs.pose_utils.pose2d_utils",
     "pipelines.guard",
     "pipelines.sam3_1_multiplex.config",

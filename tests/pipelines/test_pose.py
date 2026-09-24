@@ -63,12 +63,6 @@ def test_the_detection_threshold_reaches_the_detector_and_is_restored():
     assert detector.seen_threshold == 0.2 and detector.threshold_conf == 0.05
 
 
-def test_a_confidence_scale_on_a_model_without_one_raises():
-    with pytest.raises(ValueError, match="conf_scale"):
-        pose.detect(NoDetector(), FakePose(), frames(), bboxes=[(30, 20, 90, 140)],
-                    config=pose.PoseConfig(confidence_scale=4.6))
-
-
 def test_pose_data_keys():
     pose_data, _ = pose.detect(FakeDetector(), FakePose(), frames())
     assert set(pose_data) == {"pose_metas", "pose_metas_original", "detections", "keypoint_source", "pose_config"}

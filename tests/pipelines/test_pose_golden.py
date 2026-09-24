@@ -4,7 +4,7 @@
 G4  `pose.detect`: the detector's and the pose model's every call, the models brought to the
     device, pose_metas_original with its dtypes, detections, keypoint_source (RECOVERED,
     REPLACED and DROPPED all fire), pose_config, the returned boxes, the log lines and the
-    ProgressBar, in nine scenarios.
+    ProgressBar, in seven scenarios.
 G5  `pose.draw`: the pose image pixels at 160x120 and 720x1280 (height x width) under each
     drawing switch.
 G14 `key_frame_body_points`: the exact strings, the truncation cases kept and the points
@@ -52,27 +52,6 @@ def capture_logs(caplog):
     caplog.clear()
 
 
-class RTMWLike(RecordingPose):
-    """RTMW's contract: a `conf_scale` divisor of a raw score, here the scripted confidence
-    times 4.6, and the divisor each call ran with recorded."""
-
-    architecture = "rtmw"
-    conf_scale = 6.0
-
-    def __call__(self, img, center, scale):
-        kp = super().__call__(img, center, scale)
-        self.calls[-1] += (self.conf_scale,)
-        kp[..., 2] = np.clip(kp[..., 2] * np.float32(4.6) / np.float32(self.conf_scale), 0.0, 1.0)
-        return kp
-
-
-class ViTPoseLike(RecordingPose):
-    """ViTPose's contract: confidences used as they are, `conf_scale` None."""
-
-    architecture = "vitpose"
-    conf_scale = None
-
-
 BOXES = [(30.0 + i, 20.0, 90.0 + i, 128.0) for i in range(B)]
 SCENARIOS = {
     "default": (RecordingPose, {}),
@@ -83,8 +62,6 @@ SCENARIOS = {
     "supplied_json": (RecordingPose, {"bboxes": json.dumps([{"startX": x1, "startY": y1, "endX": x2, "endY": y2}
                                                              for x1, y1, x2, y2 in BOXES])}),
     "detection_threshold_0.2": (RecordingPose, {"config": {"detection_threshold": 0.2}}),
-    "confidence_scale_rtmw": (RTMWLike, {"config": {"confidence_scale": 4.6}}),
-    "confidence_scale_vitpose": (ViTPoseLike, {"config": {"confidence_scale": 4.6}}),
 }
 
 
@@ -121,8 +98,6 @@ def test_detect_golden(name, caplog, monkeypatch):
     if "bboxes" in SCENARIOS[name][1]:
         assert detector.calls == []
     assert detector.threshold_conf == ScriptedDetector.threshold_conf
-    if name == "confidence_scale_rtmw":
-        assert {call[3] for call in model.calls} == {4.6} and model.conf_scale == RTMWLike.conf_scale
     calls = [(digest(img), digest(center), digest(scale), *rest) for img, center, scale, *rest in model.calls]
     check(__file__, f"{name}.detector_calls",
           digest([(digest(img), repr(shape.tolist()), threshold) for img, shape, threshold in detector.calls]))

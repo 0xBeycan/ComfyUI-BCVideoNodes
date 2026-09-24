@@ -5,7 +5,7 @@ one-to-one head and the top-k post-processing baked in: it returns [N, 300, 6] r
 x1, y1, x2, y2 in input pixels, score and class id, best first. This module computes the
 same rows from the same weights.
 
-Backbone and neck are the same family as RTMW's, and use the same blocks: SiLU
+Backbone and neck are built from models/common/blocks.py: SiLU
 convolutions, residual convolution chains (the bottleneck, the CIB and SCDown are all
 `ConvChain`), an SPPF pyramid and the PAFPN neck, here without the reduce convolutions.
 What is YOLO's own is the C2f merge layer, the PSA attention block at the end of the

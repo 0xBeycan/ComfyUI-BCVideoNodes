@@ -2,7 +2,7 @@
 
 Each model package registers its names in its __init__.py, after all of its imports, so an import
 that fails leaves nothing half-registered; models/__init__.py imports the packages in registration
-order. A pipeline picks a model by name from here, and a node's combo list is names() of a family.
+order. A pipeline or the loader picks a model by name from here.
 
 Standard library only, and it imports no model package, so every module of models/ can read it.
 """

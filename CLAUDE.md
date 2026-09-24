@@ -35,7 +35,7 @@ pipelines/           long_video (the chunk loop), pose, face, scail2 (the colore
                      sam3_1_multiplex/ (config, prompt, pose, track: the entry the node calls)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
-                     core_nodes, animate), vitpose/, rtmw/, yolo/, sam3_1_multiplex/ (adapter, loader,
+                     core_nodes, animate), vitpose/, yolo/, sam3_1_multiplex/ (adapter, loader,
                      postprocess), wan_animate/, wan_animate2/, scail2/
 libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, config_widgets, pose_data,
                      pose_utils/ (vendored, with its LICENSE)
@@ -52,7 +52,7 @@ tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the
   `models/__init__.py` imports the model packages: that is the registration list.
 - The layers above `models/`, and `scripts/`, may import a model package directly: the SAM 3.1
   Multiplex pipeline imports `models/sam3_1_multiplex/` (SAM is not registered), and
-  `scripts/convert_models.py` imports the ViTPose and RTMW decoders. No pipeline imports an
+  `scripts/convert_models.py` imports the ViTPose decoder. No pipeline imports an
   animate adapter package but the SCAIL-2 guard (`pipelines/guard/scail2.py`), which reads the
   colored-mask conventions (`ON`, `mask_convention`) of `models/scail2/adapter.py`; the sampler
   pipeline reaches the adapters through the registry.
@@ -87,9 +87,10 @@ and patch underscore names through the `Names` tables.
 - Register it in its `__init__.py`, after all of its imports: its architecture
   (`registry.register("architecture", ...)`) and its entry in the `pose_estimator` or
   `person_detector` family with its model file (see `models/vitpose/__init__.py`).
-- Add the package to the import list in `models/__init__.py`. Its position there is its position
-  in the combo list, so G2 fails until the new surface is re-recorded with the owner's word (the
-  re-record procedure under Tests).
+- Add the package to the import list in `models/__init__.py`. The loader loads the pose
+  estimator and the person detector by their registry names (`models/common/loader.py`:
+  `POSE_ESTIMATOR`, `DETECTOR`); offering a choice between models means a node widget, which
+  changes the G2 surface and needs the owner's word (the re-record procedure under Tests).
 - Keep its module-level imports to torch, numpy and the standard library.
 - List its modules in `CHECK3_MODULES` of `tests/test_import_time.py` (with an `ALLOWED` row if
   one may pull in a heavy module): the gate fails on a layer module that is not listed there.
@@ -152,7 +153,7 @@ and patch underscore names through the `Names` tables.
   - E1: `models/common/download.py` imports `folder_paths` and registers ComfyUI's `detection`
     model folder at import. The two loaders (`models/common/loader.py`,
     `models/sam3_1_multiplex/loader.py`) import it at module level, so the registration happens
-    when Pose Detection's or a SAM node's INPUT_TYPES first runs.
+    when a SAM node's INPUT_TYPES or Pose Detection first runs.
   - E2: the vendored `libs/pose_utils/*` import cv2 at module level. Every consumer imports them
     inside functions.
   - E3: `pipelines/sam3_1_multiplex/track.py` imports core's SAM 3.1 tracker names at module level,
@@ -204,8 +205,8 @@ and patch underscore names through the `Names` tables.
 Do not reopen or "improve" them. They live in the owner's closed-decision documents (outside the
 repo: the plan, the guard, pose-process and mask-process specs, and the review report whose open
 items are decided elsewhere). In short: the guard judges pose and mask only and counts at
-`draw_threshold`; the guard's warning set; ViTPose-H is the default pose model and RTMW-l
-optional; the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
+`draw_threshold`; the guard's warning set; ViTPose-H is the only pose model (RTMW-l was
+removed: not good enough); the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
 multi-person) default to "ours" and are bit-identical there; features the owner did not adopt
 (the ViTPose flip test, the other SAM A/B switches, the M4 mask-threshold options) are removed;
 multi-person is phase 2; a failed download keeps its `.part` file.
@@ -234,5 +235,5 @@ multi-person is phase 2; a failed download keeps its `.part` file.
   (`libs/pose_utils/LICENSE`) and keep `# Copyright 2024-2025 The Alibaba Wan Team Authors. All
   rights reserved.` as their first line: `libs/pose_utils/pose2d_utils.py`,
   `libs/pose_utils/human_visualization.py`, `pipelines/face.py`, `models/common/wrapper.py`,
-  `models/{vitpose,rtmw,yolo}/wrapper.py`, `models/{vitpose,rtmw}/decode.py`.
+  `models/{vitpose,yolo}/wrapper.py`, `models/vitpose/decode.py`.
 - The model weights keep their own licences, listed in the README.

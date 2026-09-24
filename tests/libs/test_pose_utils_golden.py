@@ -1,7 +1,7 @@
 """G15: the vendored pose primitives, recorded from the production code (specs refactor plan
 8.2): `bbox_from_detector`, `crop` (padding beyond the frame, and Python's round half to even
 on the crop corners), `decode_heatmaps` (ViTPose's DARK decode, which warns about its own
-arguments), `decode_simcc` and the dtype `load_pose_metas_from_kp2ds_seq` keeps.
+arguments) and the dtype `load_pose_metas_from_kp2ds_seq` keeps.
 
 `crop` resizes with cv2, so its digests hold for the cv2 build of the ComfyUI venv only; they
 are in tests/goldens/test_pose_utils_golden.json:
@@ -17,11 +17,10 @@ pytest.importorskip("cv2")
 from golden import check, digest  # noqa: E402
 from pose_fakes import peaks  # noqa: E402
 
-from bcvideonodes.models.rtmw.decode import decode_simcc  # noqa: E402
 from bcvideonodes.models.vitpose.decode import decode_heatmaps  # noqa: E402
 from bcvideonodes.libs.pose_utils import pose2d_utils  # noqa: E402
 
-RESOLUTIONS = {"vitpose": (256, 192), "rtmw": (384, 288)}
+RESOLUTIONS = {"vitpose": (256, 192)}
 H, W = 160, 120
 BOXES = (
     (30.0, 20.0, 90.0, 140.0),                     # taller than the crop's 4:3
@@ -39,7 +38,6 @@ def frame():
 
 @pytest.mark.parametrize("model", list(RESOLUTIONS))
 def test_bbox_from_detector_golden(model):
-    # both crops have the same 4:3 geometry, so both record the same numbers
     found = [pose2d_utils.bbox_from_detector(box, RESOLUTIONS[model], rescale=1.25) for box in BOXES]
     check(__file__, f"bbox_from_detector.{model}", digest([(digest(c), digest(s)) for c, s in found]))
 
@@ -49,7 +47,6 @@ def test_bbox_from_detector_golden(model):
 # Python's round half to even makes of them: 4.5 -> 4 and 2.5 -> 2 down, 1.5 -> 2 and 3.5 -> 4 up.
 HALF_CENTERS = {
     "vitpose": [((100.5, 130.5), ((4, 120), (2, 160))), ((97.5, 131.5), ((2, 120), (4, 160)))],
-    "rtmw": [((148.5, 196.5), ((4, 120), (4, 160))), ((148.5, 193.5), ((4, 120), (2, 160)))],
 }
 
 
@@ -75,33 +72,7 @@ def test_decode_heatmaps_golden():
     center, scale = np.array([[60.0, 80.0]]), np.array([[0.6, 0.8]])
     with pytest.warns(DeprecationWarning):
         plain = decode_heatmaps(heatmaps, center, scale)
-    with pytest.warns(DeprecationWarning):
-        halved = decode_heatmaps(heatmaps, center, scale, conf_scale=2.0)
     check(__file__, "decode_heatmaps", digest(plain))
-    check(__file__, "decode_heatmaps.conf_scale_2", digest(halved))
-
-
-def simcc_inputs():
-    # one offset per keypoint, shared by both axes, puts min(max x, max y) at about -0.8 to 3.2:
-    # scores inside 0..1 at the default conf_scale and on both clip bounds at 2.0
-    rng = np.random.default_rng(16)
-    height, width = RESOLUTIONS["vitpose"]
-    offset = rng.uniform(-2.5, 1.5, (2, 133, 1))
-    simcc_x = (rng.standard_normal((2, 133, width * 2)) * 0.6 + offset).astype(np.float32)
-    simcc_y = (rng.standard_normal((2, 133, height * 2)) * 0.6 + offset).astype(np.float32)
-    return simcc_x, simcc_y, np.array([[60.0, 80.0], [50.0, 70.0]]), np.array([[0.6, 0.8], [0.5, 0.7]])
-
-
-def test_decode_simcc_golden():
-    simcc_x, simcc_y, center, scale = simcc_inputs()
-    plain = decode_simcc(simcc_x, simcc_y, center, scale, RESOLUTIONS["vitpose"])
-    halved = decode_simcc(simcc_x, simcc_y, center, scale, RESOLUTIONS["vitpose"], conf_scale=2.0)
-    # the inputs reach the division and both ends of the clip, so the digests pin all three
-    assert ((plain[..., 2] > 0) & (plain[..., 2] < 1)).any()
-    assert (halved[..., 2] == 0).any() and (halved[..., 2] == 1).any()
-    assert not np.array_equal(plain, halved)
-    check(__file__, "decode_simcc", digest(plain))
-    check(__file__, "decode_simcc.conf_scale_2", digest(halved))
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])

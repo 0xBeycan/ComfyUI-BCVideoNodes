@@ -5,7 +5,7 @@ contract only: nothing checks against these classes and no code path reads them.
 Registering a new person detector or pose estimator means a wrapper with these attributes and
 this call, registered in its package's __init__.py (see common/registry.py).
 """
-from typing import Optional, Protocol
+from typing import Protocol
 
 import numpy as np
 
@@ -25,7 +25,6 @@ class PersonDetector(Protocol):
 class PoseEstimator(Protocol):
     patcher: "ModelPatcher"          # comfy.model_patcher.ModelPatcher, read by wrapper.load_models
     input_shape: list[int]           # [1, 3, h, w]: the resolution the crop is sampled at
-    conf_scale: Optional[float]      # the divisor of a raw score; None: the confidences are not one
 
     def __call__(self, img: np.ndarray, center: np.ndarray, scale: np.ndarray) -> np.ndarray:
         """`img` float32 [1, 3, h, w] (the normalised crop), `center` [1, 2], `scale` [1, 2] of the

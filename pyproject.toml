@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-bcvideonodes"
 version = "0.2.0"
-description = "ComfyUI video nodes: wholebody pose detection (ViTPose-H / RTMW-l), SAM 3.1 person tracking, face crops and pose/mask guards for Wan Animate preprocessing, plus Wan Animate / Wan Animate 2 samplers that generate arbitrarily long videos by chaining fixed-size chunks."
+description = "ComfyUI video nodes: wholebody pose detection (ViTPose-H), SAM 3.1 person tracking, face crops and pose/mask guards for Wan Animate preprocessing, plus Wan Animate / Wan Animate 2 samplers that generate arbitrarily long videos by chaining fixed-size chunks."
 authors = [{ name = "0xBeycan" }]
 license = { text = "MIT" }
 readme = "README.md"

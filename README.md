@@ -31,14 +31,14 @@ boxes come out at the size of the frames that went in.
 
 ### Pose Detection
 
-YOLOv10x finds the person, the pose model gives the 133 COCO-WholeBody
+YOLOv10x finds the person, ViTPose-H gives the 133 COCO-WholeBody
 keypoints, the keypoints are read against the frames around them (short gaps
 bridged, glitches replaced, every filled keypoint labelled as such in
 `pose_data`), and the pose images are drawn.
 
 - in: `images`; optional `bboxes` (BBOX, one `(x1, y1, x2, y2)` per frame or
   one for all: the detector is then skipped), `pose_config` (POSE_CONFIG)
-- widgets: `pose_model` (`ViTPose-H` | `RTMW-l`), `body_stick_width` -1,
+- widgets: `body_stick_width` -1,
   `hand_stick_width` -1 (0 leaves that part out, -1 sizes it from the frame),
   `draw_head` true, `draw_threshold` 0.5
 - out: `pose_images` (IMAGE), `pose_data` (POSEDATA), `bboxes` (BBOX, the
@@ -50,9 +50,7 @@ bridged, glitches replaced, every filled keypoint labelled as such in
 
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
-`pipelines/pose.py`: `confidence_scale` (RTMW only: the divisor of its raw
-SimCC score, 0 keeps the default 4.6; ignored with ViTPose, with one console
-line saying so), `min_keypoint_conf`, `detection_threshold`, `temporal`,
+`pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`, `temporal`,
 `temporal_max_gap`, `temporal_max_step`, `temporal_max_residual`,
 `box_window`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
@@ -145,7 +143,7 @@ The wrappers call the individual nodes, so a wrapper produces exactly what
 the chained nodes produce with the same settings.
 
 - **WanAnimate Preprocess** = Pose Detection -> SAM 3.1 Multiplex Video Track -> Face
-  Crop. Widgets: `pose_model`, the drawing widgets, `face_padding`, `mode`,
+  Crop. Widgets: the drawing widgets, `face_padding`, `mode`,
   `prompt`; optional `pose_config`, `sam3_config`. In `box_keypoint` mode the
   mask is prompted from the pose. Outputs: `pose_images`, `face_images`,
   `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
@@ -228,8 +226,7 @@ Everything is downloaded on first use; nothing has to be fetched by hand.
 - Detection and pose models: from
   [huggingface.co/beycanai/BCVideoNodes-models](https://huggingface.co/beycanai/BCVideoNodes-models)
   into `ComfyUI/models/detection/` (`yolov10x_fp32.safetensors`,
-  `vitpose_h_wholebody_fp16.safetensors`,
-  `rtmw_l_wholebody_384x288_fp32.safetensors`; a model is fetched when a node
+  `vitpose_h_wholebody_fp16.safetensors`; a model is fetched when a node
   first needs it). They are native torch modules stored as safetensors and
   loaded and offloaded by ComfyUI's model management; `onnx` is not needed.
   `scripts/convert_models.py` rebuilds them from the upstream ONNX exports.
@@ -603,17 +600,14 @@ header (`libs/pose_utils/LICENSE`):
 - `pipelines/face.py`
 - `models/common/wrapper.py`
 - `models/vitpose/wrapper.py`
-- `models/rtmw/wrapper.py`
 - `models/yolo/wrapper.py`
 - `models/vitpose/decode.py`
-- `models/rtmw/decode.py`
 
 The model weights keep their own licences:
 
 | Model | File | Licence |
 |-------|------|---------|
 | ViTPose-H wholebody | `vitpose_h_wholebody_fp16.safetensors` | Apache-2.0 |
-| RTMW-l wholebody | `rtmw_l_wholebody_384x288_fp32.safetensors` | Apache-2.0 |
 | YOLOv10x | `yolov10x_fp32.safetensors` | AGPL-3.0 |
 | SAM 3.1 | `sam3.1_multiplex_fp16.safetensors` | Meta's SAM License |
 

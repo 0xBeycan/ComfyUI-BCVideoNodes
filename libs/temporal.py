@@ -45,18 +45,17 @@ ANCHOR_CONF = 0.5
 # where ViTPose puts the same keypoint, against 59% at eight frames and 47% at twelve. The
 # difference is a keypoint that really is out of sight - a hand behind the back, a foot
 # outside the crop - which neither model can see and this one would be inventing. Re-swept on
-# eight clips at RTMW's 4.6 divisor: 60% of the runs are five frames or shorter for both
-# models, and the share of bridged values that land near the other model's falls off past
-# four frames on RTMW and past six on ViTPose, so five stays for both.
+# eight clips: 60% of the runs are five frames or shorter, and on ViTPose the share of bridged
+# values that land near a second model's falls off past six frames, so five stays.
 MAX_GAP = 5
 # A gap is filled from the straight line between the anchors either side of it, which only
 # says anything while the person is not travelling faster than this fraction of their box
 # diagonal per frame. Over the same clips the 99th percentile of the per-frame step of a
 # confident keypoint is 0.019 to 0.059 box diagonals; past 0.06 the straight line is a guess,
 # and doubling the limit to 0.12 wrote three times as many values that land far from
-# ViTPose's without filling in a single extra limb. Re-swept on eight clips at the 4.6 divisor
-# the same holds: 0.12 adds 30 (RTMW) and 38 (ViTPose) values far from the other model's and
-# at most 19 limb-frames over 3075 frames.
+# ViTPose's without filling in a single extra limb. Re-swept on eight clips the same holds:
+# on ViTPose 0.12 adds 38 values far from a second model's and at most 19 limb-frames over
+# 3075 frames.
 MAX_STEP = 0.06
 # A keypoint is tested against the median of the anchored positions within this many frames
 # either side, not against the line between the two nearest anchors. The line has the frames
@@ -67,19 +66,17 @@ MAX_STEP = 0.06
 # either. Swept on three clips against ViTPose: a nine-frame window takes 13.4 box diagonals
 # of error out of the keypoints ViTPose can judge, against 4.8 at seven frames and 10.2 at
 # thirteen, where the window is long enough that real motion starts to read as a glitch.
-# Re-swept on eight clips at the 4.6 divisor it still is: at MAX_RESIDUAL 0.25 seven frames
+# Re-swept on eight clips it still is: at MAX_RESIDUAL 0.25 seven frames
 # take 22.7 out and eleven 26.5, but eleven falls apart below that tolerance (7.2 at 0.15
 # against 20.6 for nine).
 MEDIAN_WINDOW = 4
 MEDIAN_MIN = 5
 # Further than this from that median and the keypoint is a glitch rather than motion.
-# Re-swept on all eight clips at RTMW's 4.6 divisor, each model judged against the other:
-# on RTMW 0.25 takes 25.7 box diagonals of error out and makes 4 keypoints worse against 74
-# better, where 0.15 - chosen on three slow clips - makes 77 worse against 93 better: on the
-# fast clips a limb moves up to 0.10 box diagonals a frame, and real motion reads as a
-# glitch. 0.18-0.25 remove the same error; above 0.25 glitches survive (22.8 at 0.30). On
-# ViTPose the pass is neutral from 0.18 up (within one box diagonal either way) and harmful
-# below. One number for all 133 keypoints, so it is the body and the hands it catches; a
+# Re-swept on all eight clips, judged against a second pose model: 0.15 - chosen on three
+# slow clips - is harmful on the fast clips, where a limb moves up to 0.10 box diagonals a
+# frame and real motion reads as a glitch; 0.18-0.25 remove the same error, and above 0.25
+# glitches survive. On ViTPose the pass is neutral from 0.18 up (within one box diagonal
+# either way) and harmful below. One number for all 133 keypoints, so it is the body and the hands it catches; a
 # face keypoint never moves far enough from its neighbours in box diagonals to be rejected.
 MAX_RESIDUAL = 0.25
 # Taking a keypoint out of the anchors leaves the median of its neighbours cleaner than it

@@ -36,10 +36,9 @@ if "bcvideonodes" not in sys.modules:
     _pack.__path__ = [ROOT]
     sys.modules["bcvideonodes"] = _pack
 
-from onnx_extract import OnnxGraph, extract_rtmw, extract_vitpose, extract_yolov10  # noqa: E402
+from onnx_extract import OnnxGraph, extract_vitpose, extract_yolov10  # noqa: E402
 
 from bcvideonodes.models.common import checkpoint  # noqa: E402
-from bcvideonodes.models.rtmw.decode import decode_simcc  # noqa: E402
 from bcvideonodes.models.vitpose.decode import decode_heatmaps  # noqa: E402
 from bcvideonodes.libs.bbox import whole_frame_box  # noqa: E402
 from bcvideonodes.models.common.pose_input import pose_crop  # noqa: E402
@@ -48,12 +47,10 @@ CONVERTER_VERSION = "1"
 
 # name -> the upstream export, where it comes from, the file written and its precision.
 # fp16 only where it pays: ViTPose-H halves from 2.43 GB to 1.22 GB for a largest move of
-# one heatmap cell on drawn keypoints; RTMW-l (219 MB) and YOLOv10x (113 MB) stay fp32.
+# one heatmap cell on drawn keypoints; YOLOv10x (113 MB) stays fp32.
 MODELS = {
     "vitpose": {"onnx": "vitpose_h_wholebody_model.onnx", "source": "Kijai/vitpose_comfy (onnx/vitpose_h_wholebody_model.onnx)",
                 "file": "vitpose_h_wholebody_fp16.safetensors", "dtype": torch.float16, "extract": extract_vitpose},
-    "rtmw": {"onnx": "rtmw_dw_x_l_wholebody_384x288.onnx", "source": "bukuroo/RTMW-ONNX (rtmw-l-384.onnx)",
-             "file": "rtmw_l_wholebody_384x288_fp32.safetensors", "dtype": torch.float32, "extract": extract_rtmw},
     "yolov10": {"onnx": "yolov10x.onnx", "source": "onnx-community/yolov10x (onnx/model.onnx)",
                 "file": "yolov10x_fp32.safetensors", "dtype": torch.float32, "extract": extract_yolov10},
 }
@@ -138,18 +135,14 @@ def pose_crops(frames, boxes, input_size):
     return crops, centers, scales
 
 
-def run_pose(name, net, crops, centers, scales, device):
+def run_pose(net, crops, centers, scales, device):
     dtype = next(net.parameters()).dtype
     out = []
     for img, center, scale in zip(crops, centers, scales):
         x = torch.from_numpy(img[None]).to(device, dtype)
         with torch.inference_mode():
             raw = net(x)
-        if name == "rtmw":
-            simcc_x, simcc_y = (r.float().cpu().numpy() for r in raw)
-            out.append(decode_simcc(simcc_x, simcc_y, center[None], scale[None], net.config["input_size"])[0])
-        else:
-            out.append(decode_heatmaps(raw.float().cpu().numpy(), center[None], scale[None])[0])
+        out.append(decode_heatmaps(raw.float().cpu().numpy(), center[None], scale[None])[0])
     return np.stack(out)
 
 
@@ -222,8 +215,7 @@ def main():
         x = torch.randn(1, 3, h, w, generator=torch.Generator().manual_seed(0)).to(device)
         with torch.inference_mode():
             a, b = ref(x), new(x.to(next(new.parameters()).dtype))
-        a, b = (a if isinstance(a, tuple) else (a,)), (b if isinstance(b, tuple) else (b,))
-        raw = max(float((u.float() - v.float()).abs().max()) for u, v in zip(a, b))
+        raw = float((a.float() - b.float()).abs().max())
         print(f"  synthetic input, raw output max |onnx-built - file-built|: {raw:.3e}", flush=True)
 
         if not frames:
@@ -244,8 +236,8 @@ def main():
                 detector_boxes = [detect_person(yolo, f, device) for f in frames]
                 del yolo
             crops, centers, scales = pose_crops(frames, detector_boxes, tuple(ref.config["input_size"]))
-            kp_ref = run_pose(name, ref, crops, centers, scales, device)
-            kp_new = run_pose(name, new, crops, centers, scales, device)
+            kp_ref = run_pose(ref, crops, centers, scales, device)
+            kp_new = run_pose(new, crops, centers, scales, device)
             print(f"  {len(frames)} crops: {compare_keypoints(kp_ref, kp_new)}", flush=True)
         del ref, new
         if device.type == "cuda":

@@ -38,11 +38,9 @@ pose = Names("pose", {
     "ProgressBar": Seam(Ref("comfy.utils", "ProgressBar")),
 })
 loader = Names("loader", {
-    # today's POSE_MODELS and DETECTOR_FILE literals (preprocess/models/loader.py:6-11 at 228a26e), with
-    # the wrapper classes from their modules: the widget test compares with this list, not with the
-    # registry the widget is built from
-    "POSE_MODELS": Value(lambda: {"ViTPose-H": (wrappers.ViTPose, "vitpose_h_wholebody_fp16.safetensors"),
-                                  "RTMW-l": (wrappers.RTMW, "rtmw_l_wholebody_384x288_fp32.safetensors")}),
+    # the pose model's and the detector's file literals: the node test compares with these, not
+    # with the registry the loader reads them from
+    "POSE_FILE": Value(lambda: "vitpose_h_wholebody_fp16.safetensors"),
     "DETECTOR_FILE": Value(lambda: "yolov10x_fp32.safetensors"),
     "Yolo": Ref("models.yolo.wrapper", "Yolo"),
     **seams("models.common.loader", "_load", "load_pose_models"),
@@ -50,7 +48,6 @@ loader = Names("loader", {
 })
 wrappers = Names("wrappers", {
     **refs("models.vitpose.wrapper", "ViTPose"),
-    **refs("models.rtmw.wrapper", "RTMW"),
     **refs("models.yolo.wrapper", "Yolo"),
     **refs("models.common.wrapper", "load_models"),
 })

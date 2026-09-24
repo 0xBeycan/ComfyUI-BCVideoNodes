@@ -1,5 +1,5 @@
 """Pose detection over a batch of frames: the person box (YOLO, or boxes the caller supplies),
-the 133 COCO-WholeBody keypoints (ViTPose or RTMW), read against the frames around them, and
+the 133 COCO-WholeBody keypoints (ViTPose), read against the frames around them, and
 the pose images drawn from them.
 
 The detector and the pose model are passed in as the wrapper objects the models package
@@ -7,7 +7,7 @@ builds; nothing here loads a model, and nothing here calls SAM3 - the mask is it
 and reads the pose_data this module produces.
 """
 import json
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
@@ -43,9 +43,6 @@ class PoseConfig:
     field changed from its default that the run does not read (detection_threshold with
     supplied boxes, the temporal_* fields with temporal off) is named in one console line."""
 
-    confidence_scale: float = field(default=0.0, metadata={
-        "min": 0.0, "max": 20.0, "step": 0.1,
-        "doc": "RTMW only: divisor of its raw SimCC keypoint score; 0 keeps the default 4.6. Ignored with ViTPose, whose confidences are its heatmap maxima"})
     min_keypoint_conf: float = field(default=0.3, metadata={
         "min": 0.0, "max": 1.0, "step": 0.05,
         "doc": "Keypoints below this confidence count as not found by SAM 3.1 Multiplex box_keypoint mode, which reads it from pose_data. The drawing and the guards use Pose Detection's draw_threshold"})
@@ -194,15 +191,7 @@ def detect(detector, pose_model, images, bboxes=None, config=None
         boxes = [snap_to_frame(b, W, H) for b in widen_over_time(raw, config.box_window)]
 
     kp2ds = []
-    scale_override = nullcontext()
-    if config.confidence_scale > 0:
-        if getattr(pose_model, "conf_scale", 0) is None:
-            # a model whose confidences are not a scaled score (ViTPose's heatmap maxima)
-            log.info(f"confidence_scale {config.confidence_scale:g} ignored: it applies to RTMW only, "
-                     f"{type(pose_model).__name__} confidences are used as they are")
-        else:
-            scale_override = _overridden(pose_model, "conf_scale", config.confidence_scale)
-    with log.step(f"extracting keypoints on {B} frames"), scale_override:
+    with log.step(f"extracting keypoints on {B} frames"):
         for i, (img, bbox) in enumerate(tqdm(zip(images_np, boxes), total=B, desc="Extracting keypoints")):
             img_norm, center, scale = pose_crop(img, bbox, resolution)
             kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))

@@ -1,8 +1,8 @@
 {
  "BCVFaceCrop": "08189f9b60b43ad0ecba7d51e3aef583",
  "BCVMaskGuard": "751c491cbc64558f859ec4d7836e1a84",
- "BCVPoseConfig": "5fc9eb8321e723f6b9a146b864540847",
- "BCVPoseDetection": "b972fa278544cec75379734562472a50",
+ "BCVPoseConfig": "c865d5239739f6dc3d7a1a0955f924d2",
+ "BCVPoseDetection": "428a31fe8f210caf7d1f94dc3d266dec",
  "BCVPoseGuard": "2c31fd7306d1834f275edd4b45b53143",
  "BCVSAM3Config": "4de171a11543ada98938a34fb3db1ef5",
  "BCVSAM3VideoTrack": "d69e0769e5e18e51682bf202b9c6f122",
@@ -12,7 +12,7 @@
  "BCVSCAIL2PreprocessGuard": "86264fdf90e77ba5298735297b4ad002",
  "BCVWanAnimate2LongVideoSampler": "d0e45a432ea81e15d59c39706fed7f2a",
  "BCVWanAnimateLongVideoSampler": "a3c81db55fe0113236ecc5d50d0be217",
- "BCVWanAnimatePreprocess": "07fd18c620a9eabdf8116d363fb47ce9",
+ "BCVWanAnimatePreprocess": "02e94554313b234eddc0ef0c4abe8cdb",
  "BCVWanAnimatePreprocessGuard": "3c209226d0e9c8f29219166d86360b8f",
  "NODE_CLASS_MAPPINGS keys": "['BCVWanAnimateLongVideoSampler', 'BCVWanAnimate2LongVideoSampler', 'BCVPoseDetection', 'BCVPoseConfig', 'BCVSAM3VideoTrack', 'BCVSAM3Config', 'BCVFaceCrop', 'BCVPoseGuard', 'BCVMaskGuard', 'BCVWanAnimatePreprocess', 'BCVWanAnimatePreprocessGuard', 'BCVSCAIL2LongVideoSampler', 'BCVSCAIL2ColoredMask', 'BCVSCAIL2Preprocess', 'BCVSCAIL2PreprocessGuard']",
  "NODE_DISPLAY_NAME_MAPPINGS keys": "['BCVWanAnimateLongVideoSampler', 'BCVWanAnimate2LongVideoSampler', 'BCVPoseDetection', 'BCVPoseConfig', 'BCVSAM3VideoTrack', 'BCVSAM3Config', 'BCVFaceCrop', 'BCVPoseGuard', 'BCVMaskGuard', 'BCVWanAnimatePreprocess', 'BCVWanAnimatePreprocessGuard', 'BCVSCAIL2LongVideoSampler', 'BCVSCAIL2ColoredMask', 'BCVSCAIL2Preprocess', 'BCVSCAIL2PreprocessGuard']"

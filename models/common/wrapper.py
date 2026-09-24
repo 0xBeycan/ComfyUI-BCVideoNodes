@@ -2,7 +2,7 @@
 """The detector and pose models as the preprocess calls them: each wraps a native torch
 module loaded from its safetensors file, managed by ComfyUI like any other model, and
 decodes the raw output into boxes or keypoints in frame coordinates. The wrappers are
-models/{vitpose,rtmw,yolo}/wrapper.py; this module holds what they share."""
+models/{vitpose,yolo}/wrapper.py; this module holds what they share."""
 import numpy as np
 import torch
 
@@ -43,6 +43,4 @@ class NativeModel:
         x = torch.from_numpy(np.ascontiguousarray(x)).to(self.patcher.load_device, self.input_dtype)
         with torch.inference_mode():
             out = self.net(x)
-        if isinstance(out, tuple):
-            return tuple(o.float().cpu().numpy() for o in out)
         return out.float().cpu().numpy()

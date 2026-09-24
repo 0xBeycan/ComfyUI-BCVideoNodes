@@ -1,8 +1,8 @@
-"""The offline extractors (scripts/onnx_extract.py) on miniature RTMW and YOLOv10 graphs:
+"""The offline extractor (scripts/onnx_extract.py) on a miniature YOLOv10 graph:
 the structure they read out and the numbers the module built from it produces.
 
 The graphs are written here node for node the way the upstream exports write them, with
-tiny channels and 64x64 / 32x32 inputs, and the reference numbers come from onnx's own reference
+tiny channels and a 32x32 input, and the reference numbers come from onnx's own reference
 evaluator, so the tests run on the CPU in seconds and need neither the model files nor a
 GPU. What they can prove without the real weights is exactly what goes wrong silently: that
 the extractor reads block counts, kernels, residuals and constants out of the graph rather
@@ -31,8 +31,6 @@ import onnx_extract  # noqa: E402
 
 from bcvideonodes.models.common import checkpoint  # noqa: E402
 
-KEYPOINTS = 5
-SIMCC_X, SIMCC_Y = 12, 16
 
 
 class Builder:
@@ -106,184 +104,6 @@ def native(architecture, extracted):
 
 def reference(model, x):
     return ReferenceEvaluator(model).run(None, {"input": x})
-
-
-# -- RTMW ----------------------------------------------------------------------------------
-
-def csp(b, x, cin, cout, blocks, attention, residual):
-    mid = cout // 2
-    short = conv(b, x, cin, mid)
-    main = conv(b, x, cin, mid)
-    for _ in range(blocks):
-        y = conv(b, main, mid, mid, kernel=3)
-        y = conv(b, y, mid, mid, kernel=5, groups=mid)
-        y = conv(b, y, mid, mid)
-        main = b.node("Add", [y, main]) if residual else y
-    out = b.node("Concat", [main, short], axis=1)
-    if attention:
-        gate = conv(b, b.node("GlobalAveragePool", [out]), cout, cout, act=None)
-        out = b.node("Mul", [out, b.node("HardSigmoid", [gate], alpha=1 / 6, beta=0.5)])
-    return conv(b, out, cout, cout)
-
-
-def spp(b, x, channels, kernels=(3, 5, 7)):
-    hidden = conv(b, x, channels, channels // 2)
-    pooled = [b.node("MaxPool", [hidden], kernel_shape=[k, k], strides=[1, 1], pads=[k // 2] * 4, ceil_mode=0)
-              for k in kernels]
-    return conv(b, b.node("Concat", [hidden] + pooled, axis=1), (channels // 2) * (len(kernels) + 1), channels)
-
-
-def flatten(b, x):
-    shape = b.node("Shape", [x])
-    sliced = b.node("Slice", [shape, b.ints([0]), b.ints([2]), b.ints([0])])
-    return b.node("Reshape", [x, b.node("Concat", [sliced, b.ints([-1])], axis=0)])
-
-
-def scale_norm(b, x, dim, gain):
-    norm = b.node("Sqrt", [b.node("ReduceSum", [b.node("Mul", [x, x])], axes=[2], keepdims=1)])
-    scaled = b.node("Mul", [norm, b.init(dim ** -0.5)])
-    clipped = b.node("Clip", [scaled, b.init(1e-5), ""])
-    return b.node("Mul", [b.node("Div", [x, clipped]), b.init(gain)])
-
-
-def gau(b, x, dim, expand, key):
-    normed = scale_norm(b, x, dim, 0.9)
-    uv = b.node("MatMul", [normed, b.init(b.random(dim, 2 * expand + key))])
-    activated = b.node("Mul", [uv, b.node("Sigmoid", [uv])])
-    u, v, base = b.node("Split", [activated], outputs=3, axis=2, split=[expand, expand, key])
-    offset = b.node("Add", [b.node("Mul", [b.node("Unsqueeze", [base], axes=[2]),
-                                           b.init(b.random(1, 1, 2, key))]), b.init(b.random(2, key))])
-    q, k = b.node("Split", [offset], outputs=2, axis=2, split=[1, 1])
-    q = b.node("Squeeze", [q], axes=[2])
-    k = b.node("Squeeze", [k], axes=[2])
-    qk = b.node("MatMul", [q, b.node("Transpose", [k], perm=[0, 2, 1])])
-    attn = b.node("Relu", [b.node("Div", [qk, b.init(float(key) ** 0.5)])])
-    gated = b.node("Mul", [u, b.node("MatMul", [b.node("Mul", [attn, attn]), v])])
-    out = b.node("MatMul", [gated, b.init(b.random(expand, dim))])
-    return b.node("Add", [b.node("Mul", [x, b.init(b.random(dim))]), out])
-
-
-def mini_rtmw(blocks=(1, 2, 1, 1), simcc=(SIMCC_X, SIMCC_Y)):
-    """A 64x64 RTMW: three stem convolutions, four stages, a three level PAFPN and the SimCC
-    head, with the block counts the caller asks for."""
-    b = Builder()
-    x = "input"
-    x = conv(b, x, 3, 4, kernel=3, stride=2)
-    x = conv(b, x, 4, 4, kernel=3)
-    x = conv(b, x, 4, 8, kernel=3)
-
-    feats = []
-    for i, (cin, cout) in enumerate(((8, 8), (8, 16), (16, 32), (32, 64))):
-        x = conv(b, x, cin, cout, kernel=3, stride=2)
-        if i == 3:
-            x = spp(b, x, cout)
-        x = csp(b, x, cout, cout, blocks[i], attention=True, residual=i < 3)
-        feats.append(x)
-
-    r2 = conv(b, feats[3], 64, 32)
-    p1 = csp(b, b.node("Concat", [upsample(b, r2), feats[2]], axis=1), 64, 32, 1, False, False)
-    r1 = conv(b, p1, 32, 16)
-    p0 = csp(b, b.node("Concat", [upsample(b, r1), feats[1]], axis=1), 32, 16, 1, False, False)
-    n1 = csp(b, b.node("Concat", [conv(b, p0, 16, 16, kernel=3, stride=2), r1], axis=1), 32, 32, 1, False, False)
-    n2 = csp(b, b.node("Concat", [conv(b, n1, 32, 32, kernel=3, stride=2), r2], axis=1), 64, 64, 1, False, False)
-
-    a = scale_norm(b, flatten(b, conv(b, n2, 64, KEYPOINTS, kernel=3, act="relu")), 4, 0.3)
-    a = b.node("MatMul", [a, b.init(b.random(4, 8))])
-    shuffled = b.node("DepthToSpace", [n2], blocksize=2, mode="CRD")
-    mid = conv(b, shuffled, 16, 16, kernel=3, act="relu")
-    y = conv(b, b.node("Concat", [mid, n1], axis=1), 48, KEYPOINTS, kernel=3, act="relu")
-    c = scale_norm(b, flatten(b, y), 16, 0.4)
-    c = b.node("MatMul", [c, b.init(b.random(16, 8))])
-    z = gau(b, b.node("Concat", [a, c], axis=2), 16, 8, 4)
-    simcc_x = b.node("MatMul", [z, b.init(b.random(16, simcc[0]))])
-    simcc_y = b.node("MatMul", [z, b.init(b.random(16, simcc[1]))])
-    return b.model("input", [simcc_x, simcc_y], ["batch", 3, 64, 64])
-
-
-@pytest.fixture(scope="module")
-def rtmw_model():
-    return mini_rtmw()
-
-
-@pytest.fixture(scope="module")
-def rtmw_graph(rtmw_model, tmp_path_factory):
-    return save(rtmw_model, tmp_path_factory.mktemp("rtmw"), "mini.onnx")
-
-
-def test_rtmw_structure_is_read_from_the_graph(rtmw_graph):
-    net = native("rtmw", onnx_extract.extract_rtmw(rtmw_graph))
-    assert net.config["input_size"] == [64, 64]
-    assert [len(stage.csp.blocks) for stage in net.stages] == [1, 2, 1, 1]
-    assert [stage.spp is not None for stage in net.stages] == [False, False, False, True]
-    assert net.stages[3].spp.kernels == [3, 5, 7] and not net.stages[3].spp.cascade
-    # the backbone gates every stage, the neck gates nothing
-    assert all(stage.csp.attention is not None for stage in net.stages)
-    assert net.neck.top_down[0].attention is None and net.neck.bottom_up[1].attention is None
-    # only the first three stages carry the residual inside their blocks
-    assert [stage.csp.blocks[0].residual for stage in net.stages] == [True, True, True, False]
-    assert net.neck.scale == 2.0
-    assert net.head.blocksize == 2
-    assert net.head.gau.sizes == [8, 8, 4]
-    assert net.head.gau.sqrt_s == pytest.approx(2.0)
-    assert net.head.cls_x.weight.shape == (16, SIMCC_X)
-    assert net.head.cls_y.weight.shape == (16, SIMCC_Y)
-
-
-def test_rtmw_hyper_parameters_come_from_the_node_attributes(rtmw_graph):
-    net = native("rtmw", onnx_extract.extract_rtmw(rtmw_graph))
-    depthwise = net.stages[0].csp.blocks[0].convs[1]
-    assert depthwise.weight.shape == (4, 1, 5, 5) and depthwise.groups == 4 and depthwise.padding == (2, 2)
-    assert net.stages[1].downsample.stride == (2, 2) and net.stages[1].downsample.padding == (1, 1)
-    attention = net.stages[0].csp.attention
-    assert attention.alpha == pytest.approx(1 / 6) and attention.beta == pytest.approx(0.5)
-    assert net.head.mlp_norm.scale == pytest.approx(0.5) and net.head.mlp_norm.gain == pytest.approx(0.3)
-    assert net.head.mlp2_norm.scale == pytest.approx(0.25) and net.head.mlp2_norm.gain == pytest.approx(0.4)
-    assert net.head.mlp_norm.eps == pytest.approx(1e-5)
-
-
-def test_rtmw_same_numbers_as_the_onnx_reference(rtmw_model, rtmw_graph):
-    net = native("rtmw", onnx_extract.extract_rtmw(rtmw_graph))
-    x = np.random.default_rng(1).standard_normal((2, 3, 64, 64)).astype(np.float32)
-    with torch.inference_mode():
-        got = net(torch.from_numpy(x))
-    want = reference(rtmw_model, x)
-    assert len(got) == len(want) == 2
-    for a, b in zip(got, want):
-        assert tuple(a.shape) == b.shape
-        assert np.abs(a.numpy() - b).max() < 1e-4
-
-
-def test_a_graph_that_is_not_rtmw_is_refused(rtmw_graph, tmp_path):
-    with pytest.raises(onnx_extract.Mismatch):
-        onnx_extract.extract_vitpose(rtmw_graph)
-    with pytest.raises(onnx_extract.Mismatch):
-        onnx_extract.extract_yolov10(rtmw_graph)
-
-    b = Builder()
-    out = b.node("Relu", [conv(b, "input", 3, 4, kernel=3)])
-    plain = save(b.model("input", [out, out], ["batch", 3, 64, 64]), tmp_path, "plain.onnx")
-    with pytest.raises(onnx_extract.Mismatch):
-        onnx_extract.extract_rtmw(plain)
-
-
-def test_a_graph_missing_a_node_is_refused(tmp_path):
-    """Dropping the last node leaves a graph whose shapes are all still right; the walk has
-    to notice that it ran out of nodes rather than return a module with one output."""
-    model = mini_rtmw()
-    del model.graph.node[-1]
-    del model.graph.output[-1]
-    with pytest.raises(onnx_extract.Mismatch):
-        onnx_extract.extract_rtmw(save(model, tmp_path, "short.onnx"))
-
-
-def test_a_rewired_graph_is_refused(tmp_path):
-    """The concat that joins the two halves of a CSP layer takes (main, short). Swapping it
-    keeps every shape and changes the result, so the walk has to check the order."""
-    model = mini_rtmw()
-    node = next(n for n in model.graph.node if n.op_type == "Concat")
-    node.input[0], node.input[1] = node.input[1], node.input[0]
-    with pytest.raises(onnx_extract.Mismatch):
-        onnx_extract.extract_rtmw(save(model, tmp_path, "swapped.onnx"))
 
 
 # -- YOLOv10 -------------------------------------------------------------------------------
@@ -481,3 +301,25 @@ def test_yolov10_with_moved_anchors_is_refused(tmp_path):
     extracted = onnx_extract.extract_yolov10(save(model, tmp_path, "moved.onnx"))
     with pytest.raises(ValueError):
         convert_models.check_anchors(native("yolov10", extracted), extracted[2])
+
+
+def test_a_graph_that_is_not_yolov10_is_refused(yolo_graph, tmp_path):
+    with pytest.raises(onnx_extract.Mismatch):
+        onnx_extract.extract_vitpose(yolo_graph)
+
+    b = Builder()
+    out = b.node("Relu", [conv(b, "input", 3, 4, kernel=3)])
+    plain = save(b.model("input", [out], ["batch", 3, 32, 32]), tmp_path, "plain.onnx")
+    with pytest.raises(onnx_extract.Mismatch):
+        onnx_extract.extract_yolov10(plain)
+
+
+def test_a_graph_missing_a_node_is_refused(tmp_path):
+    """Dropping the last node leaves a graph whose other shapes are all still right; the walk
+    has to notice that it ran out of nodes rather than return a module."""
+    model = mini_yolov10()
+    last = model.graph.node[-1]
+    del model.graph.node[-1]
+    model.graph.output[0].name = last.input[0]
+    with pytest.raises(onnx_extract.Mismatch):
+        onnx_extract.extract_yolov10(save(model, tmp_path, "short.onnx"))

@@ -1,10 +1,9 @@
-"""The convolutional blocks RTMW and YOLOv10 share, built from a config dict.
+"""The convolutional blocks of YOLOv10, built from a config dict.
 
-Both models come from the same family: a SiLU convolution everywhere, chains of
-convolutions with an optional residual, a spatial pyramid of max pools, and a PAFPN neck
-that upsamples from the coarsest level down and downsamples back up. What differs between
-them is the layer that merges a level (RTMW's CSPLayer, YOLO's C2f), so the neck takes
-that layer's constructor from the model that owns it.
+A SiLU convolution everywhere, chains of convolutions with an optional residual, a spatial
+pyramid of max pools, and a PAFPN neck that upsamples from the coarsest level down and
+downsamples back up. The layer that merges a level (YOLO's C2f) is the model's own, so the
+neck takes that layer's constructor from the model that owns it.
 
 Every class here takes its config dict and allocates its own parameters empty, so a model
 can be built on the meta device and filled from a checkpoint without a second copy of the
@@ -13,8 +12,7 @@ checkpoint stores next to the weights.
 
 The arithmetic is written the way the ONNX exports spell it, not with the fused kernels
 that look equivalent: SiLU is `x * sigmoid(x)`, not F.silu (`x / (1 + exp(-x))`). The two
-differ in the last bit, and over a hundred convolutions that difference moved one decoded
-RTMW keypoint 498 px on a keypoint whose SimCC distribution is flat.
+differ in the last bit, and over a hundred convolutions that difference compounds.
 """
 import torch
 import torch.nn as nn
@@ -64,8 +62,7 @@ class Conv(nn.Module):
 
 class ConvChain(nn.Module):
     """Convolutions run one after the other, with the input added back at the end when the
-    export has the residual. RTMW's CSPNeXt block (3x3, depthwise 5x5, pointwise), YOLO's
-    bottleneck (two 3x3), its CIB (depthwise / pointwise, five deep), its SCDown and every
+    export has the residual. YOLO's bottleneck (two 3x3), its CIB (depthwise / pointwise, five deep), its SCDown and every
     branch of its detection head are all this.
 
     config: convs [Conv config, ...], residual (bool)."""
@@ -92,9 +89,9 @@ def conv_chains(cfgs):
 class SPPBottleneck(nn.Module):
     """A convolution, max pools over its output concatenated with it, and a convolution.
 
-    RTMW pools the same map with three growing kernels side by side (SPP); YOLO pools each
-    pool's output again with the same kernel (SPPF, `cascade`). Both are what the export
-    runs, so both are kept as they are rather than rewritten into each other.
+    Without `cascade` every pool reads the same map (SPP); with it each pool reads the last
+    pool's output again with the same kernel (SPPF, what YOLO exports). The model file
+    stores which one it is.
 
     config: conv1, conv2 (Conv configs), kernels [k, ...], cascade (bool)."""
 
@@ -124,8 +121,7 @@ class PAFPN(nn.Module):
     """Reduce, upsample and merge from the coarsest level down, then downsample and merge
     back up, over three levels c0 (finest) .. c2 (coarsest).
 
-    RTMW reduces the channels before each upsample; YOLOv10 does not, and its reduce steps
-    are None. `layer` builds the model's own merge layer and downsample from their configs.
+    A reduce step is a convolution before the upsample, or None for none (YOLOv10 has none). `layer` builds the model's own merge layer and downsample from their configs.
 
     config: reduce [c2 reduce, p1 reduce] (Conv config or None), top_down [2 layer configs],
     down [2 layer configs], bottom_up [2 layer configs], scale (the upsample factor)."""

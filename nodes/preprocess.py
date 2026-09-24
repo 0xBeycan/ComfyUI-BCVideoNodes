@@ -19,7 +19,7 @@ class BCVWanAnimatePreprocess:
         return {
             "required": {
                 "images": ("IMAGE",),
-                **{name: pose[name] for name in ("pose_model", "body_stick_width", "hand_stick_width", "draw_head", "draw_threshold")},
+                **{name: pose[name] for name in ("body_stick_width", "hand_stick_width", "draw_head", "draw_threshold")},
                 "face_padding": face["face_padding"],
                 **{name: sam3[name] for name in ("mode", "prompt")},
             },
@@ -35,10 +35,10 @@ class BCVWanAnimatePreprocess:
     CATEGORY = "BCVideoNodes/Wan/Animate"
     DESCRIPTION = "The whole WanAnimate preprocess in one node: Pose Detection, SAM 3.1 Multiplex Video Track and Face Crop chained, computing exactly what the three nodes compute when wired by hand. In prompt mode the mask comes from the text prompt alone (one track, the union mask); in box_keypoint mode from the pose, with no extra boxes or points. The models are downloaded on first use. Feed it frames already at the generation size."
 
-    def process(self, images, pose_model, body_stick_width, hand_stick_width, draw_head, draw_threshold, face_padding,
+    def process(self, images, body_stick_width, hand_stick_width, draw_head, draw_threshold, face_padding,
                 mode, prompt, pose_config=None, sam3_config=None):
         pose_images, pose_data, bboxes, key_points = BCVPoseDetection().detect(
-            images, pose_model, body_stick_width, hand_stick_width, draw_head, draw_threshold, pose_config=pose_config)
+            images, body_stick_width, hand_stick_width, draw_head, draw_threshold, pose_config=pose_config)
         from ..pipelines.sam3_1_multiplex import track as sam3
 
         # prompt mode segments from the text alone; pose_data is connected only where it is read

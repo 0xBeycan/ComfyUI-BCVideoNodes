@@ -181,7 +181,7 @@ def test_a_pose_the_whole_clip_lacks_is_not_incomplete():
     assert passed and "pose_incomplete" not in flags, report
 
 
-def test_completeness_does_not_move_with_the_confidence_scale():
+def test_completeness_does_not_move_with_uniformly_lower_scores():
     # a pose model whose scores are uniformly lower is not a broken pose model, as long as
     # its skeleton is still drawn
     masks, pose_data = clip()
