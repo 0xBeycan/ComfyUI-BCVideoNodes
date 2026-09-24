@@ -10,8 +10,8 @@ that length.
 |------|----|----------|
 | **Pose Detection** | `BCVPoseDetection` | `BCVideoNodes` |
 | **Pose Config** | `BCVPoseConfig` | `BCVideoNodes` |
-| **SAM 3.1 Video Track** | `BCVSAM3VideoTrack` | `BCVideoNodes` |
-| **SAM 3 Config** | `BCVSAM3Config` | `BCVideoNodes` |
+| **SAM 3.1 Multiplex Video Track** | `BCVSAM3VideoTrack` | `BCVideoNodes` |
+| **SAM 3.1 Multiplex Config** | `BCVSAM3Config` | `BCVideoNodes` |
 | **Face Crop** | `BCVFaceCrop` | `BCVideoNodes` |
 | **Pose Guard** | `BCVPoseGuard` | `BCVideoNodes` |
 | **Mask Guard** | `BCVMaskGuard` | `BCVideoNodes` |
@@ -46,20 +46,20 @@ bridged, glitches replaced, every filled keypoint labelled as such in
 
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
-`preprocess/pose.py`: `confidence_scale` (RTMW only: the divisor of its raw
+`pipelines/pose.py`: `confidence_scale` (RTMW only: the divisor of its raw
 SimCC score, 0 keeps the default 4.6; ignored with ViTPose, with one console
 line saying so), `flip_test` (ViTPose only: also runs the mirrored crop and
 averages the heatmaps, the way ViTPose's published accuracy is measured;
 about doubles pose time; RTMW ignores it with one console line),
 `min_keypoint_conf`, `detection_threshold`, `temporal`,
 `temporal_max_gap`, `temporal_max_step`, `temporal_max_residual`,
-`box_window`. `min_keypoint_conf` travels in `pose_data` to SAM3's
+`box_window`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
 
-### SAM 3.1 Video Track
+### SAM 3.1 Multiplex Video Track
 
-The person's mask on every frame, from ComfyUI's own SAM 3.1 and its tracker
+The person's mask on every frame, from ComfyUI's own SAM 3.1 Multiplex and its tracker
 memory. The mask covers every frame, including those before the person was
 first found.
 
@@ -81,9 +81,9 @@ connected, so the behaviour can be switched without rewiring:
   mode only; `box_keypoint` mode tracks one person, ignores it and logs one
   line.
 
-### SAM 3 Config
+### SAM 3.1 Multiplex Config
 
-Optional; generated from `SAM3Config` in `preprocess/sam3.py`. Each tooltip
+Optional; generated from `SAM3_1MultiplexConfig` in `pipelines/sam3_1_multiplex/config.py`. Each tooltip
 starts with the mode it affects.
 
 The `[prompt]` fields `anchor_memory`, `anchor_output`, `conditioning_frames`,
@@ -133,7 +133,7 @@ and never stop: a limb missing for a stretch (`pose_limb_gap`), small detached
 specks (`mask_specks`), background attached to the body
 (`mask_attached_leak`), one limb end outside the mask (`mask_missed_limb`). The thresholds are
 widgets generated from `PoseGuardConfig` / `MaskGuardConfig` in
-`preprocess/guard.py`.
+`pipelines/guard/config.py`.
 
 - Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
   `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
@@ -145,7 +145,7 @@ widgets generated from `PoseGuardConfig` / `MaskGuardConfig` in
 The wrappers call the individual nodes, so a wrapper produces exactly what
 the chained nodes produce with the same settings.
 
-- **WanAnimate Preprocess** = Pose Detection -> SAM 3.1 Video Track -> Face
+- **WanAnimate Preprocess** = Pose Detection -> SAM 3.1 Multiplex Video Track -> Face
   Crop. Widgets: `pose_model`, the drawing widgets, `face_padding`, `mode`,
   `prompt`; optional `pose_config`, `sam3_config`. In `box_keypoint` mode the
   mask is prompted from the pose. Outputs: `pose_images`, `face_images`,
@@ -292,7 +292,7 @@ seed rows and the seed latent is flagged "character unknown" over real
 pixels. The node builds the rows from the pixel mask the way the reference
 does (seed frames known, frame 0 repeated, frames past the mask unknown,
 core's `nearest-exact` as the filter) and writes them over core's;
-`tests/test_node_loop.py` checks the result against the reference
+`tests/pipelines/test_long_video.py` checks the result against the reference
 construction. Without a character mask, or for a window the mask does not
 reach, core's rows are already right and nothing is touched.
 
@@ -386,28 +386,36 @@ are needed only for the offline conversion and upload scripts
 ## Tests
 
 ```
-pytest
+python -m pytest tests
 ```
 
-`tests/test_planner.py` covers the length math and `tests/test_package.py`
-the node contract of all eleven nodes, both without torch or ComfyUI.
-`tests/test_node_loop.py` runs both samplers' chunk loop against stubbed core
-nodes with real CPU tensors; it is skipped when torch is not installed. The
-preprocess tests (`tests/test_nodes.py`, `test_pose.py`, `test_sam3.py`,
-`test_guard*.py`, `test_models_*.py`, ...) need torch and, for most, ComfyUI
-on the path: `PYTHONPATH=/path/to/ComfyUI pytest`.
+`tests/libs/test_chunking.py` covers the length math and
+`tests/test_package.py` the node contract of all eleven nodes, both without
+torch or ComfyUI:
+`python -m pytest tests/test_package.py tests/libs/test_chunking.py`.
+`tests/pipelines/test_long_video.py` runs both samplers' chunk loop against
+stubbed core nodes with real CPU tensors; it is skipped when torch is not
+installed. The preprocess tests (`tests/nodes/test_nodes_*.py`,
+`tests/pipelines/test_pose.py`, `tests/pipelines/test_sam3_1_multiplex_*.py`,
+`tests/pipelines/test_guard*.py`, `tests/models/test_models_*.py`, ...) need
+torch and, for most, ComfyUI on the path:
+`PYTHONPATH=/path/to/ComfyUI python -m pytest tests`.
 
 ## Licences
 
 The code is MIT (`LICENSE`), except the files vendored from the Alibaba Wan
 team's WanAnimate preprocess, which are Apache-2.0 and keep their copyright
-header (`preprocess/pose_utils/LICENSE`):
+header (`libs/pose_utils/LICENSE`):
 
-- `preprocess/pose_utils/pose2d_utils.py`
-- `preprocess/pose_utils/human_visualization.py`
-- `preprocess/face.py`
-- `preprocess/models/wrappers.py`
-- `preprocess/models/decode.py`
+- `libs/pose_utils/pose2d_utils.py`
+- `libs/pose_utils/human_visualization.py`
+- `pipelines/face.py`
+- `models/common/wrapper.py`
+- `models/vitpose/wrapper.py`
+- `models/rtmw/wrapper.py`
+- `models/yolo/wrapper.py`
+- `models/vitpose/decode.py`
+- `models/rtmw/decode.py`
 
 The model weights keep their own licences:
 

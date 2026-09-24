@@ -31,7 +31,7 @@ class Node:
         self.name = proto.name
         self.inputs = list(proto.input)
         self.outputs = list(proto.output)
-        self.attrs = {a.name: _attribute(a) for a in proto.attribute}
+        self.attrs = _attributes(proto)
 
 
 def _attribute(a):
@@ -43,6 +43,11 @@ def _attribute(a):
     if isinstance(v, list) and v and isinstance(v[0], bytes):
         return [s.decode() for s in v]
     return v
+
+
+def _attributes(proto):
+    """A node's attributes by name, each read by `_attribute`."""
+    return {a.name: _attribute(a) for a in proto.attribute}
 
 
 def _read_tensor(t, base_dir):
@@ -63,7 +68,7 @@ def _read_tensor(t, base_dir):
 
 
 def _constant_value(n):
-    attrs = {a.name: _attribute(a) for a in n.attribute}
+    attrs = _attributes(n)
     if "value" in attrs:
         return attrs["value"]
     for key in ("value_float", "value_int", "value_floats", "value_ints"):
@@ -179,7 +184,12 @@ class Walk:
         return float(value)
 
     def ints(self, node, idx):
-        return [int(v) for v in self.weight(node, idx).reshape(-1).tolist()]
+        return _int_values(self.weight(node, idx))
+
+
+def _int_values(tensor):
+    """The entries of a constant tensor as a flat list of ints."""
+    return [int(v) for v in tensor.reshape(-1).tolist()]
 
 
 def _nest(prefix, params):
@@ -193,11 +203,55 @@ def _symmetric(pads):
     return list(pads[:half])
 
 
+def _transpose_021(walk, src):
+    """The next node: a Transpose of `src` by perm [0, 2, 1]."""
+    node = walk.take("Transpose", src)
+    if node.attrs.get("perm") != [0, 2, 1]:
+        raise Mismatch(f"{node.name}: expected perm [0, 2, 1]")
+    return node
+
+
+def _transpose_0132(walk, src):
+    """The next node: a Transpose of `src` by perm [0, 1, 3, 2]."""
+    node = walk.take("Transpose", src)
+    if node.attrs.get("perm") != [0, 1, 3, 2]:
+        raise Mismatch(f"{node.name}: expected perm [0, 1, 3, 2]")
+    return node
+
+
+def _mul_scalar(walk, src):
+    """The next node: a Mul of `src` by a scalar constant. Returns (the node, the scalar)."""
+    scaled = walk.take("Mul", src)
+    scale = walk.scalar(scaled)
+    return scaled, scale
+
+
+def _mul_const(walk, src):
+    """The next node: a Mul of `src` by a constant. Returns (the node, the constant)."""
+    node = walk.take("Mul", src)
+    const = walk.const(node)
+    return node, const
+
+
+def _reshape_shape(walk, src):
+    """The next node: a Reshape of `src` to a constant shape. Returns (the node, the shape as
+    ints)."""
+    reshape = walk.take("Reshape", src)
+    shape = walk.ints(reshape, 1)
+    return reshape, shape
+
+
+def _conv_weight(walk, src):
+    """The next node: a Conv of `src`. Returns (the node, its weight)."""
+    node = walk.take("Conv", src)
+    w = walk.weight(node, 1)
+    return node, w
+
+
 def conv(walk, src, act=None):
     """A Conv and the activation the export spells out after it: Sigmoid/Mul for SiLU, or a
     plain Relu. Returns its config, its parameters and the tensor it leaves behind."""
-    node = walk.take("Conv", src)
-    w = walk.weight(node, 1)
+    node, w = _conv_weight(walk, src)
     if w.dim() != 4 or node.attrs.get("auto_pad", "NOTSET") != "NOTSET":
         raise Mismatch(f"{node.name}: expected a 2-D convolution with explicit pads")
     has_bias = len(node.inputs) > 2 and bool(node.inputs[2])
@@ -240,6 +294,15 @@ def upsample(walk, src):
     return scales[2], node.outputs[0]
 
 
+def _second_upsample(walk, src, scale):
+    """The neck's second upsample, of `src`: it must scale by the first one's factor `scale`,
+    because the config holds one. Returns its output."""
+    scale1, up1 = upsample(walk, src)
+    if scale1 != scale:
+        raise Mismatch(f"the two upsamples scale by {scale} and {scale1}")
+    return up1
+
+
 def maxpool(walk, src):
     node = walk.take("MaxPool", src)
     kernel = node.attrs.get("kernel_shape", [])
@@ -278,14 +341,14 @@ def spp(walk, src):
 def _shape_values(graph, name):
     """Constant entries of a shape tensor (None for runtime dims), through a Concat if needed."""
     if name in graph.tensors:
-        return [int(v) for v in graph.tensors[name].reshape(-1).tolist()]
+        return _int_values(graph.tensors[name])
     node = graph.producer(name)
     if node is None or node.op != "Concat":
         return []
     values = []
     for inp in node.inputs:
         if inp in graph.tensors:
-            values += [int(v) for v in graph.tensors[inp].reshape(-1).tolist()]
+            values += _int_values(graph.tensors[inp])
         else:
             values.append(None)
     return values
@@ -500,8 +563,7 @@ def _scale_norm(walk, src):
     if total.attrs.get("axes") != [2] or not total.attrs.get("keepdims", 1):
         raise Mismatch(f"{total.name}: expected a sum over axis 2 keeping dims")
     root = walk.take("Sqrt", total.outputs[0])
-    scaled = walk.take("Mul", root.outputs[0])
-    scale = walk.scalar(scaled)
+    scaled, scale = _mul_scalar(walk, root.outputs[0])
     clip = walk.take("Clip", scaled.outputs[0])
     if len(clip.inputs) > 2 and clip.inputs[2]:
         raise Mismatch(f"{clip.name}: expected a lower bound only")
@@ -518,9 +580,16 @@ def _projection(walk, node):
     return [int(v) for v in w.shape], {"weight": w}
 
 
-def _gau(walk, src):
+def _norm_projection(walk, src):
+    """A ScaleNorm of `src` and a projection (MatMul) of its output. Returns (the ScaleNorm's
+    config, the MatMul node)."""
     norm, x = _scale_norm(walk, src)
-    uv = walk.take("MatMul", x)
+    out = walk.take("MatMul", x)
+    return norm, out
+
+
+def _gau(walk, src):
+    norm, uv = _norm_projection(walk, src)
     sigmoid = walk.take("Sigmoid", uv.outputs[0])
     activated = walk.take("Mul", uv.outputs[0], sigmoid.outputs[0])
     split = walk.take("Split", activated.outputs[0])
@@ -532,8 +601,7 @@ def _gau(walk, src):
     offset = walk.take("Unsqueeze", base)
     if offset.attrs.get("axes") != [2]:
         raise Mismatch(f"{offset.name}: expected an unsqueeze on axis 2")
-    scaled = walk.take("Mul", offset.outputs[0])
-    gamma = walk.const(scaled)
+    scaled, gamma = _mul_const(walk, offset.outputs[0])
     shifted = walk.take("Add", scaled.outputs[0])
     beta = walk.const(shifted)
     heads = walk.take("Split", shifted.outputs[0])
@@ -543,9 +611,7 @@ def _gau(walk, src):
     k = walk.take("Squeeze", heads.outputs[1])
     if q.attrs.get("axes") != [2] or k.attrs.get("axes") != [2]:
         raise Mismatch(f"{q.name}: expected squeezes on axis 2")
-    transposed = walk.take("Transpose", k.outputs[0])
-    if transposed.attrs.get("perm") != [0, 2, 1]:
-        raise Mismatch(f"{transposed.name}: expected perm [0, 2, 1]")
+    transposed = _transpose_021(walk, k.outputs[0])
 
     qk = walk.take("MatMul", q.outputs[0], transposed.outputs[0])
     divided = walk.take("Div", qk.outputs[0])
@@ -555,8 +621,7 @@ def _gau(walk, src):
     weighted = walk.take("MatMul", squared.outputs[0], v)
     gated = walk.take("Mul", u, weighted.outputs[0])
     out = walk.take("MatMul", gated.outputs[0])
-    residual = walk.take("Mul", src)
-    res_scale = walk.const(residual)
+    residual, res_scale = _mul_const(walk, src)
     joined = walk.take("Add", residual.outputs[0], out.outputs[0])
     uv_shape, uv_params = _projection(walk, uv)
     out_shape, out_params = _projection(walk, out)
@@ -569,16 +634,14 @@ def _gau(walk, src):
 
 def _simcc_head(walk, p1, p2):
     final_layer, pf, x = conv(walk, p2, "relu")
-    mlp_norm, x = _scale_norm(walk, _flatten(walk, x))
-    mlp = walk.take("MatMul", x)
+    mlp_norm, mlp = _norm_projection(walk, _flatten(walk, x))
 
     shuffle = walk.take("DepthToSpace", p2)
     if shuffle.attrs.get("mode", "DCR") != "CRD":
         raise Mismatch(f"{shuffle.name}: expected a CRD pixel shuffle")
     mid_layer, pm, y = conv(walk, shuffle.outputs[0], "relu")
     final_layer2, pf2, y = conv(walk, concat(walk, 1, y, p1), "relu")
-    mlp2_norm, y = _scale_norm(walk, _flatten(walk, y))
-    mlp2 = walk.take("MatMul", y)
+    mlp2_norm, mlp2 = _norm_projection(walk, _flatten(walk, y))
 
     gau, pg, z = _gau(walk, concat(walk, 2, mlp.outputs[0], mlp2.outputs[0]))
     cls_x = walk.take("MatMul", z)
@@ -632,9 +695,7 @@ def extract_rtmw(graph):
     scale, up = upsample(walk, r2)
     top_down0, p_t0, p1 = _csp_layer(walk, concat(walk, 1, up, feats[2]))
     reduce1, p_r1, r1 = conv(walk, p1, "silu")
-    scale1, up1 = upsample(walk, r1)
-    if scale1 != scale:
-        raise Mismatch(f"the two upsamples scale by {scale} and {scale1}")
+    up1 = _second_upsample(walk, r1, scale)
     top_down1, p_t1, p0 = _csp_layer(walk, concat(walk, 1, up1, feats[1]))
     down0, p_d0, d0 = conv(walk, p0, "silu")
     bottom_up0, p_b0, n1 = _csp_layer(walk, concat(walk, 1, d0, r1))
@@ -675,12 +736,20 @@ def _split(walk, src, parts, axis=1):
     return walk.ints(node, 1), node.outputs
 
 
+def _cv1_split(walk, src):
+    """The input stage C2f and PSA share: cv1, a SiLU convolution of `src`, and the two-way split
+    of its output. Returns (cv1's config, its parameters, its output, the split sizes, the two
+    halves)."""
+    cv1, p1, x = conv(walk, src, "silu")
+    sizes, (a, b) = _split(walk, x, 2)
+    return cv1, p1, x, sizes, (a, b)
+
+
 def _c2f(walk, src):
     """cv1, a two-way split, blocks one after the other on the second half, a concat of the
     two halves and every block's output, cv2. Where one block ends is read from the concat:
     a block closed by an Add with its input has a residual, one that is not does not."""
-    cv1, p1, x = conv(walk, src, "silu")
-    sizes, (a, b) = _split(walk, x, 2)
+    cv1, p1, x, sizes, (a, b) = _cv1_split(walk, src)
     closing = walk.next_node("Concat")
     if closing is None or closing.inputs[:2] != [a, b]:
         raise Mismatch(f"after {x}: expected a concat of the split halves and the block outputs")
@@ -706,14 +775,20 @@ def _c2f(walk, src):
     return {"type": "c2f", "cv1": cv1, "split": sizes, "blocks": blocks, "cv2": cv2}, params, out
 
 
+def _conv_added(walk, src, other):
+    """A convolution of `src` with no activation, and the Add of `other` and its output. Returns
+    (the convolution's config, its parameters, the sum)."""
+    cfg, params, out = conv(walk, src, None)
+    summed = walk.take("Add", other, out).outputs[0]
+    return cfg, params, summed
+
+
 def _psa(walk, src):
-    cv1, p1, x = conv(walk, src, "silu")
-    sizes, (a, b) = _split(walk, x, 2)
+    cv1, p1, x, sizes, (a, b) = _cv1_split(walk, src)
     params = _nest("cv1", p1)
 
     qkv, pq, y = conv(walk, b, None)
-    reshape = walk.take("Reshape", y)
-    shape = walk.ints(reshape, 1)
+    reshape, shape = _reshape_shape(walk, y)
     if len(shape) != 4:
         raise Mismatch(f"{reshape.name}: expected a [B, heads, channels, N] reshape, found {shape}")
     heads = shape[1]
@@ -721,25 +796,18 @@ def _psa(walk, src):
     key_dim, key_dim2, head_dim = parts
     if key_dim != key_dim2 or heads * head_dim != sizes[1] or heads * (2 * key_dim + head_dim) != qkv["cout"]:
         raise Mismatch(f"attention layout {parts} x {heads} heads does not fit {sizes[1]} channels")
-    qt = walk.take("Transpose", q)
-    if qt.attrs.get("perm") != [0, 1, 3, 2]:
-        raise Mismatch(f"{qt.name}: expected perm [0, 1, 3, 2]")
+    qt = _transpose_0132(walk, q)
     qk = walk.take("MatMul", qt.outputs[0], k)
-    scaled = walk.take("Mul", qk.outputs[0])
-    scale = walk.scalar(scaled)
+    scaled, scale = _mul_scalar(walk, qk.outputs[0])
     soft = walk.take("Softmax", scaled.outputs[0])
     if soft.attrs.get("axis", -1) != -1:
         raise Mismatch(f"{soft.name}: expected a softmax over the last axis")
-    at = walk.take("Transpose", soft.outputs[0])
-    if at.attrs.get("perm") != [0, 1, 3, 2]:
-        raise Mismatch(f"{at.name}: expected perm [0, 1, 3, 2]")
+    at = _transpose_0132(walk, soft.outputs[0])
     weighted = walk.take("MatMul", v, at.outputs[0])
     back = walk.take("Reshape", weighted.outputs[0]).outputs[0]
     v_map = walk.take("Reshape", v).outputs[0]
-    pe, pp, pe_out = conv(walk, v_map, None)
-    summed = walk.take("Add", back, pe_out).outputs[0]
-    proj, pj, attn_out = conv(walk, summed, None)
-    b1 = walk.take("Add", b, attn_out).outputs[0]
+    pe, pp, summed = _conv_added(walk, v_map, back)
+    proj, pj, b1 = _conv_added(walk, summed, b)
     ffn, pf, ffn_out = _chain(walk, b1, ["silu", None])
     b2 = walk.take("Add", b1, ffn_out).outputs[0]
     cv2, p2, out = conv(walk, concat(walk, 1, a, b2), "silu")
@@ -758,6 +826,13 @@ def _scdown(walk, src):
 def _plain_conv(walk, src):
     c, p, out = conv(walk, src, "silu")
     return {"type": "conv", **c}, p, out
+
+
+def _gather_tiled(walk, idx, src):
+    """The next two nodes: a Tile of the indices `idx`, and the GatherElements of `src` by them.
+    Returns the gathered output."""
+    tiled = walk.take("Tile", idx)
+    return walk.take("GatherElements", src, tiled.outputs[0]).outputs[0]
 
 
 def _detect(walk, levels):
@@ -790,8 +865,7 @@ def _detect(walk, levels):
         raise Mismatch(f"expected the head split [{box_ch}, {cls_ch}], found {sizes}")
 
     # distribution focal loss
-    node = walk.take("Reshape", dist)
-    shape = walk.ints(node, 1)
+    node, shape = _reshape_shape(walk, dist)
     if shape[1:3] != [4, reg_max]:
         raise Mismatch(f"{node.name}: expected [B, 4, {reg_max}, A], found {shape}")
     anchors_total = shape[3]
@@ -801,8 +875,7 @@ def _detect(walk, levels):
     node = walk.take("Softmax", node.outputs[0])
     if node.attrs.get("axis") != 1:
         raise Mismatch(f"{node.name}: expected a softmax over the bins (axis 1)")
-    dfl = walk.take("Conv", node.outputs[0])
-    dfl_w = walk.weight(dfl, 1)
+    dfl, dfl_w = _conv_weight(walk, node.outputs[0])
     if list(dfl_w.shape) != [1, reg_max, 1, 1] or (len(dfl.inputs) > 2 and dfl.inputs[2]):
         raise Mismatch(f"{dfl.name}: expected a bias-free [1, {reg_max}, 1, 1] expectation convolution")
     params["dfl"] = dfl_w
@@ -820,15 +893,12 @@ def _detect(walk, levels):
     if other is None or other.shape != anchors.shape or not torch.equal(other, anchors):
         raise Mismatch(f"{add.name}: expected anchors + distance")
     xyxy = concat(walk, 1, sub.outputs[0], add.outputs[0])
-    mul = walk.take("Mul", xyxy)
-    stride_const = walk.const(mul)
+    mul, stride_const = _mul_const(walk, xyxy)
     sig = walk.take("Sigmoid", logits)
     pred = concat(walk, 1, mul.outputs[0], sig.outputs[0])
 
     # top-k
-    node = walk.take("Transpose", pred)
-    if node.attrs.get("perm") != [0, 2, 1]:
-        raise Mismatch(f"{node.name}: expected perm [0, 2, 1]")
+    node = _transpose_021(walk, pred)
     sizes, (boxes, scores) = _split(walk, node.outputs[0], 2, axis=-1)
     if sizes != [4, num_classes]:
         raise Mismatch(f"expected the prediction split [4, {num_classes}], found {sizes}")
@@ -840,10 +910,8 @@ def _detect(walk, levels):
     if top.attrs.get("axis", -1) != -1 or not top.attrs.get("largest", 1) or not top.attrs.get("sorted", 1):
         raise Mismatch(f"{top.name}: expected a sorted largest top-k")
     idx = walk.take("Unsqueeze", top.outputs[1]).outputs[0]
-    tiled = walk.take("Tile", idx)
-    top_boxes = walk.take("GatherElements", boxes, tiled.outputs[0]).outputs[0]
-    tiled = walk.take("Tile", idx)
-    top_scores = walk.take("GatherElements", scores, tiled.outputs[0]).outputs[0]
+    top_boxes = _gather_tiled(walk, idx, boxes)
+    top_scores = _gather_tiled(walk, idx, scores)
     flat_scores = walk.take("Flatten", top_scores).outputs[0]
     top2 = walk.take("TopK", flat_scores)
     if walk.ints(top2, 1)[0] != max_det:
@@ -855,8 +923,7 @@ def _detect(walk, levels):
     if int(walk.const(div)) != num_classes:
         raise Mismatch(f"{div.name}: expected index // {num_classes}")
     idx2 = walk.take("Unsqueeze", div.outputs[0]).outputs[0]
-    tiled = walk.take("Tile", idx2)
-    final_boxes = walk.take("GatherElements", top_boxes, tiled.outputs[0]).outputs[0]
+    final_boxes = _gather_tiled(walk, idx2, top_boxes)
     score_col = walk.take("Unsqueeze", top2.outputs[0]).outputs[0]
     label_col = walk.take("Unsqueeze", mod.outputs[0]).outputs[0]
     label_col = walk.take("Cast", label_col).outputs[0]
@@ -895,9 +962,7 @@ def extract_yolov10(graph):
 
     scale, up = upsample(walk, c2)
     top_down0, p_t0, p1 = _c2f(walk, concat(walk, 1, up, c1))
-    scale1, up1 = upsample(walk, p1)
-    if scale1 != scale:
-        raise Mismatch(f"the two upsamples scale by {scale} and {scale1}")
+    up1 = _second_upsample(walk, p1, scale)
     top_down1, p_t1, p0 = _c2f(walk, concat(walk, 1, up1, c0))
     down0, p_d0, d0 = _plain_conv(walk, p0)
     bottom_up0, p_b0, n1 = _c2f(walk, concat(walk, 1, d0, p1))

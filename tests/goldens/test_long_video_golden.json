@@ -1,0 +1,128 @@
+{
+ "a1_default": [
+  "a2a489f639e339a3e60b992d0e0fa0c1",
+  "533296fac6061c18cdbe49ec579cb3f7",
+  "81 -> 81 produced -> 81 frames (pose 81, overlap 5)",
+  "torch.float32",
+  "292cff51b874034ffb3093d4567d2a08"
+ ],
+ "a1_long": [
+  "ebe2d4a96e8002175bc1ca09b51b5e20",
+  "aa05f655f3b73225ba326d57a1b49ae4",
+  "77 + 77 + 77 + 77 + 73 -> 361 produced -> 360 frames (pose 360, overlap 5)",
+  "torch.float32",
+  "d38a497afc1ccb5805215847efa3ca2d"
+ ],
+ "a1_overlap_13_chunk_17": [
+  "3d69bfca27176eedd28cb2a536a57cee",
+  "473f26c13f92ab0161cc5ff09f8e671b",
+  "17 + 17 + 17 + 17 + 17 + 17 + 17 + 17 + 17 + 17 + 17 + 17 -> 61 produced -> 60 frames (pose 60, overlap 13)",
+  "torch.float32",
+  "c295587bce8a97af68297fe916f7846f"
+ ],
+ "a1_replacement_mask": [
+  "cee0dac92232423cd5a53b5402e6a1ec",
+  "3441b2fe623a42094d081dff344baf6b",
+  "81 + 77 -> 153 produced -> 150 frames (pose 150, overlap 5)",
+  "torch.float32",
+  "823e434faade8b22efa94d2a826b7d0e"
+ ],
+ "a1_snap": [
+  "d18d4eefe98a7c63da40e4d29db6e89d",
+  "4e077945a67402ed756356feea77eb6b",
+  "77 + 77 + 57 -> 201 produced -> 200 frames (pose 200, overlap 5)",
+  "torch.float32",
+  "4110c00d8ba17ea79b478681ab901926"
+ ],
+ "a2_clip_vision": [
+  "d22bc1917c8fd5cadbe1771538ad2df3",
+  "126f3ce28e548f3fc6b6bccfb17d8669",
+  "81 + 81 + 41 -> 201 produced -> 200 frames (pose 200, overlap 1)",
+  "torch.float32",
+  "a1c0602582e10b0aac92efe40d374096"
+ ],
+ "a2_default": [
+  "a2a489f639e339a3e60b992d0e0fa0c1",
+  "963471f7d6e62b810871bc95b3906f90",
+  "81 -> 81 produced -> 81 frames (pose 81, overlap 1)",
+  "torch.float32",
+  "64c2228148565eec787021812e468fd4"
+ ],
+ "a2_hold": [
+  "fb8d8ccfc63ad0b3675725dd5dd6cdd6",
+  "92f18eea1e1ecdb9bd91c686f7507fb7",
+  "49 + 49 + 49 + 49 + 49 + 13 -> 253 produced -> 250 frames (pose 100, overlap 1)",
+  "torch.float32",
+  "036310633551cd2fa7b537d48c3b69df"
+ ],
+ "a2_long": [
+  "a887f0d57a393eb4f68988900a19a4b2",
+  "66631b73f2335db466f59782018c68a4",
+  "81 + 81 + 81 + 81 + 41 -> 361 produced -> 360 frames (pose 360, overlap 1)",
+  "torch.float32",
+  "e18ca3aa4279ab83928e2b30e4473879"
+ ],
+ "error_empty_schedule": [
+  "ValueError",
+  "The sigma schedule is empty (denoise too low, or an empty sigmas_override).",
+  "40aea1f457aceb97f0819c1417d1cfe2",
+  "766537e389a1d9041bb94da25e3d8e01"
+ ],
+ "error_mask_background_mismatch": [
+  "ValueError",
+  "character_mask has 100 frames but background_video has 200: the mask marks where the character goes in each background frame, so connect the two from the same video.",
+  "d751713988987e9331980363e24189ce",
+  "c2ad6b23df4deeeaa16ba48ef5b2090c"
+ ],
+ "error_no_pose_frames": [
+  "ValueError",
+  "pose_video has no frames.",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
+ "error_old_core_a1": [
+  "RuntimeError",
+  "WanAnimateToVideo returns 3 outputs, 6 expected. Update ComfyUI: this node needs the WanAnimateToVideo that returns trim_latent / trim_image / video_frame_offset.",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
+ "error_old_core_a2": [
+  "RuntimeError",
+  "WanAnimate2ToVideo returns 3 outputs, 6 expected. Update ComfyUI: this node needs the WanAnimate2ToVideo that returns trim_latent / trim_image / video_frame_offset.",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
+ "error_overlap_not_below_chunk": [
+  "ValueError",
+  "frames_per_chunk (77 -> 77 on the 4k+1 grid) must exceed the overlap (77).",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
+ "error_pose_start_after_end": [
+  "ValueError",
+  "pose_start_percent (0.8) must not be greater than pose_end_percent (0.2).",
+  "d751713988987e9331980363e24189ce",
+  "d41d8cd98f00b204e9800998ecf8427e"
+ ],
+ "overlap_self_correction": [
+  "10e7f5721851094ff8cd84c740094c06",
+  "331ff8ac52d0700f8ee0973f0084a5b0",
+  "49 + 49 + 49 + 49 + 25 -> 201 produced -> 200 frames (pose 200, overlap 5)",
+  "torch.float32",
+  "9ba9709b5ead28e80bcc62acfbf108cc"
+ ],
+ "seed_2_64_minus_1_increment": [
+  "8ad50bd60c808737174b6418843722b4",
+  "b3b2e4560f61267f84440afc73e84c59",
+  "81 + 81 + 41 -> 201 produced -> 200 frames (pose 200, overlap 1)",
+  "torch.float32",
+  "d36edd7d3e847f3fb436993c4d12c0f3"
+ ],
+ "sigmas_override": [
+  "f071ee88c2134bb07673c28e539f616f",
+  "bcb903fd1389989a237137791900b406",
+  "81 -> 81 produced -> 81 frames (pose 81, overlap 1)",
+  "torch.float32",
+  "1fdc0a502cdb578c217a8f834518981f"
+ ]
+}

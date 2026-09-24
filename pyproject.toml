@@ -26,10 +26,3 @@ Repository = "https://github.com/0xBeycan/ComfyUI-BCVideoNodes"
 PublisherId = "beycanai"
 DisplayName = "ComfyUI-BCVideoNodes"
 Icon = ""
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-# pytest imports this package's __init__.py during collection (the repo root
-# is a package). nodes.py defers its torch/comfy imports, so that works with
-# nothing but pytest installed. pythonpath lets the tests `import chunk_planner`.
-pythonpath = ["."]

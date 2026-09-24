@@ -20,20 +20,29 @@ import argparse
 import os
 import sys
 import time
+import types
 
 import cv2
 import numpy as np
 import torch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The pack, bound as the package `bcvideonodes` the way ComfyUI and tests/conftest.py bind it, so
+# the relative imports of its modules resolve; its __init__ (the nodes) is not run. A process that
+# has bound it already keeps that binding.
+if "bcvideonodes" not in sys.modules:
+    _pack = types.ModuleType("bcvideonodes")
+    _pack.__path__ = [ROOT]
+    sys.modules["bcvideonodes"] = _pack
 
 from onnx_extract import OnnxGraph, extract_rtmw, extract_vitpose, extract_yolov10  # noqa: E402
 
-from preprocess.models import checkpoint  # noqa: E402
-from preprocess.models.decode import decode_heatmaps, decode_simcc  # noqa: E402
-from preprocess.pose_utils.pose2d_utils import bbox_from_detector, crop  # noqa: E402
+from bcvideonodes.models.common import checkpoint  # noqa: E402
+from bcvideonodes.models.rtmw.decode import decode_simcc  # noqa: E402
+from bcvideonodes.models.vitpose.decode import decode_heatmaps  # noqa: E402
+from bcvideonodes.libs.bbox import whole_frame_box  # noqa: E402
+from bcvideonodes.models.common.pose_input import pose_crop  # noqa: E402
 
 CONVERTER_VERSION = "1"
 
@@ -49,11 +58,6 @@ MODELS = {
                 "file": "yolov10x_fp32.safetensors", "dtype": torch.float32, "extract": extract_yolov10},
 }
 
-# the crop the pose models are fed, as the preprocess takes it: ImageNet normalisation on
-# 0..1 RGB and the detector box grown by 1.25
-NORM_MEAN = np.array([0.485, 0.456, 0.406])
-NORM_STD = np.array([0.229, 0.224, 0.225])
-CROP_RESCALE = 1.25
 DRAW_THRESHOLD = 0.5
 
 
@@ -105,16 +109,21 @@ def read_frames(paths, count):
     return clips
 
 
+def _detector_input(frame, device):
+    """`frame` as the detector module takes it: resized to 640x640, [1, 3, 640, 640] on `device`."""
+    return torch.from_numpy(cv2.resize(frame, (640, 640)).transpose(2, 0, 1)[None].copy()).to(device)
+
+
 def detect_person(yolo, frame, device):
     """The highest scoring person row of the detector on `frame`, in frame pixels, or the
     whole frame when there is none."""
     H, W = frame.shape[:2]
-    x = torch.from_numpy(cv2.resize(frame, (640, 640)).transpose(2, 0, 1)[None].copy()).to(device)
+    x = _detector_input(frame, device)
     with torch.inference_mode():
         rows = yolo(x)[0].float().cpu().numpy()
     persons = rows[rows[:, 5] == 0]
     if not len(persons) or persons[0, 4] < 0.05:
-        return np.array([0.0, 0.0, W, H, -1.0])
+        return whole_frame_box(W, H)
     x1, y1, x2, y2, score = persons[0, :5]
     return np.array([x1 * W / 640, y1 * H / 640, x2 * W / 640, y2 * H / 640, score])
 
@@ -122,9 +131,8 @@ def detect_person(yolo, frame, device):
 def pose_crops(frames, boxes, input_size):
     crops, centers, scales = [], [], []
     for frame, box in zip(frames, boxes):
-        center, scale = bbox_from_detector(box, input_size, rescale=CROP_RESCALE)
-        img = crop(frame, center, scale, input_size)[0]
-        crops.append(((img - NORM_MEAN) / NORM_STD).transpose(2, 0, 1).astype(np.float32))
+        img_norm, center, scale = pose_crop(frame, box, input_size)
+        crops.append(img_norm)
         centers.append(np.array(center))
         scales.append(np.array(scale))
     return crops, centers, scales
@@ -223,7 +231,7 @@ def main():
         if name == "yolov10":
             ref_rows, new_rows, detector_boxes = [], [], []
             for frame in frames:
-                xin = torch.from_numpy(cv2.resize(frame, (640, 640)).transpose(2, 0, 1)[None].copy()).to(device)
+                xin = _detector_input(frame, device)
                 with torch.inference_mode():
                     ref_rows.append(ref(xin)[0].float().cpu().numpy())
                     new_rows.append(new(xin)[0].float().cpu().numpy())

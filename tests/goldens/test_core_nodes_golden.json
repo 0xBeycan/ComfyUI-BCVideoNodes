@@ -1,0 +1,5 @@
+{
+ "call_node": "[('v3', {'given': 7, 'no_default': 0.25, 'bare': 'image', 'combo': 'high', 'number': 0.5, 'switch': False}), ('v3', {'number': 3.0, 'given': 0, 'combo': 'high', 'switch': False}), ('v1 tuple', {'strength': 1.0}), ('v1 tuple', {'strength': 0.3, 'extra': 'passed through'}), ('v1 dict', {'strength': 2.0})]",
+ "missing node": "('RuntimeError', \"Core node 'NotACoreNode' is not registered. Update ComfyUI.\")",
+ "with_schema_defaults": "[{'no_default': 0.0, 'given': 5, 'switch': True, 'combo': 'high', 'number': 0.5}, True, {'strength': 1.0}]"
+}

@@ -1,0 +1,23 @@
+{
+ "computed.boxes": "[(60, 38, 98, 77), (37, 62, 60, 95), (83, 81, 107, 121), (75, 95, 84, 104), (59, 115, 68, 124), (44, 95, 116, 104), (0, 0, 13, 14), (146, 182, 160, 200), (215, 50, 160, 69), (0, 49, -55, 70)]",
+ "computed.crops": "d0b4d67c13f015c2c33bfc0573f42222",
+ "computed.log": "720ad723674f02e2e49d6726cb34cae5",
+ "frame_count.error": "pose_data holds 10 frames and images 2; they must be the same frames",
+ "frame_count.log": "d41d8cd98f00b204e9800998ecf8427e",
+ "padded.boxes": "[(50, 28, 108, 87), (27, 52, 70, 105), (73, 71, 117, 131), (65, 85, 94, 114), (49, 105, 78, 134), (34, 85, 126, 114), (0, 0, 23, 24), (136, 172, 160, 200), (205, 40, 160, 79), (0, 39, -45, 80)]",
+ "padded.crops": "473799e75526cd09188df3db3c9864a3",
+ "padded.log": "720ad723674f02e2e49d6726cb34cae5",
+ "supplied.boxes": "[(0, 20, 60, 90), (17, 24, 77, 108), (24, 33, 84, 117), (31, 42, 91, 126), (38, 51, 98, 135), (45, 60, 105, 144), (52, 69, 112, 153), (59, 78, 119, 162), (66, 87, 126, 171), (120, 150, 175, 230)]",
+ "supplied.crops": "4e5ebc99f19754588aa1b59106d8752f",
+ "supplied.log": "6cdbeaef310960dd3d07041257e4feaf",
+ "supplied_bad.error": "face_bboxes must be (x1, y1, x2, y2) with 0 <= x1 < x2 and 0 <= y1 < y2, got [(-5, 20, 60, 90), (10, 20, 10, 90)]",
+ "supplied_bad.log": "d41d8cd98f00b204e9800998ecf8427e",
+ "supplied_single.boxes": "[(10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90), (10, 20, 60, 90)]",
+ "supplied_single.crops": "8caae53fbc0dc56a1417a1ec94ce1837",
+ "supplied_single.log": "c02e283459b0eacdc1172768723a8b8a",
+ "tiny_2x2.boxes": "[(0, 0, 2, 2)]",
+ "tiny_2x2.crops": "d0a890dcd0c822f4e00f39adc9da62bf",
+ "tiny_2x2.log": "c4779383c4d3cdb997c528cac05ca7ba",
+ "tiny_2x2_fallback.error": "(-215:Assertion failed) !ssize.empty() in function 'resize'",
+ "tiny_2x2_fallback.log": "bbc3b86ce9da6cdd0816c0d6529f3be8"
+}
