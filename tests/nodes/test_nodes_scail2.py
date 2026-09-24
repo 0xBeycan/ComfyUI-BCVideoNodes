@@ -1,5 +1,5 @@
 """The SCAIL-2 nodes: SCAIL-2 Preprocess computes exactly what SAM 3.1 Multiplex Video Track and
-SCAIL-2 Colored Mask compute when chained, and the Wan SCAIL-2 Long Video Sampler's widget order
+SCAIL-2 Colored Mask compute when chained, and the SCAIL-2 Long Video Sampler's widget order
 and defaults (read under the sampler_fakes stubs), whose shift / scheduler / steps give the sigmas
 the official ComfyUI SCAIL-2 template samples with, computed by ComfyUI itself. Fake SAM model, synthetic frames. Runs where
 ComfyUI is importable (with the ComfyUI root on PYTHONPATH):
@@ -93,7 +93,7 @@ def test_the_default_schedule_is_the_template_s():
     import comfy.model_sampling
     import comfy.samplers
 
-    node = scail2.BCVWanSCAIL2LongVideoSampler
+    node = scail2.BCVSCAIL2LongVideoSampler
 
     # what the loop builds: ModelSamplingSD3(shift) on the model, then BasicScheduler on it
     class Sampling(comfy.model_sampling.ModelSamplingDiscreteFlow, comfy.model_sampling.CONST):

@@ -1,4 +1,4 @@
-"""SCAIL-2 Colored Mask and SCAIL-2 Preprocess, the preprocess of the Wan SCAIL-2 Long Video
+"""SCAIL-2 Colored Mask and SCAIL-2 Preprocess, the preprocess of the SCAIL-2 Long Video
 Sampler. The preprocess wrapper calls the individual nodes, so it computes exactly what the
 chained nodes compute."""
 

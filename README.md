@@ -21,7 +21,7 @@ Animate or SCAIL-2 video of exactly that length.
 | **Wan Animate 2 Long Video Sampler** | `BCVWanAnimate2LongVideoSampler` | `BCVideoNodes/Wan/Animate` |
 | **SCAIL-2 Colored Mask** | `BCVSCAIL2ColoredMask` | `BCVideoNodes/Wan/SCAIL` |
 | **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/Wan/SCAIL` |
-| **Wan SCAIL-2 Long Video Sampler** | `BCVWanSCAIL2LongVideoSampler` | `BCVideoNodes/Wan/SCAIL` |
+| **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/Wan/SCAIL` |
 
 ## Preprocess nodes
 
@@ -154,7 +154,7 @@ the chained nodes produce with the same settings.
 
 ### SCAIL-2 Colored Mask and SCAIL-2 Preprocess
 
-The inputs of the Wan SCAIL-2 Long Video Sampler, one person (multi-person
+The inputs of the SCAIL-2 Long Video Sampler, one person (multi-person
 is a later phase).
 
 - **SCAIL-2 Colored Mask**: `driving_mask` (MASK), `replacement_mode`,
@@ -203,7 +203,7 @@ The three samplers, one for each core conditioning node:
 |-----------------------------------|----------------------|-------------------|
 | **Wan Animate Long Video Sampler** (`BCVWanAnimateLongVideoSampler`)   | `WanAnimateToVideo`  | Wan 2.2 Animate   |
 | **Wan Animate 2 Long Video Sampler** (`BCVWanAnimate2LongVideoSampler`) | `WanAnimate2ToVideo` | Wan Animate 2     |
-| **Wan SCAIL-2 Long Video Sampler** (`BCVWanSCAIL2LongVideoSampler`) | `WanSCAILToVideo` | Wan 2.1 SCAIL-2 |
+| **SCAIL-2 Long Video Sampler** (`BCVSCAIL2LongVideoSampler`) | `WanSCAILToVideo` | Wan 2.1 SCAIL-2 |
 
 All three depend on ComfyUI core and torch only.
 
@@ -360,7 +360,7 @@ The base Animate 2 checkpoint with a Wan 2.1 I2V distill LoRA (lightx2v) is
 not a combination the official repository runs; its fast path is the
 distilled checkpoint.
 
-#### Wan SCAIL-2 Long Video Sampler (`WanSCAILToVideo`)
+#### SCAIL-2 Long Video Sampler (`WanSCAILToVideo`)
 
 Wan 2.1 SCAIL-2 in either of its two modes, from the same node:
 

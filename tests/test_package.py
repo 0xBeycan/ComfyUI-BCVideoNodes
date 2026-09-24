@@ -11,7 +11,7 @@ import pytest
 SAMPLERS = {
     "BCVWanAnimateLongVideoSampler": ("Wan Animate Long Video Sampler", "WanAnimateToVideo", "BCVideoNodes/Wan/Animate"),
     "BCVWanAnimate2LongVideoSampler": ("Wan Animate 2 Long Video Sampler", "WanAnimate2ToVideo", "BCVideoNodes/Wan/Animate"),
-    "BCVWanSCAIL2LongVideoSampler": ("Wan SCAIL-2 Long Video Sampler", "WanSCAILToVideo", "BCVideoNodes/Wan/SCAIL"),
+    "BCVSCAIL2LongVideoSampler": ("SCAIL-2 Long Video Sampler", "WanSCAILToVideo", "BCVideoNodes/Wan/SCAIL"),
 }
 
 # id -> (display name, category, output names)

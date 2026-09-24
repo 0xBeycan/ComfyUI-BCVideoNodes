@@ -1,5 +1,5 @@
 """Registration only: the pack's nodes, as ComfyUI lists them."""
-from .nodes.sampler import BCVWanAnimate2LongVideoSampler, BCVWanAnimateLongVideoSampler, BCVWanSCAIL2LongVideoSampler
+from .nodes.sampler import BCVWanAnimate2LongVideoSampler, BCVWanAnimateLongVideoSampler, BCVSCAIL2LongVideoSampler
 from .nodes.pose import BCVPoseConfig, BCVPoseDetection
 from .nodes.sam3_1_multiplex import BCVSAM3Config, BCVSAM3VideoTrack
 from .nodes.face import BCVFaceCrop
@@ -19,7 +19,7 @@ NODE_CLASS_MAPPINGS = {
     "BCVMaskGuard": BCVMaskGuard,
     "BCVWanAnimatePreprocess": BCVWanAnimatePreprocess,
     "BCVWanAnimatePreprocessGuard": BCVWanAnimatePreprocessGuard,
-    "BCVWanSCAIL2LongVideoSampler": BCVWanSCAIL2LongVideoSampler,
+    "BCVSCAIL2LongVideoSampler": BCVSCAIL2LongVideoSampler,
     "BCVSCAIL2ColoredMask": BCVSCAIL2ColoredMask,
     "BCVSCAIL2Preprocess": BCVSCAIL2Preprocess,
 }
@@ -36,7 +36,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BCVMaskGuard": "Mask Guard",
     "BCVWanAnimatePreprocess": "WanAnimate Preprocess",
     "BCVWanAnimatePreprocessGuard": "WanAnimate Preprocess Guard",
-    "BCVWanSCAIL2LongVideoSampler": "Wan SCAIL-2 Long Video Sampler",
+    "BCVSCAIL2LongVideoSampler": "SCAIL-2 Long Video Sampler",
     "BCVSCAIL2ColoredMask": "SCAIL-2 Colored Mask",
     "BCVSCAIL2Preprocess": "SCAIL-2 Preprocess",
 }

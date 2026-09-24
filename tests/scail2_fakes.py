@@ -6,5 +6,5 @@ scail2 = Names("scail2", {
     **refs("pipelines.scail2", "PALETTE", "WHITE", "BLACK", "backgrounds", "colored_masks"),
     **refs("libs.mask", "render_identity"),
     **refs("models.wan_scail2.adapter", "ANIMATION", "REPLACEMENT", "character_on_black", "mask_convention"),
-    **refs("nodes.sampler", "BCVWanSCAIL2LongVideoSampler"),
+    **refs("nodes.sampler", "BCVSCAIL2LongVideoSampler"),
 })

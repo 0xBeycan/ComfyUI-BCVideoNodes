@@ -114,13 +114,13 @@
   "ValueError",
   "pose_video_mask has 80 frames but pose_video has 100: both come from the same driving video; re-run the preprocess (SCAIL-2 Preprocess).",
   "64d2ad47d2f27752b003851831a17486",
-  "690b8631ab3b6ba84bf6154a1b096f81"
+  "6dcca229c7b6900945c2c163100c8eb7"
  ],
  "error_s2_mode_mismatch": [
   "ValueError",
   "reference_image_mask was rendered for animation mode (white background) but replacement_mode is True: set replacement_mode to False, or re-render the masks (SCAIL-2 Colored Mask) with replacement_mode True.",
   "d751713988987e9331980363e24189ce",
-  "86ce33b581ee49d0bb1f9ee684100ce9"
+  "fc337df5c9b7a7c371ea6416a9135477"
  ],
  "error_s2_size_not_32": [
   "ValueError",
@@ -137,38 +137,38 @@
  ],
  "s2_default": [
   "a2a489f639e339a3e60b992d0e0fa0c1",
-  "e2a4e1fa98026469ebd10cbdac2c1796",
+  "8a6296481d005de17ac695d756567570",
   "81 -> 81 produced -> 81 frames (pose 81, overlap 5)",
   "torch.float32",
-  "8fc4d03fa6397c8e2f5ad1ea6a0969ae"
+  "84963d2b61397f29ecbf55cb039baa33"
  ],
  "s2_hold": [
   "95d2cc5b05d9df9060c0d2fa96f817d1",
-  "6c349409730890ee97e01c5fa7ab5777",
+  "fa9f28ce3599e1224cd1182aea159d97",
   "81 + 81 + 81 + 81 -> 309 produced -> 250 frames (pose 100, overlap 5)",
   "torch.float32",
-  "f242212072882c976a10aa0def5dcb79"
+  "c5e426008bcf0f13ac41f1c2fdcbba50"
  ],
  "s2_long": [
   "af5e654435bfecbbc3322f9cff4c7909",
-  "f3cfdb734fc37267a4a49413f66b5e6f",
+  "6c91c47ba64eb5683e18aa3eefbd95a5",
   "81 + 81 + 81 + 81 + 81 + 81 -> 461 produced -> 450 frames (pose 450, overlap 5)",
   "torch.float32",
-  "f95e6103f02003155a0bdd6b40945177"
+  "253359cf3bc84c0a0c64cbe89319a71c"
  ],
  "s2_overlap_9": [
   "372cff29cb76229d1e756fdd0d248386",
-  "aa07a391945b60fdad4883c36d7a62b1",
+  "23a59a69a161cd27e1655a3cd1e8e678",
   "81 + 81 + 81 -> 225 produced -> 200 frames (pose 200, overlap 9)",
   "torch.float32",
-  "6a3030ae563122cd04650d31ce7e942f"
+  "04be4a827586f8f422610b68743e5ea4"
  ],
  "s2_replacement": [
   "2504d289b0911e69d31e375e42b8ce94",
-  "baf0ba2bb7d9575bf182a35976b11c1e",
+  "1a874d07178747dcdb0169da4d2494cb",
   "81 + 81 + 81 -> 233 produced -> 200 frames (pose 200, overlap 5)",
   "torch.float32",
-  "4f30b348e76308eadf49e9c37b3cc931"
+  "6b70ed932b7085f2d617e48797535bdc"
  ],
  "seed_2_64_minus_1_increment": [
   "8ad50bd60c808737174b6418843722b4",

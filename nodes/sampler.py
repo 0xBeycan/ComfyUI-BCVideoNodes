@@ -2,7 +2,7 @@
 
 One node per core conditioning node: BCVWanAnimateLongVideoSampler wraps
 WanAnimateToVideo (Wan 2.2 Animate), BCVWanAnimate2LongVideoSampler wraps
-WanAnimate2ToVideo and BCVWanSCAIL2LongVideoSampler wraps WanSCAILToVideo (Wan 2.1
+WanAnimate2ToVideo and BCVSCAIL2LongVideoSampler wraps WanSCAILToVideo (Wan 2.1
 SCAIL-2). The chunk loop is pipelines/long_video.py.
 """
 
@@ -162,7 +162,7 @@ class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
         return required, optional
 
 
-class BCVWanSCAIL2LongVideoSampler(_LongVideoSampler):
+class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanSCAILToVideo"
     MODEL_TOOLTIP = "Wan 2.1 SCAIL-2 model. LoRA (lightx2v distill, SCAIL-2 DPO / relight) and model patches pass through unchanged; shift is applied here."
     DEFAULT_SHIFT = 8.0

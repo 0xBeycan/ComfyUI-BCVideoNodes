@@ -64,7 +64,7 @@ HEAVY = [
 NODE_KEYS = [
     "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "BCVPoseDetection", "BCVPoseConfig",
     "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop", "BCVPoseGuard", "BCVMaskGuard",
-    "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVWanSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
+    "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
     "BCVSCAIL2Preprocess",
 ]
 # each exception's trigger module

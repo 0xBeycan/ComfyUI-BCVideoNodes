@@ -19,12 +19,12 @@ PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ANIMATE1 = "BCVWanAnimateLongVideoSampler"
 ANIMATE2 = "BCVWanAnimate2LongVideoSampler"
-SCAIL2 = "BCVWanSCAIL2LongVideoSampler"
+SCAIL2 = "BCVSCAIL2LongVideoSampler"
 CONTINUE_MOTION_FRAMES = 1  # WanAnimate2ToVideo's class constant
 LATENT_DOWN = 8
 
 sampler = Names("sampler", {
-    **refs("nodes.sampler", "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "BCVWanSCAIL2LongVideoSampler",
+    **refs("nodes.sampler", "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "BCVSCAIL2LongVideoSampler",
            "_combo_default"),
     "_StepLogger": Ref("pipelines.long_video", "_StepLogger"),
     "_fix_replacement_mask": Ref("models.wan_animate.mask_repair", "fix_replacement_mask"),

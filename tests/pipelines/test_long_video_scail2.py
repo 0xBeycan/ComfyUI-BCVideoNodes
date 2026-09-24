@@ -1,4 +1,4 @@
-"""The Wan SCAIL-2 Long Video Sampler's chunk loop against the fake WanSCAILToVideo.
+"""The SCAIL-2 Long Video Sampler's chunk loop against the fake WanSCAILToVideo.
 
 ComfyUI itself is stubbed (comfy.*, nodes); torch is real. For the end-to-end alignment a VAE
 that carries each pixel frame's value through its latent (IndexVAE) and a SamplerCustom that
