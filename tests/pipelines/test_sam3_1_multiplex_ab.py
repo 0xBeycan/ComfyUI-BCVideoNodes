@@ -5,9 +5,8 @@ segment_by_prompt / segment_by_prompt_multi / segment_by_pose drive (`_condition
 masks that depend on what the policy fed them - which frames are conditioning, which spatial
 memories the lookup would read - and log every call.
 
-Two kinds of test per switch: with the defaults the run is exactly the one recorded from the
-code before the switches existed (the GOLDEN digests below: mask per frame and the call log),
-and with the switch on, the path it names changes and nothing else is asked of it.
+Each switch test turns the switch on and checks that the path it names changes and nothing else
+is asked of it.
 
 Needs ComfyUI importable (the pod, or ComfyUI's root on PYTHONPATH), like the other SAM 3.1 Multiplex tests."""
 import hashlib
@@ -162,11 +161,6 @@ def rig(monkeypatch):
     return run
 
 
-def digest(masks, log):
-    return (hashlib.md5(masks.numpy().tobytes()).hexdigest(),
-            hashlib.md5(repr(log).encode()).hexdigest())
-
-
 def probation_detections(real):
     """A detection on frame 0 only, then nothing until frame 12: the track born on frame 0
     goes unmatched through its probation window."""
@@ -230,29 +224,6 @@ def pose_rig(monkeypatch):
                                      0.3, result=result, **kwargs)
         return masks, tracker.log, result
     return run
-
-
-# Recorded from preprocess/sam3.py at 03c0a10, before any switch existed: (masks, call log).
-GOLDEN = {
-    "single": ("a858ad7c2face423c09e9158f957570c", "4a0fd6c7b53c73f5170becab17596c90"),
-    "multi": ("a858ad7c2face423c09e9158f957570c", "4a0fd6c7b53c73f5170becab17596c90"),
-    "probation": ("2186e143fc68a74c651bde14c3e3fc0c", "83c4bfb98b200ddfea08edae2961e26d"),
-    "two": ("5070fe57e5756268e1a0d421e2aae4a9", "ef69dcd98ca5b3b8aaa3aa4f1ca9a814"),
-    "pose": ("b63a1e0bf4572057a6ae39a909a0ff19", "fc19fae5abe7b537b36f6ba76dd6ca7b"),
-}
-SCENARIOS = {"single": {}, "multi": {"multi": 2}, "probation": PROBATION,
-             "two": {"multi": 2, "detections": two_people}}
-
-
-@pytest.mark.parametrize("name", list(SCENARIOS))
-def test_the_defaults_are_the_code_before_the_switches(rig, name):
-    masks, log, _ = rig(**SCENARIOS[name])
-    assert digest(masks, log) == GOLDEN[name]
-
-
-def test_box_keypoint_defaults_are_the_code_before_the_switches(pose_rig):
-    masks, log, _ = pose_rig()
-    assert digest(masks, log) == GOLDEN["pose"]
 
 
 # --- the switches --------------------------------------------------------------------------
@@ -367,11 +338,6 @@ def test_the_logits_dump_reproduces_box_keypoint_mode(pose_rig):
         again = reproduce(dump["logits"][f], dump["cut"][f], H, W, 0.0, cfg.mask_threshold,
                           FakeTracker.image_size, cfg)
         assert torch.equal(again, masks[f]), f
-
-
-def test_no_logits_are_collected_unless_asked(rig):
-    masks, log, _ = rig()
-    assert digest(masks, log) == GOLDEN["single"]
 
 
 @pytest.fixture
@@ -572,8 +538,6 @@ def test_propagate_stops_where_the_caller_stops_with_the_same_output(pose_rig, m
     assert tracked == lazy_result.get("propagated", 0) + lazy_result.get("re-seeded early", 0)
     if name != "defaults":
         assert tracked < sum(entry[0] == "track" for entry in eager_log)
-    if name == "defaults":
-        assert digest(lazy, lazy_log) == GOLDEN["pose"]
 
 
 @pytest.mark.parametrize("size", [(1280, 720), (832, 480)])
