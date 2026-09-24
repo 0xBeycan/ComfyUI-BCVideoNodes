@@ -25,8 +25,11 @@ TRAINED_CHUNKS = (65, 81)  # the segment lengths SCAIL-2 was trained on (zai-org
 ON = 225.0 / 255.0
 CHARACTER = 0.1
 ANIMATION, REPLACEMENT = "animation", "replacement"
-# the reference mask's background per mode: white in animation mode, black in replacement mode
+# each colored mask's background per mode (SCAIL-Pose's preprocess, core's SCAIL2ColoredMask): the
+# reference mask is white in animation mode and black in replacement mode, the driving mask the
+# opposite
 BACKGROUND = {ANIMATION: "white", REPLACEMENT: "black"}
+DRIVING_BACKGROUND = {ANIMATION: "black", REPLACEMENT: "white"}
 
 
 def character_on_black(reference, reference_mask):
@@ -42,21 +45,21 @@ def character_on_black(reference, reference_mask):
     return reference * is_character
 
 
-def mask_convention(reference_mask):
-    """The mode a colored reference mask was rendered for, read from the border of its first
-    frame: ANIMATION when most border pixels are white, REPLACEMENT when most are black, None when
-    neither."""
-    frame = reference_mask[0, ..., :3].float()
+def mask_convention(mask, background=BACKGROUND):
+    """The mode a colored mask was rendered for, read from the border of its first frame: the
+    mode whose `background` (mode -> "white" / "black": BACKGROUND for the reference mask,
+    DRIVING_BACKGROUND for the driving mask) most border pixels have, None when neither colour
+    has most of them."""
+    frame = mask[0, ..., :3].float()
     border = [frame[0], frame[-1]]
     if frame.shape[0] > 2:
         border += [frame[1:-1, 0], frame[1:-1, -1]]
     pixels = torch.cat(border, dim=0)
     white = float((pixels.min(dim=-1).values > ON).float().mean())
     black = float((pixels.max(dim=-1).values <= CHARACTER).float().mean())
-    if white > 0.5:
-        return ANIMATION
-    if black > 0.5:
-        return REPLACEMENT
+    for colour, share in (("white", white), ("black", black)):
+        if share > 0.5:
+            return next(mode for mode, painted in background.items() if painted == colour)
     return None
 
 
@@ -82,7 +85,9 @@ class SCAIL2Adapter(AnimateAdapter):
         # the core node's names for them
         animate_inputs["pose_start"] = animate_inputs.pop("pose_start_percent")
         animate_inputs["pose_end"] = animate_inputs.pop("pose_end_percent")
-        self._check_mode(bool(animate_inputs["replacement_mode"]), animate_inputs["reference_image_mask"])
+        replacement = bool(animate_inputs["replacement_mode"])
+        self._check_mode(replacement, "reference_image_mask", animate_inputs["reference_image_mask"], BACKGROUND)
+        self._check_mode(replacement, "pose_video_mask", animate_inputs["pose_video_mask"], DRIVING_BACKGROUND)
 
         # The core node keeps the last previous_frame_count frames, moves the offset back by that
         # many and encodes them into latent frames; off the 4k+1 grid the decoded span is shorter
@@ -102,16 +107,18 @@ class SCAIL2Adapter(AnimateAdapter):
         animate_inputs["clip_vision_output"] = clip_vision_encode(clip_vision, image)
         return self._previous
 
-    def _check_mode(self, replacement, reference_mask):
-        rendered = mask_convention(reference_mask)
+    def _check_mode(self, replacement, name, mask, background):
+        """The colored mask `name` against `replacement`: the mode its border was rendered for
+        (`background`, as `mask_convention` takes it) must be the one the sampler runs in."""
+        rendered = mask_convention(mask, background)
         mode = REPLACEMENT if replacement else ANIMATION
         if rendered is None:
-            logging.warning("[%s] reference_image_mask has no clear white or black background; cannot check that it "
-                            "was rendered for %s mode.", self.node_name, mode)
+            logging.warning("[%s] %s has no clear white or black background; cannot check that it "
+                            "was rendered for %s mode.", self.node_name, name, mode)
         elif rendered != mode:
-            raise ValueError("reference_image_mask was rendered for {} mode ({} background) but replacement_mode is {}: "
+            raise ValueError("{} was rendered for {} mode ({} background) but replacement_mode is {}: "
                              "set replacement_mode to {}, or re-render the masks (SCAIL-2 Colored Mask) with "
-                             "replacement_mode {}.".format(rendered, BACKGROUND[rendered], replacement,
+                             "replacement_mode {}.".format(name, rendered, background[rendered], replacement,
                                                            rendered == REPLACEMENT, replacement))
 
     def check_videos(self, pose_video, animate_inputs):

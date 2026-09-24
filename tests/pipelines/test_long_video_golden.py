@@ -207,6 +207,14 @@ ERRORS = {
     "error_s2_mask_length": lambda module: dict(node=SCAIL2, pose_frames=100, pose_video_mask=torch.zeros(80, 64, 32, 3)),
     "error_s2_mode_mismatch": lambda module: dict(node=SCAIL2, pose_frames=81, replacement_mode=True,
                                                   reference_image_mask=reference_mask(False)),
+    # the driving mask of the other mode: the frame-index mask's first frame is black (animation)
+    # and one higher is white (replacement)
+    "error_s2_driving_mode_mismatch_replacement": lambda module: dict(
+        node=SCAIL2, pose_frames=81, replacement_mode=True,
+        pose_video_mask=torch.arange(81, dtype=torch.float32).view(-1, 1, 1, 1).expand(-1, 64, 32, 3).contiguous()),
+    "error_s2_driving_mode_mismatch_animation": lambda module: dict(
+        node=SCAIL2, pose_frames=81,
+        pose_video_mask=torch.arange(1, 82, dtype=torch.float32).view(-1, 1, 1, 1).expand(-1, 64, 32, 3).contiguous()),
 }
 
 

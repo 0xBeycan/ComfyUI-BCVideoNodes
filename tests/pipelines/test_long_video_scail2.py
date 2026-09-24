@@ -123,6 +123,49 @@ def test_a_mask_without_a_clear_background_is_logged(node_module, caplog):
     assert len(Calls.animate) == 1
 
 
+def driving_mask(replacement_mode, frames=81):
+    """A colored driving mask of run()'s 64 x 32 size: a blue person in the middle, on black
+    (animation mode) or white (replacement mode)."""
+    mask = torch.full((frames, 64, 32, 3), 1.0 if replacement_mode else 0.0)
+    mask[:, 16:48, 8:24] = torch.tensor([0.0, 0.0, 1.0])
+    return mask
+
+
+@pytest.mark.parametrize("replacement_mode, rendered, background", [(True, "animation", "black"),
+                                                                    (False, "replacement", "white")])
+def test_a_driving_mask_rendered_for_the_other_mode_is_an_error(node_module, replacement_mode, rendered, background):
+    expected = ("pose_video_mask was rendered for {} mode ({} background) but replacement_mode is {}: set "
+                "replacement_mode to {}".format(rendered, background, replacement_mode, not replacement_mode))
+    with pytest.raises(ValueError, match=expected.replace("(", r"\(").replace(")", r"\)")):
+        run(node_module, pose_frames=81, node=SCAIL2, replacement_mode=replacement_mode,
+            pose_video_mask=driving_mask(not replacement_mode))
+    assert Calls.animate == []
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_a_driving_mask_rendered_for_the_mode_runs_without_a_log_line(node_module, caplog, replacement_mode):
+    caplog.set_level("WARNING")
+    run(node_module, pose_frames=81, node=SCAIL2, replacement_mode=replacement_mode,
+        pose_video_mask=driving_mask(replacement_mode))
+    assert "pose_video_mask" not in caplog.text
+    assert len(Calls.animate) == 1
+
+
+def test_a_driving_mask_without_a_clear_background_is_logged(node_module, caplog):
+    caplog.set_level("WARNING")
+    run(node_module, pose_frames=81, node=SCAIL2, pose_video_mask=torch.full((81, 64, 32, 3), 0.5))
+    assert "pose_video_mask has no clear white or black background; cannot check that it was rendered for animation mode" \
+        in caplog.text
+    assert "reference_image_mask has no clear" not in caplog.text
+    assert len(Calls.animate) == 1
+
+
+def test_the_reference_mask_is_checked_before_the_driving_mask(node_module):
+    with pytest.raises(ValueError, match="^reference_image_mask was rendered for animation mode"):
+        run(node_module, pose_frames=81, node=SCAIL2, replacement_mode=True, reference_image_mask=reference_mask(False),
+            pose_video_mask=driving_mask(False))
+
+
 def test_inputs_reach_core_under_its_names(node_module):
     run(node_module, pose_frames=81, node=SCAIL2, pose_strength=0.5, pose_start_percent=0.1, pose_end_percent=0.9)
     call = Calls.animate[0]

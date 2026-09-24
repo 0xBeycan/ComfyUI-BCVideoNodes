@@ -152,6 +152,18 @@
   "d751713988987e9331980363e24189ce",
   "d41d8cd98f00b204e9800998ecf8427e"
  ],
+ "error_s2_driving_mode_mismatch_animation": [
+  "ValueError",
+  "pose_video_mask was rendered for replacement mode (white background) but replacement_mode is False: set replacement_mode to True, or re-render the masks (SCAIL-2 Colored Mask) with replacement_mode False.",
+  "d751713988987e9331980363e24189ce",
+  "fc337df5c9b7a7c371ea6416a9135477"
+ ],
+ "error_s2_driving_mode_mismatch_replacement": [
+  "ValueError",
+  "pose_video_mask was rendered for animation mode (black background) but replacement_mode is True: set replacement_mode to False, or re-render the masks (SCAIL-2 Colored Mask) with replacement_mode True.",
+  "d751713988987e9331980363e24189ce",
+  "fc337df5c9b7a7c371ea6416a9135477"
+ ],
  "error_s2_mask_length": [
   "ValueError",
   "pose_video_mask has 80 frames but pose_video has 100: both come from the same driving video; re-run the preprocess (SCAIL-2 Preprocess).",
@@ -228,7 +240,7 @@
  ],
  "s2_replacement": [
   "2504d289b0911e69d31e375e42b8ce94",
-  "1a874d07178747dcdb0169da4d2494cb",
+  "f6daf3a708139628f2a32eb8e88d354e",
   "81 + 81 + 81 -> 233 produced -> 200 frames (pose 200, overlap 5)",
   "torch.float32",
   "6b70ed932b7085f2d617e48797535bdc"

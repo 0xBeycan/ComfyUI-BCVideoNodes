@@ -563,8 +563,10 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
     kwargs["last_chunk"] = getattr(module, node).DEFAULT_LAST_CHUNK  # the widget default, as the graph executor fills it
     kwargs["tail_padding"] = "last_frame"  # the widget default of every sampler
     if node == SCAIL2:
-        # the colored driving mask: the frame index as well, so its seek is visible
-        kwargs["pose_video_mask"] = kwargs["pose_video"].clone()
-        kwargs["reference_image_mask"] = reference_mask(overrides.get("replacement_mode", False))
+        # the colored driving mask: the frame index as well, so its seek is visible; in replacement
+        # mode one higher, so its first frame is white, the background that mode renders it on
+        replacement_mode = overrides.get("replacement_mode", False)
+        kwargs["pose_video_mask"] = kwargs["pose_video"].clone() + (1.0 if replacement_mode else 0.0)
+        kwargs["reference_image_mask"] = reference_mask(replacement_mode)
     kwargs.update(overrides)
     return getattr(module, node)().generate(**kwargs)
