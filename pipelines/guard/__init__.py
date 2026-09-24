@@ -71,10 +71,14 @@ wasted. Only a detached mask (mask_fragmented) and real pose or mask defects sto
 cannot tell a defect from something the scene really does is a warning. Thresholds were
 measured on the test clips; run with the switches off on clips known to be good and bad and
 read `metrics` before changing them.
+
+SCAIL-2 has its own guard, `scail2.check_scail2`, on the colored masks its sampler reads, without
+a pose (see pipelines/guard/scail2.py). It is imported from its module, not from here: it reads
+the colored-mask conventions of models/scail2, which the pose and mask guards do not need.
 """
 from .combine import combine_guards  # noqa: F401
-from .common import (MASK_CHECKS, MASK_ROW, POSE_CHECKS, POSE_ROW, PREPROCESS_ROW, TORSO,  # noqa: F401
-                     WARNINGS, GuardFailed)
-from .config import MaskGuardConfig, PoseGuardConfig  # noqa: F401
+from .common import (MASK_CHECKS, MASK_ROW, POSE_CHECKS, POSE_ROW, PREPROCESS_ROW, SCAIL2_CHECKS,  # noqa: F401
+                     SCAIL2_ROW, TORSO, WARNINGS, GuardFailed)
+from .config import MaskGuardConfig, PoseGuardConfig, SCAIL2GuardConfig  # noqa: F401
 from .mask import check_mask  # noqa: F401
 from .pose import check_pose  # noqa: F401

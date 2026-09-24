@@ -8,11 +8,12 @@
  "BCVSAM3VideoTrack": "d69e0769e5e18e51682bf202b9c6f122",
  "BCVSCAIL2ColoredMask": "346e6133f668756e1aaacb2fd1078142",
  "BCVSCAIL2LongVideoSampler": "f23c609f7d623b2be1687f61604b6df8",
- "BCVSCAIL2Preprocess": "1354ab44fad039ba2df3864fb1cd05b4",
+ "BCVSCAIL2Preprocess": "7bc3e30efd6768ab4f7122080fa37226",
+ "BCVSCAIL2PreprocessGuard": "86264fdf90e77ba5298735297b4ad002",
  "BCVWanAnimate2LongVideoSampler": "d0e45a432ea81e15d59c39706fed7f2a",
  "BCVWanAnimateLongVideoSampler": "a3c81db55fe0113236ecc5d50d0be217",
  "BCVWanAnimatePreprocess": "07fd18c620a9eabdf8116d363fb47ce9",
  "BCVWanAnimatePreprocessGuard": "3c209226d0e9c8f29219166d86360b8f",
- "NODE_CLASS_MAPPINGS keys": "['BCVWanAnimateLongVideoSampler', 'BCVWanAnimate2LongVideoSampler', 'BCVPoseDetection', 'BCVPoseConfig', 'BCVSAM3VideoTrack', 'BCVSAM3Config', 'BCVFaceCrop', 'BCVPoseGuard', 'BCVMaskGuard', 'BCVWanAnimatePreprocess', 'BCVWanAnimatePreprocessGuard', 'BCVSCAIL2LongVideoSampler', 'BCVSCAIL2ColoredMask', 'BCVSCAIL2Preprocess']",
- "NODE_DISPLAY_NAME_MAPPINGS keys": "['BCVWanAnimateLongVideoSampler', 'BCVWanAnimate2LongVideoSampler', 'BCVPoseDetection', 'BCVPoseConfig', 'BCVSAM3VideoTrack', 'BCVSAM3Config', 'BCVFaceCrop', 'BCVPoseGuard', 'BCVMaskGuard', 'BCVWanAnimatePreprocess', 'BCVWanAnimatePreprocessGuard', 'BCVSCAIL2LongVideoSampler', 'BCVSCAIL2ColoredMask', 'BCVSCAIL2Preprocess']"
+ "NODE_CLASS_MAPPINGS keys": "['BCVWanAnimateLongVideoSampler', 'BCVWanAnimate2LongVideoSampler', 'BCVPoseDetection', 'BCVPoseConfig', 'BCVSAM3VideoTrack', 'BCVSAM3Config', 'BCVFaceCrop', 'BCVPoseGuard', 'BCVMaskGuard', 'BCVWanAnimatePreprocess', 'BCVWanAnimatePreprocessGuard', 'BCVSCAIL2LongVideoSampler', 'BCVSCAIL2ColoredMask', 'BCVSCAIL2Preprocess', 'BCVSCAIL2PreprocessGuard']",
+ "NODE_DISPLAY_NAME_MAPPINGS keys": "['BCVWanAnimateLongVideoSampler', 'BCVWanAnimate2LongVideoSampler', 'BCVPoseDetection', 'BCVPoseConfig', 'BCVSAM3VideoTrack', 'BCVSAM3Config', 'BCVFaceCrop', 'BCVPoseGuard', 'BCVMaskGuard', 'BCVWanAnimatePreprocess', 'BCVWanAnimatePreprocessGuard', 'BCVSCAIL2LongVideoSampler', 'BCVSCAIL2ColoredMask', 'BCVSCAIL2Preprocess', 'BCVSCAIL2PreprocessGuard']"
 }

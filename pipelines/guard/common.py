@@ -1,5 +1,6 @@
 """What the pose and the mask checks share: the guard constants, the metrics rows of each group
-and of both, GuardFailed, the pose_data readers and the per-frame geometry both groups measure."""
+and of both, and of the SCAIL-2 guard, GuardFailed, the pose_data readers and the per-frame
+geometry both groups measure."""
 from dataclasses import asdict
 from typing import Optional, TypedDict
 
@@ -14,12 +15,17 @@ LIMB_ENDS = [3, 6, 4, 7, 9, 12, 10, 13, 18, 19]  # elbows, wrists, knees, ankles
 # them belongs to the person.
 WHOLE_BODY = ("keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face")
 # Checks that cannot tell a defect from something the scene really does: reported, never stop.
-WARNINGS = {"pose_limb_gap", "mask_attached_leak", "mask_specks", "mask_missed_limb"}
+WARNINGS = {"pose_limb_gap", "mask_attached_leak", "mask_specks", "mask_missed_limb",
+            "driving_empty", "driving_fragmented", "reference_fragmented", "reference_cropped", "reference_misaligned"}
 # In the order each group tests them on a frame; the report lists the checks in the order
 # they first fired, and this order breaks the tie between two that first fire on one frame.
 POSE_CHECKS = ("pose_incomplete", "pose_jump", "pose_spike", "pose_limb_gap", "subject_switch")
 MASK_CHECKS = ("mask_empty", "mask_leak", "mask_attached_leak", "mask_fragmented", "mask_specks",
                "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable")
+# The SCAIL-2 guard's: the driving-frame checks, then the reference checks.
+SCAIL2_DRIVING_CHECKS = ("no_driving_person", "driving_empty", "driving_fragmented")
+SCAIL2_REFERENCE_CHECKS = ("reference_empty", "reference_fragmented", "reference_cropped", "reference_misaligned")
+SCAIL2_CHECKS = SCAIL2_DRIVING_CHECKS + SCAIL2_REFERENCE_CHECKS
 BOX_MARGIN = 0.10
 # Completeness is measured against the frames within this many either side. A limb that at
 # least this share of them draw is one the pipeline can find on this material, so losing it
@@ -77,6 +83,10 @@ PREPROCESS_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints"
                   "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn", "box_iou_prev",
                   "mask_iou_prev", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
 
+# The SCAIL-2 guard's per-frame measurements of the colored driving mask.
+SCAIL2_ROW = ("frame", "mask_area", "fragments", "latent_kept", "mask_iou_prev")
+# and its one record of the reference mask
+SCAIL2_REFERENCE = ("mode", "area", "fragments", "cropped", "iou_first_frame", "scale_first_frame", "flags")
 
 # The rows above as the dicts the checks build: the same keys in the same order, which is the
 # order the metrics JSON lists them in (tests/pipelines/test_guard_rows.py holds each to its tuple).
@@ -135,6 +145,25 @@ class PreprocessRow(TypedDict):
     lost_limbs: list[str]
     limb_spikes: list[str]
     limb_gaps: list[str]
+
+
+class Scail2Row(TypedDict):
+    frame: int
+    mask_area: float
+    fragments: list[float]
+    latent_kept: Optional[float]
+    mask_iou_prev: Optional[float]
+
+
+class Scail2Reference(TypedDict):
+    """The SCAIL-2 guard's measurements of the reference mask (one record per run)."""
+    mode: Optional[str]
+    area: float
+    fragments: list[float]
+    cropped: float
+    iou_first_frame: Optional[float]
+    scale_first_frame: Optional[float]
+    flags: list[str]
 
 
 class GuardFailed(RuntimeError):

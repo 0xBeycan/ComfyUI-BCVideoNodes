@@ -5,7 +5,7 @@ from .nodes.sam3_1_multiplex import BCVSAM3Config, BCVSAM3VideoTrack
 from .nodes.face import BCVFaceCrop
 from .nodes.guard import BCVMaskGuard, BCVPoseGuard
 from .nodes.preprocess import BCVWanAnimatePreprocess, BCVWanAnimatePreprocessGuard
-from .nodes.scail2 import BCVSCAIL2ColoredMask, BCVSCAIL2Preprocess
+from .nodes.scail2 import BCVSCAIL2ColoredMask, BCVSCAIL2Preprocess, BCVSCAIL2PreprocessGuard
 
 NODE_CLASS_MAPPINGS = {
     "BCVWanAnimateLongVideoSampler": BCVWanAnimateLongVideoSampler,
@@ -22,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
     "BCVSCAIL2LongVideoSampler": BCVSCAIL2LongVideoSampler,
     "BCVSCAIL2ColoredMask": BCVSCAIL2ColoredMask,
     "BCVSCAIL2Preprocess": BCVSCAIL2Preprocess,
+    "BCVSCAIL2PreprocessGuard": BCVSCAIL2PreprocessGuard,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -39,6 +40,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BCVSCAIL2LongVideoSampler": "SCAIL-2 Long Video Sampler",
     "BCVSCAIL2ColoredMask": "SCAIL-2 Colored Mask",
     "BCVSCAIL2Preprocess": "SCAIL-2 Preprocess",
+    "BCVSCAIL2PreprocessGuard": "SCAIL-2 Preprocess Guard",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

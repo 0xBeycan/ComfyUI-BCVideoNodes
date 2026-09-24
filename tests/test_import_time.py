@@ -65,7 +65,7 @@ NODE_KEYS = [
     "BCVWanAnimateLongVideoSampler", "BCVWanAnimate2LongVideoSampler", "BCVPoseDetection", "BCVPoseConfig",
     "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop", "BCVPoseGuard", "BCVMaskGuard",
     "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
-    "BCVSCAIL2Preprocess",
+    "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard",
 ]
 # each exception's trigger module
 E1_MODULE = "models.common.download"
@@ -99,6 +99,7 @@ CHECK3_MODULES = [
     "pipelines.guard.report",
     "pipelines.guard.timeline",
     "pipelines.guard.combine",
+    "pipelines.guard.scail2",
     "pipelines.sam3_1_multiplex",
     "pipelines.sam3_1_multiplex.config",
     "pipelines.sam3_1_multiplex.prompt",

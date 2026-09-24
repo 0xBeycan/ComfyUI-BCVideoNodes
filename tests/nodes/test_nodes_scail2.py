@@ -59,6 +59,55 @@ def test_a_connected_reference_mask_is_not_tracked(fake_models):
     assert same(out[2], nodes.BCVSCAIL2ColoredMask().render(out[3], False, reference_mask)[1])
 
 
+def test_black_background_blacks_out_the_driving_video_around_the_tracked_person(fake_models):
+    images, reference = clip_frames(), clip_frames(1, seed=1)
+    out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "person", black_background=True)
+    plain = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "person")
+    assert same(out[0], scail2.driving_on_black(images, out[3]))
+    assert not same(out[0], images)
+    for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES[1:], out[1:], plain[1:]):
+        assert same(a, b), name  # the masks do not change
+
+
+def test_black_background_in_replacement_mode_raises_before_any_tracking(fake_models):
+    with pytest.raises(ValueError, match="black_background is for animation mode"):
+        nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), True, "person", black_background=True)
+    assert fake_models.calls == []
+
+
+def test_black_background_is_the_last_required_widget_and_off_by_default():
+    required = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()["required"]
+    assert list(required) == ["images", "reference_image", "replacement_mode", "prompt", "black_background"]
+    assert required["black_background"] == ("BOOLEAN", required["black_background"][1])
+    assert required["black_background"][1]["default"] is False
+
+
+def test_the_guard_node_passes_the_masks_through_and_is_the_pipeline():
+    mask = torch.zeros(3, 64, 32)
+    mask[:, 20:40, 10:20] = 1.0
+    pose_video_mask, reference_image_mask = scail2.colored_masks(mask, False, mask[:1])
+    defaults = {name: options[1]["default"] for name, options in nodes._config_inputs(scail2.SCAIL2GuardConfig).items()}
+    out = nodes.BCVSCAIL2PreprocessGuard().check(pose_video_mask, reference_image_mask, True, **defaults)
+    assert len(out) == len(nodes.BCVSCAIL2PreprocessGuard.RETURN_NAMES)
+    assert out[0] is pose_video_mask and out[1] is reference_image_mask
+    expected = scail2.check_scail2(pose_video_mask, reference_image_mask, scail2.SCAIL2GuardConfig(**defaults))
+    assert out[2:4] == expected[2:4] and same(out[4], expected[4])
+
+
+def test_the_guard_node_widgets():
+    required = nodes.BCVSCAIL2PreprocessGuard.INPUT_TYPES()["required"]
+    assert list(required) == ["pose_video_mask", "reference_image_mask", "scail2_guard", "max_reference_cropped",
+                              "min_reference_iou"]
+    assert required["scail2_guard"][1]["default"] is True
+    assert "Uncalibrated" in required["max_reference_cropped"][1]["tooltip"]
+
+
+def test_the_guard_node_off_never_stops():
+    pose_video_mask, reference_image_mask = scail2.colored_masks(torch.zeros(3, 64, 32), False, torch.zeros(1, 64, 32))
+    report = nodes.BCVSCAIL2PreprocessGuard().check(pose_video_mask, reference_image_mask, False)[2]
+    assert report.startswith("SCAIL-2 guard: passed") and "(off)" in report
+
+
 def test_the_colored_mask_node_is_the_pipeline():
     mask = torch.zeros(3, 64, 32)
     mask[:, 20:40, 10:20] = 1.0

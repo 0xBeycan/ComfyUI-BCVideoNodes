@@ -4,7 +4,7 @@ import json
 from typing import Union
 
 from ...libs import log
-from .common import WARNINGS, GuardFailed, MaskRow, PoseRow, PreprocessRow
+from .common import WARNINGS, GuardFailed, MaskRow, PoseRow, PreprocessRow, Scail2Row
 from .timeline import timeline_image
 
 
@@ -40,20 +40,24 @@ def longest_run(frames):
     return longest
 
 
+def _kind(name, enabled):
+    """What the check `name` is in a report: a warning, a fail (enabled) or off."""
+    return "warning" if name in WARNINGS else ("fail" if name in enabled else "off")
+
+
 # The per-frame list a check's report line counts the names of.
 REPORT_NAMES = {"pose_incomplete": "lost_limbs", "pose_spike": "limb_spikes", "pose_limb_gap": "limb_gaps",
                 "mask_missing_keypoints": "missed_keypoints", "mask_missed_limb": "missed_limbs"}
 
 
-def write_report(title, rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow]], flags, enabled):
+def write_report(title, rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow], list[Scail2Row]], flags, enabled):
     """The report text and whether the enabled checks all passed."""
     n = len(rows)
     failed = [name for name in flags if name in enabled and name not in WARNINGS]
     lines = [f"{title}: {'FAILED' if failed else 'passed'} - "
              f"{len(failed)} check(s) failed on {len({i for name in failed for i in flags[name]})}/{n} frames"]
     for name, frames in flags.items():
-        kind = "warning" if name in WARNINGS else ("fail" if name in enabled else "off")
-        line = f"- {name} ({kind}): {len(frames)} frame(s), longest run {longest_run(frames)}: {_ranges(frames)}"
+        line = f"- {name} ({_kind(name, enabled)}): {len(frames)} frame(s), longest run {longest_run(frames)}: {_ranges(frames)}"
         key = REPORT_NAMES.get(name)
         if key:
             missed = {}
@@ -75,9 +79,14 @@ def _finish(title, guard, rows: Union[list[PoseRow], list[MaskRow], list[Preproc
     record.update({"thresholds": thresholds, "enabled": sorted(enabled), "flags": flags, "frames": rows})
     metrics = json.dumps(record)
     timeline = timeline_image(rows, flags, panels)
+    _stop(report, passed, stop_on_fail)
+    return report, metrics, timeline
+
+
+def _stop(report, passed, stop_on_fail):
+    """With `stop_on_fail`, logs the report and stops the workflow (GuardFailed) when it did not
+    pass: whoever decides whether the workflow stops is the one that logs the report."""
     if stop_on_fail:
-        # whoever decides whether the workflow stops is the one that logs the report
         log.info(report.replace("\n", "\n    "))
         if not passed:
             raise GuardFailed(report)
-    return report, metrics, timeline

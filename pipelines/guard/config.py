@@ -1,5 +1,5 @@
-"""The thresholds of the two groups, as config dataclasses (the guard nodes build their widgets
-from them), and the config a check runs with."""
+"""The thresholds of the two groups and of the SCAIL-2 guard, as config dataclasses (the guard
+nodes build their widgets from them), and the config a check runs with."""
 from dataclasses import dataclass, field
 
 
@@ -26,6 +26,13 @@ class MaskGuardConfig:
     min_keypoint_recall: float = _threshold(0.9, 0.0, 1.0, "mask_missing_keypoints: fewer than this fraction of the drawn keypoints inside the mask")
     max_body_not_drawn: float = _threshold(0.25, 0.0, 1.0, "body_not_drawn: more than this fraction of the person's mask away from the drawn skeleton (a body the pose image does not draw)")
     min_mask_iou: float = _threshold(0.6, 0.0, 1.0, "mask_unstable: mask IoU with the previous frame below this while the box IoU is above 0.7")
+
+
+@dataclass
+class SCAIL2GuardConfig:
+    """Thresholds of the SCAIL-2 checks. First values, not calibrated on real clips yet."""
+    max_reference_cropped: float = _threshold(0.02, 0.0, 1.0, "reference_cropped (warning): more than this share of the character on the reference falls outside the center crop the core node cuts the reference to (the generation's aspect ratio): a portrait reference in a landscape generation loses the head or the feet. Uncalibrated first value.", 0.01)
+    min_reference_iou: float = _threshold(0.4, 0.0, 1.0, "reference_misaligned (warning, replacement mode only): the character on the reference, center-cropped and resized as the core node does, overlaps the person on the first driving frame by less than this IoU (SCAIL-2 expects the reference posed like the first driving frame). Uncalibrated first value.")
 
 
 def _config(config, cls):

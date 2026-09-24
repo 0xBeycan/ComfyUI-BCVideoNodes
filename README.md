@@ -21,6 +21,7 @@ Animate or SCAIL-2 video of exactly that length.
 | **Wan Animate 2 Long Video Sampler** | `BCVWanAnimate2LongVideoSampler` | `BCVideoNodes/Wan/Animate` |
 | **SCAIL-2 Colored Mask** | `BCVSCAIL2ColoredMask` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/SCAIL` |
+| **SCAIL-2 Preprocess Guard** | `BCVSCAIL2PreprocessGuard` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/SCAIL` |
 
 ## Preprocess nodes
@@ -175,10 +176,50 @@ is a later phase).
   `reference_mask` is connected, then SCAIL-2 Colored Mask. Tracking the
   whole clip once keeps the mask's shape and colour the same across the
   sampler's chunks (the official template re-tracks every segment). Widgets:
-  `replacement_mode`, `prompt`; optional `reference_mask`, `sam3_config`.
-  Outputs: `pose_video` (the driving video unchanged: SCAIL-2's end-to-end
-  mode reads the raw driving video as its pose input in both modes),
+  `replacement_mode`, `prompt`, `black_background` (default off); optional
+  `reference_mask`, `sam3_config`. Outputs: `pose_video` (the driving video,
+  which SCAIL-2's end-to-end mode reads as its pose input in both modes),
   `pose_video_mask`, `reference_image_mask`, `mask`, `reference_mask`.
+- `black_background` (animation mode only): `pose_video` becomes the driving
+  video with every pixel outside the person's mask black, as SCAIL-2's
+  training pose videos were (zai-org/SCAIL-2 issue #17; SCAIL-Pose's
+  `--crop_e2e_mask`), so the driving video's background and camera do not
+  reach the result. Off, `pose_video` is the driving video unchanged. In
+  replacement mode the result keeps the driving video's background, so
+  `black_background` on with `replacement_mode` on is an error, raised
+  before any tracking.
+
+### SCAIL-2 Preprocess Guard
+
+Checks the two colored masks before the SCAIL-2 sampler, without a pose
+(end-to-end SCAIL-2 draws none), on the person as the sampler reads it (blue
+above 225/255). The mode is read from the reference mask's border, as the
+sampler reads it; the driving mask is taken to be at the generation size. On
+SCAIL-2's own examples blank frames and a split-up mask are normal (the person
+leaves the shot, a passer-by occludes her), so only two checks stop the
+workflow (with `scail2_guard` on): no driving frame has the person
+(`no_driving_person`), the reference mask has no character
+(`reference_empty`). Warnings, which never stop: a driving frame without the
+person (`driving_empty`), a detached region at least 5% of the largest one
+on a driving frame or on the reference (`driving_fragmented`,
+`reference_fragmented`), more than `max_reference_cropped` (0.02) of the
+reference character outside the center crop the core node cuts the
+reference to (`reference_cropped`: a portrait reference in a landscape
+generation loses the head or the feet), and, in replacement mode only, a
+reference whose character overlaps the first driving frame's person by an
+IoU below `min_reference_iou` (0.4) after that crop (`reference_misaligned`).
+Both thresholds are first values, not calibrated yet. Measured as data: the
+mask area, the share of the mask the sampler's half-size latent cut keeps
+(`latent_kept`: a thin limb can vanish there), the mask IoU with the
+previous frame, and the reference's IoU and scale against the first driving
+frame.
+
+- in: `pose_video_mask`, `reference_image_mask` (IMAGE); widgets
+  `scail2_guard` (on) and the two thresholds (`SCAIL2GuardConfig` in
+  `pipelines/guard/config.py`)
+- out: `pose_video_mask`, `reference_image_mask` (unchanged), `report`,
+  `metrics` (JSON: `"guard": "scail2"`, the driving frames, the reference
+  record), `timeline` (IMAGE)
 
 ### Models
 
@@ -370,17 +411,19 @@ SCAIL-2 in either of its two modes, from the same node:
   animated by the driving video. Needs the reference image with its own
   background, the driving video as `pose_video`, and the colored masks
   rendered for animation mode (driving mask on black, reference mask on
-  white). For a stable background, black out the driving video's background:
-  SCAIL-2's training pose videos had black backgrounds (zai-org/SCAIL-2 issue
-  #17).
+  white). For a stable background, black out the driving video's background
+  (SCAIL-2 Preprocess's `black_background`): SCAIL-2's training pose videos
+  had black backgrounds (zai-org/SCAIL-2 issue #17).
 - **Replacement mode** (`replacement_mode` on): the character replaces the
   person in the driving video, which keeps its background. Needs the colored
   masks rendered for replacement mode (driving mask on white, reference mask
   on black). The authors expect the reference posed like the first driving
   frame (issue #25).
 
-SCAIL-2 Preprocess makes all three inputs. A reference mask rendered for the
-other mode is an error (the mode is read from the mask's border).
+SCAIL-2 Preprocess makes all three inputs. A reference or driving mask
+rendered for the other mode is an error (the mode is read from each mask's
+border: the reference mask is white in animation mode and black in
+replacement mode, the driving mask the opposite).
 
 Defaults: `frames_per_chunk` 81, `width` x `height` 704 x 1280, `shift` 8,
 `euler` / `simple`, 6 steps, cfg 1, `previous_frame_count` 5. With the
@@ -538,7 +581,7 @@ python -m pytest tests
 ```
 
 `tests/libs/test_chunking.py` covers the length math and
-`tests/test_package.py` the node contract of all fourteen nodes, both without
+`tests/test_package.py` the node contract of all fifteen nodes, both without
 torch or ComfyUI:
 `python -m pytest tests/test_package.py tests/libs/test_chunking.py`.
 `tests/pipelines/test_long_video*.py` run the samplers' chunk loop against

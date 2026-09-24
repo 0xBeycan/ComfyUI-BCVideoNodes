@@ -5,7 +5,7 @@ from typing import Union
 import numpy as np
 import torch
 
-from .common import WARNINGS, MaskRow, PoseRow, PreprocessRow
+from .common import WARNINGS, MaskRow, PoseRow, PreprocessRow, Scail2Row
 
 
 PANEL_W, PANEL_H, MARGIN_L, MARGIN_R, MARGIN_T, GAP = 1200, 190, 210, 20, 34, 34
@@ -28,6 +28,11 @@ PREPROCESS_PANELS = [
               ("limbs vs neighbours", "pose_completeness", "green"), ("body not drawn", "body_not_drawn", "red")]),
     ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue"), ("box IoU vs previous", "box_iou_prev", "orange"),
                 ("torso jump / box diagonal", "torso_jump", "green")]),
+]
+
+SCAIL2_PANELS = [
+    ("driving mask", [("mask area / frame", "mask_area", "blue"), ("mask kept by the latent cut", "latent_kept", "green")]),
+    ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue")]),
 ]
 
 
@@ -61,7 +66,7 @@ def _panel(img, y0, title, series):
         legend_x += 8 * len(name) + 56
 
 
-def timeline_image(rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow]], flags, panels):
+def timeline_image(rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow], list[Scail2Row]], flags, panels):
     """Metrics over frames with the flagged frames marked, as an IMAGE tensor (no plotting
     library needed, drawn with OpenCV). `panels` is one of the *_PANELS lists."""
     import cv2

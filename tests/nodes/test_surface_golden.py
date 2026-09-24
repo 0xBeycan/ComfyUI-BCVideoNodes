@@ -1,4 +1,4 @@
-"""G2, the surface of the 14 nodes: everything ComfyUI reads from the pack and a saved workflow
+"""G2, the surface of the 15 nodes: everything ComfyUI reads from the pack and a saved workflow
 depends on. Per node key, the md5 of the repr of its full INPUT_TYPES (sections, names, order,
 types and every option: defaults, ranges, tooltips, round, forceInput, control_after_generate),
 RETURN_TYPES, RETURN_NAMES, FUNCTION, CATEGORY, DESCRIPTION, OUTPUT_NODE (absent) and display
@@ -32,7 +32,7 @@ from sampler_fakes import ANIMATE1, ANIMATE2, SCAIL2, node_module  # noqa: E402,
 SAMPLERS = [ANIMATE1, ANIMATE2, SCAIL2]
 PREPROCESS = ["BCVPoseDetection", "BCVPoseConfig", "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop",
               "BCVPoseGuard", "BCVMaskGuard", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard",
-              "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess"]
+              "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard"]
 
 ABSENT = "<absent>"
 

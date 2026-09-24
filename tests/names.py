@@ -157,7 +157,7 @@ nodes = Names("nodes", {
     **refs("nodes.face", "BCVFaceCrop"),
     **refs("nodes.guard", "BCVPoseGuard", "BCVMaskGuard"),
     **refs("nodes.preprocess", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard"),
-    **refs("nodes.scail2", "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess"),
+    **refs("nodes.scail2", "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard"),
     "_config_inputs": Ref("libs.config_widgets", "config_inputs"),
 })
 

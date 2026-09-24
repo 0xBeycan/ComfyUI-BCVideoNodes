@@ -20,7 +20,7 @@ import torch
 
 from bcvideonodes.pipelines import guard
 from golden import check, digest, log_text
-from guard_fakes import LEGS, MASK, POSE, H, W, clip, drop_keypoints
+from guard_fakes import LEGS, MASK, POSE, H, N, W, clip, drop_keypoints
 
 
 def faults():
@@ -163,3 +163,60 @@ def test_combine_disagreement_message(named, edit):
     with pytest.raises(ValueError) as failure:
         guard.combine_guards(pose_metrics, json.dumps(record))
     check(__file__, f"disagreement.{named}", str(failure.value))
+
+
+# --- the SCAIL-2 guard ------------------------------------------------------------------------
+
+from scail2_fakes import scail2  # noqa: E402
+
+
+def scail2_guard(driving, reference, replacement_mode, enabled=True, stop_on_fail=False):
+    """{"scail2.<output>": value} of check_scail2 over the masks rendered by SCAIL-2 Colored Mask."""
+    pose_video_mask, reference_image_mask = scail2.colored_masks(driving, replacement_mode, reference)
+    _, _, *out = scail2.check_scail2(pose_video_mask, reference_image_mask, enabled=enabled, stop_on_fail=stop_on_fail)
+    return {f"scail2.{output}": value for output, value in zip(("report", "metrics", "timeline"), out)}
+
+
+def scail2_faults():
+    """clip()'s person with every SCAIL-2 warning: blank frames, a detached object, a speck, and a
+    split landscape reference placed apart from the first frame, in replacement mode."""
+    masks = clip()[0]
+    masks[[5, 6, 20]] = 0
+    masks[12, 280:320, 200:240] = 1.0
+    masks[14, 300:316, 220:236] = 1.0
+    reference = torch.zeros(1, H, 2 * W)
+    reference[0, 40:280, 100:200] = 1.0
+    reference[0, 280:320, 400:440] = 1.0
+    return masks, reference
+
+
+SCAIL2_SCENARIOS = {
+    "scail2_clean_animation": lambda: scail2_guard(clip()[0], clip()[0][:1], False, stop_on_fail=True),
+    "scail2_clean_replacement": lambda: scail2_guard(clip()[0], clip()[0][:1], True, stop_on_fail=True),
+    "scail2_warnings": lambda: scail2_guard(*scail2_faults(), True, stop_on_fail=True),
+    "scail2_failures": lambda: scail2_guard(torch.zeros(N, H, W), torch.zeros(1, H, W), False),
+    "scail2_switch_off": lambda: scail2_guard(torch.zeros(N, H, W), torch.zeros(1, H, W), False, enabled=False,
+                                              stop_on_fail=True),
+    "scail2_zero_frames": lambda: scail2_guard(clip()[0][:0], clip()[0][:1], False, stop_on_fail=True),
+}
+
+
+@pytest.mark.parametrize("name", SCAIL2_SCENARIOS)
+def test_scail2_guard_outputs(name, caplog):
+    capture(caplog)
+    out = SCAIL2_SCENARIOS[name]()
+    flags = json.loads(out["scail2.metrics"])
+    if name == "scail2_warnings":
+        assert set(flags["flags"]) | set(flags["reference"]["flags"]) == scail2.WARNINGS & set(scail2.SCAIL2_CHECKS)
+    for key, value in out.items():
+        check(__file__, f"{name}.{key}", digest(value))
+    check(__file__, f"{name}.log", digest(logged(caplog)))
+
+
+def test_scail2_guard_failed_text(caplog):
+    capture(caplog)
+    pose_video_mask, reference_image_mask = scail2.colored_masks(torch.zeros(N, H, W), False, torch.zeros(1, H, W))
+    with pytest.raises(guard.GuardFailed) as failure:
+        scail2.check_scail2(pose_video_mask, reference_image_mask)
+    check(__file__, "stop_on_fail.scail2.GuardFailed", str(failure.value))
+    check(__file__, "stop_on_fail.scail2.log", digest(logged(caplog)))

@@ -1,6 +1,7 @@
 """SCAIL-2's colored masks: a person MASK rendered in an identity colour on the background each
 mode was trained with, in the form core's WanSCAILToVideo reads (float 0..1, pure colours, which
-its 28-channel extraction thresholds at 225/255).
+its 28-channel extraction thresholds at 225/255); and the driving video on black, the pose video of
+animation mode with the background blacked out.
 
 Single identity only: the person is palette colour 0 (blue). Multi-person is phase 2; it renders
 each identity with the same render_identity (libs/mask.py) in its own palette colour.
@@ -54,3 +55,21 @@ def colored_masks(driving_mask, replacement_mode, reference_mask=None):
             reference = torch.zeros(1, *driving.shape[1:], device=driving.device)
     reference_image_mask = render_identity(reference, PALETTE[0], reference_background, MASK_THRESHOLD)
     return pose_video_mask, reference_image_mask
+
+
+def check_black_background(black_background, replacement_mode):
+    """Raises when the driving video's background is to be blacked out in replacement mode, where
+    the result keeps that background. Called before the tracking, so the error costs no SAM run."""
+    if black_background and replacement_mode:
+        raise ValueError("black_background is for animation mode: in replacement mode the result keeps the driving "
+                         "video's background, so it must reach the sampler. Turn black_background off, or turn "
+                         "replacement_mode off to animate the reference character instead.")
+
+
+def driving_on_black(images, driving_mask):
+    """The driving video `images` [T, H, W, C] with every pixel outside the person's MASK
+    [T, H, W] (on above 0.5, as the colored masks cut it) black, the rest unchanged: the pose
+    video SCAIL-2 was trained on in animation mode (black backgrounds, zai-org/SCAIL-2 issue #17),
+    as SCAIL-Pose's --crop_e2e_mask writes it (the union of the person silhouettes kept)."""
+    keep = (_frames(driving_mask) > MASK_THRESHOLD).unsqueeze(-1).to(images.device)
+    return torch.where(keep, images, torch.zeros((), dtype=images.dtype, device=images.device))

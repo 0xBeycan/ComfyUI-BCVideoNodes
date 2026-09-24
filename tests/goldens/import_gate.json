@@ -32,9 +32,17 @@
    "E1": false,
    "E3": false
   },
+  "BCVSCAIL2LongVideoSampler": {
+   "E1": false,
+   "E3": false
+  },
   "BCVSCAIL2Preprocess": {
    "E1": true,
    "E3": true
+  },
+  "BCVSCAIL2PreprocessGuard": {
+   "E1": false,
+   "E3": false
   },
   "BCVWanAnimate2LongVideoSampler": {
    "E1": false,
@@ -49,10 +57,6 @@
    "E3": true
   },
   "BCVWanAnimatePreprocessGuard": {
-   "E1": false,
-   "E3": false
-  },
-  "BCVSCAIL2LongVideoSampler": {
    "E1": false,
    "E3": false
   }

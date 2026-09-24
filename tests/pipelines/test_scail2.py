@@ -105,6 +105,36 @@ def test_the_adapter_reads_the_mode_the_masks_were_rendered_for(replacement_mode
     assert scail2.mask_convention(reference_image_mask) == (scail2.REPLACEMENT if replacement_mode else scail2.ANIMATION)
 
 
+# --- the driving video on black ------------------------------------------------------------
+
+def test_the_driving_video_on_black_keeps_the_person_and_blacks_out_the_rest():
+    images = torch.rand(5, 64, 32, 3, generator=torch.Generator().manual_seed(0)) + 0.01  # no pixel black already
+    mask = person() * 0.8  # on above 0.5, whatever the value
+    mask[2, 0, 0] = 0.5    # the cut: 0.5 is off
+    out = scail2.driving_on_black(images, mask)
+    assert out.shape == images.shape and out.dtype == images.dtype
+    on = mask > 0.5
+    assert torch.equal(out[on], images[on])
+    assert (out[~on] == 0).all()
+
+
+def test_the_driving_video_on_black_takes_a_single_frame_mask():
+    images = torch.rand(1, 64, 32, 3, generator=torch.Generator().manual_seed(0))
+    assert torch.equal(scail2.driving_on_black(images, person(1)[0]), scail2.driving_on_black(images, person(1)))
+
+
+@pytest.mark.parametrize("black_background, replacement_mode", [(False, False), (False, True), (True, False)])
+def test_black_background_is_allowed_outside_replacement_mode(black_background, replacement_mode):
+    scail2.check_black_background(black_background, replacement_mode)
+
+
+def test_black_background_in_replacement_mode_is_an_error():
+    with pytest.raises(ValueError, match="black_background is for animation mode: in replacement mode the result keeps "
+                                         "the driving video's background.*Turn black_background off, or turn "
+                                         "replacement_mode off"):
+        scail2.check_black_background(True, True)
+
+
 # --- the one-frame SAM 3.1 Multiplex track ---------------------------------------------------
 
 from test_sam3_1_multiplex_ab import FakeTracker, person_detection  # noqa: E402

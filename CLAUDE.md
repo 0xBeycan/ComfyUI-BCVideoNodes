@@ -3,10 +3,10 @@
 ## What this is
 
 ComfyUI custom nodes for Wan Animate and SCAIL-2: the preprocess (pose, SAM 3.1 Multiplex person
-mask, face crops, pose and mask guards, SCAIL-2 colored masks) and three long-video samplers. The
-14 node keys are locked, and so is everything ComfyUI reads from a node (inputs, types, order,
-defaults, ranges, return types, categories, display names): `tests/nodes/test_surface_golden.py`
-(G2) pins that surface.
+mask, face crops, pose and mask guards, SCAIL-2 colored masks and their guard) and three
+long-video samplers. The 15 node keys are locked, and so is everything ComfyUI reads from a node
+(inputs, types, order, defaults, ranges, return types, categories, display names):
+`tests/nodes/test_surface_golden.py` (G2) pins that surface.
 
 SAM naming: the SAM nodes and their code are named after the one model they run, SAM 3.1
 Multiplex. Display names read "SAM 3.1 Multiplex ...", modules `sam3_1_multiplex`, constants
@@ -26,12 +26,12 @@ Four layers, `nodes -> pipelines -> models -> libs`:
 - `libs/`: model-independent code.
 
 ```
-__init__.py          registration only: the 14 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+__init__.py          registration only: the 15 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 nodes/               common (category, _config, _ConfigNode), sampler, pose, sam3_1_multiplex, face, guard,
                      preprocess (the two WanAnimate wrappers, composed of the nodes above),
-                     scail2 (SCAIL-2 Colored Mask, and the SCAIL-2 Preprocess wrapper)
-pipelines/           long_video (the chunk loop), pose, face, scail2 (the colored masks),
-                     guard/ (config, common, pose, mask, report, timeline, combine),
+                     scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard)
+pipelines/           long_video (the chunk loop), pose, face, scail2 (the colored masks, the driving video
+                     on black), guard/ (config, common, pose, mask, report, timeline, combine, scail2),
                      sam3_1_multiplex/ (config, prompt, pose, track: the entry the node calls)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
@@ -52,8 +52,10 @@ tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the
   `models/__init__.py` imports the model packages: that is the registration list.
 - The layers above `models/`, and `scripts/`, may import a model package directly: the SAM 3.1
   Multiplex pipeline imports `models/sam3_1_multiplex/` (SAM is not registered), and
-  `scripts/convert_models.py` imports the ViTPose and RTMW decoders. No pipeline imports a Wan
-  package; the sampler pipeline reaches it through the registry.
+  `scripts/convert_models.py` imports the ViTPose and RTMW decoders. No pipeline imports an
+  animate adapter package but the SCAIL-2 guard (`pipelines/guard/scail2.py`), which reads the
+  colored-mask conventions (`ON`, `mask_convention`) of `models/scail2/adapter.py`; the sampler
+  pipeline reaches the adapters through the registry.
 - From the pack, `scripts/` import only `models/` and `libs/`.
 - All imports between pack modules are relative. There are exactly two absolute `import nodes`,
   in `nodes/sampler.py` and `models/common/core_nodes.py`, and both mean ComfyUI core.
@@ -160,7 +162,7 @@ and patch underscore names through the `Names` tables.
     so importing either package triggers neither E1 nor E3.
 - The gate, with the ComfyUI venv's Python: `PYTHONPATH=/path/to/ComfyUI python
   tests/test_import_time.py`. A standalone script (pytest does not collect it). It checks the
-  package import (under 0.1 s, no heavy module, the 14 keys in order), each node module, each
+  package import (under 0.1 s, no heavy module, the 15 keys in order), each node module, each
   module against its allowed heavy set, the ComfyUI-free set, and the E1/E3 trigger points of each
   node key against `tests/goldens/import_gate.json`.
 - Code outside the pack binds the repo root as a package and imports through it: tests and
@@ -189,9 +191,10 @@ and patch underscore names through the `Names` tables.
   `Detection`) are annotations only, and `tests/pipelines/test_pose_data.py` ties them to the keys
   the pose pipeline writes. The guard rows and the SAM counts work the same way
   (`test_guard_rows.py`, `test_sam3_1_multiplex_counts.py`).
-- Locked, because code outside the repo reads them: the guard metrics JSON; the log format the
-  owner's A/B test scripts parse (the `BCVideoNodes` logger, its `[BCVideoNodes]` prefix and the
-  " done in " / " failed after " step lines in `libs/log.py`); the model file format
+- Locked, because code outside the repo reads them: the guard metrics JSON (the SCAIL-2 guard
+  writes a record of its own, `"guard": "scail2"`, beside the pose and mask records); the log
+  format the owner's A/B test scripts parse (the `BCVideoNodes` logger, its `[BCVideoNodes]`
+  prefix and the " done in " / " failed after " step lines in `libs/log.py`); the model file format
   (`models/common/checkpoint.py`); and `LOGITS_SINK` in `pipelines/sam3_1_multiplex/track.py`,
   where the A/B dump node installs its sink. The A/B test scripts and the A/B dump node are both
   outside the repo.
