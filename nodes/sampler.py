@@ -8,6 +8,7 @@ WanAnimate2ToVideo and BCVSCAIL2LongVideoSampler wraps WanSCAILToVideo
 
 # comfy.* is imported inside the functions that use it, so this
 # module (and the package __init__) imports without a ComfyUI install.
+from ..libs.chunking import FIT, FULL, LAST_CHUNK
 from ..libs.sigmas import WAN_BETA
 
 
@@ -37,6 +38,7 @@ class _LongVideoSampler:
     DEFAULT_STEPS = 6
     DEFAULT_WIDTH = 720
     DEFAULT_HEIGHT = 1280
+    DEFAULT_LAST_CHUNK = FIT
     SIZE_MIN = 16
     SIZE_STEP = 2
     SIZE_TOOLTIP = "Multiples of 16 are ideal; the VAE crops to a multiple of 8."
@@ -81,6 +83,8 @@ class _LongVideoSampler:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
                 "seed_mode": (["increment", "fixed"], {"default": "increment", "tooltip": "increment: chunk i uses seed + i. fixed: every chunk uses seed."}),
                 **required,
+                # after every node's own widgets: saved workflows store widget values by position
+                "last_chunk": (list(LAST_CHUNK), {"default": cls.DEFAULT_LAST_CHUNK, "tooltip": "fit: the last chunk shrinks to the frames still needed (snapped up to 4k+1). full: the last chunk runs the full frames_per_chunk, with the driving inputs held on their last frame. Either way the output is exactly total_frames; the extra frames are cut."}),
             },
             "optional": {
                 **optional,
@@ -108,6 +112,7 @@ class _LongVideoSampler:
         cfg,
         seed,
         seed_mode,
+        last_chunk,
         sigmas_override=None,
         **animate_inputs,
     ):
@@ -115,7 +120,7 @@ class _LongVideoSampler:
 
         return long_video.generate(self.ANIMATE_NODE, type(self).__name__, model, positive, negative, vae, reference_image,
                                    pose_video, width, height, frames_per_chunk, total_frames, shift, sampler_name, scheduler,
-                                   steps, denoise, cfg, seed, seed_mode, sigmas_override, animate_inputs)
+                                   steps, denoise, cfg, seed, seed_mode, last_chunk, sigmas_override, animate_inputs)
 
 
 class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
@@ -167,6 +172,7 @@ class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     MODEL_TOOLTIP = "SCAIL-2 model. LoRA (lightx2v distill, SCAIL-2 DPO / relight) and model patches pass through unchanged; shift is applied here."
     DEFAULT_SHIFT = 8.0
     DEFAULT_SCHEDULER = "simple"
+    DEFAULT_LAST_CHUNK = FULL
     DEFAULT_WIDTH = 704
     DEFAULT_HEIGHT = 1280
     SIZE_MIN = 32
@@ -174,9 +180,10 @@ class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     SIZE_TOOLTIP = "Must be divisible by 32 (the pose runs at half resolution through the /16 patch grid). 704x1280 (the authors: replacement and pose-driven are better at 704p) or 512x896 (less VRAM)."
     CATEGORY = "BCVideoNodes/SCAIL"
     DESCRIPTION = ("Generates an arbitrarily long SCAIL-2 video (animation or replacement mode) by chaining fixed-size "
-                   "chunks internally, each seeded with the previous chunk's last previous_frame_count frames. Every chunk runs "
-                   "the full frames_per_chunk (SCAIL-2 was trained on 65-81 frame segments); the output is cut to total_frames "
-                   "(or the pose video length) exactly. Defaults: shift 8, simple, euler, 6 steps, cfg 1 give the sigmas the "
+                   "chunks internally, each seeded with the previous chunk's last previous_frame_count frames. last_chunk defaults "
+                   "to full here: every chunk, the last one included, runs the full frames_per_chunk (SCAIL-2 was trained on "
+                   "65-81 frame segments); fit shortens the last chunk to the frames still needed. Either way the output is "
+                   "cut to total_frames (or the pose video length) exactly. Defaults: shift 8, simple, euler, 6 steps, cfg 1 give the sigmas the "
                    "official ComfyUI SCAIL-2 template samples with (1, .9757, .9413, .8889, .8005, .616, 0), for the lightx2v "
                    "distill LoRA. Without a distill LoRA the SCAIL-2 authors recommend shift 5, 40-50 steps, cfg 4.")
 

@@ -270,6 +270,7 @@ Shared widgets:
 | `steps`, `denoise`         | 6, 1.0         | Schedule length (`BasicScheduler`).                                      |
 | `cfg`                      | 1.0            |                                                                          |
 | `seed`, `seed_mode`        | -, increment   | `increment`: chunk i uses `seed + i`. `fixed`: every chunk uses `seed`.  |
+| `last_chunk`               | fit (SCAIL-2: full) | How long the last chunk runs. `fit`: it shrinks to the frames still needed, snapped up to 4k+1. `full`: it runs the full `frames_per_chunk`, with the driving inputs held on their last frame. Either way the output is exactly `total_frames`; the extra frames are cut. See Length math. The last widget of every sampler. |
 
 The sampling stack is built once per run in this order:
 `ModelSamplingSD3(model, shift)` -> `BasicScheduler(patched, ...)` (or
@@ -402,10 +403,12 @@ checks that list with ComfyUI's own scheduler.
 resolution through the /16 patch grid); anything else is an error. 512 x 896
 and 704 x 1280 are the sizes the authors use.
 
-Every chunk runs the full `frames_per_chunk`, the last one too: SCAIL-2 was
-trained on 65-81 frame segments (issue #16) and a short last chunk is off its
-training distribution. The pose and its mask are held on their last frame up
-to the end of the last chunk, and the output is cut to `total_frames`. A
+`last_chunk` defaults to `full` here: every chunk runs the full
+`frames_per_chunk`, the last one too, because SCAIL-2 was trained on 65-81
+frame segments (issue #16) and a short last chunk is off its training
+distribution. The pose and its mask are held on their last frame up to the
+end of the last chunk, and the output is cut to `total_frames`. `fit` gives
+the Animate behaviour, a last chunk shortened to what is left. A
 `frames_per_chunk` outside 65-81 is logged. The anchor is the raw decoded
 frames, with no colour correction; `seed_mode` increment gives every chunk a
 new seed, the authors' fix for brightness drift in loops (issue #11).
@@ -450,13 +453,22 @@ not new.
   `WanAnimateToVideo` (5 by default), `CONTINUE_MOTION_FRAMES` for
   `WanAnimate2ToVideo` (1). If the node's returned `trim_image` ever differs
   from that, the loop adopts the returned value.
-- The last chunk shrinks: the remaining need (plus overlap) is rounded up to
-  the grid and capped at `frames_per_chunk`, so at most 3 extra frames are
-  produced and cropped. Examples for 15 s at 24 fps = 360 frames:
+- The `last_chunk` widget sets the last chunk's length:
+  - `fit` (default of both Animate nodes): the last chunk shrinks, the
+    remaining need (plus overlap) rounded up to the grid and capped at
+    `frames_per_chunk`, so at most 3 extra frames are produced and cut.
+  - `full` (default of SCAIL-2): the last chunk runs the full
+    `frames_per_chunk` like every other; the driving inputs (pose, and face
+    and background for Animate, the pose mask for SCAIL-2) are held on their
+    last frame up to its end, and everything past `total_frames` is cut.
+
+  Example, 240 frames, chunk 81, overlap 5:
+  `fit`: `81 + 81 + 81 + 13 -> 241 produced -> 240 frames`;
+  `full`: `81 + 81 + 81 + 81 -> 309 produced -> 240 frames`.
+  `fit` samples less; `full` keeps every chunk at the length the model was
+  trained on. More `fit` examples for 15 s at 24 fps = 360 frames:
   Animate 2, chunk 81: `81 + 81 + 81 + 81 + 41 -> 361 produced -> 360 frames`;
   Animate, chunk 77, overlap 5: `77 + 77 + 77 + 77 + 73 -> 361 produced -> 360 frames`.
-  SCAIL-2 is the exception: its last chunk runs the full length too,
-  `81 + 81 + 81 + 81 + 81 -> 385 produced -> 360 frames`.
 - The loop is driven by the frames actually decoded, not by the plan, so the
   output is exactly `total_frames` long.
 - If `total_frames` exceeds the pose video, a warning is printed and the last

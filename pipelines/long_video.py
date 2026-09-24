@@ -8,14 +8,15 @@ SamplerCustom -> TrimVideoLatent -> VAEDecode) is called node-by-node from
 ComfyUI's own registry, so this stays in step with core. What differs per core
 conditioning node is its animate adapter (models/common/animate.py), picked from
 the registry by the node id: the core call's continuation inputs, its outputs, the videos it
-seeks, the chunk-length policy and the input checks.
+seeks and the input checks. The chunk-length policy is the node's last_chunk widget
+(libs/chunking.LAST_CHUNK).
 """
 
 import logging
 
 # torch and comfy.* are imported inside the functions that use them, so this
 # module (and the package __init__) imports without a ComfyUI install.
-from ..libs.chunking import format_plan, plan_chunks, produced_frames, snap_down
+from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frames, snap_down
 from ..libs.log import active_bar, log_beside_bar
 from ..libs.sigmas import WAN_BETA, wan_beta_sigmas
 from ..libs.video import hold_last
@@ -76,6 +77,7 @@ def generate(
     cfg,
     seed,
     seed_mode,
+    last_chunk,
     sigmas_override,
     animate_inputs,
 ):
@@ -83,7 +85,10 @@ def generate(
     import comfy.model_management
     import comfy.utils
 
-    adapter = registry.get("animate", animate_node).implementation(node_name)
+    if last_chunk not in LAST_CHUNK:
+        raise ValueError("last_chunk must be one of {}; found {!r}.".format(", ".join(LAST_CHUNK), last_chunk))
+    chunk_length, overshoot = LAST_CHUNK[last_chunk]
+    adapter = registry.get("animate", animate_node).implementation(node_name, last_chunk)
     log_prefix = "[{}]".format(node_name)
     update_hint = adapter.UPDATE_HINT.format(animate_node)
 
@@ -97,12 +102,12 @@ def generate(
         raise ValueError("pose_video has no frames.")
     total = int(total_frames) if total_frames > 0 else pose_frames
 
-    plan = plan_chunks(total, frames_per_chunk, overlap, adapter.chunk_length)
+    plan = plan_chunks(total, frames_per_chunk, overlap, chunk_length)
     logging.info("%s chunk plan: %s", log_prefix, format_plan(plan, produced_frames(plan, overlap), total, pose_frames, overlap))
 
     # Every video must reach the last frame the plan samples: past total_frames
     # (longer than the input) and past total itself when the last chunk is snapped
-    # up to 4k+1 (or run at full length, as the adapter's chunk_length says). Core holds
+    # up to 4k+1 (or run at full length, as last_chunk says). Core holds
     # only the pose within a chunk; once the offset runs past a video it errors (Animate 2
     # pose) or drops it (Animate: pose, face, background, mask; SCAIL-2: pose, pose mask), and
     # inside the last chunk a short face video loses its motion, a background turns grey and
@@ -125,7 +130,7 @@ def generate(
         shorter_than_total = [name for name, frames in short.items() if frames < total]
         why = ["total_frames ({}) exceeds {}".format(total, ", ".join(shorter_than_total))] if shorter_than_total else []
         if reach > total:
-            why.append("{} and runs {} frames past total_frames".format(adapter.OVERSHOOT, reach - total))
+            why.append("{} and runs {} frames past total_frames".format(overshoot, reach - total))
         (logging.warning if shorter_than_total else logging.info)(
             "%s last frame held to %d frames: %s (%s).", log_prefix, reach,
             ", ".join("{} +{}".format(name, reach - frames) for name, frames in short.items()), "; ".join(why))
@@ -152,7 +157,7 @@ def generate(
     while produced < total:
         comfy.model_management.throw_exception_if_processing_interrupted()
         index = len(lengths)
-        length = adapter.chunk_length(produced, total, frames_per_chunk, overlap)
+        length = chunk_length(produced, total, frames_per_chunk, overlap)
         chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
         pose_offset = offset
         chunk_inputs = dict(animate_inputs, **adapter.chunk_inputs(index, offset, anchor, pose_video, animate_inputs))

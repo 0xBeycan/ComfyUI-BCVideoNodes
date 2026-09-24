@@ -174,6 +174,10 @@ SCENARIOS = {
                                           reference_image=seeded(1, 64, 32, 3)),
     "s2_hold": lambda module: dict(node=SCAIL2, pose_frames=100, total_frames=250),
     "s2_overlap_9": lambda module: dict(node=SCAIL2, pose_frames=200, previous_frame_count=9),
+    # the last_chunk policy other than the node's default, on totals whose last chunk differs
+    "a1_last_chunk_full": lambda module: dict(node=ANIMATE1, pose_frames=240, last_chunk="full", **replacement_inputs(240)),
+    "a2_last_chunk_full": lambda module: dict(node=ANIMATE2, pose_frames=250, last_chunk="full"),
+    "s2_last_chunk_fit": lambda module: dict(node=SCAIL2, pose_frames=240, last_chunk="fit"),
 }
 
 ERRORS = {

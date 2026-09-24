@@ -39,7 +39,7 @@ def test_input_types_shared_widgets(node_module, node):
 
 def test_animate2_input_types(node_module):
     spec = node_module.BCVWanAnimate2LongVideoSampler.INPUT_TYPES()
-    assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER + ["attn_log_scale"]
+    assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER + ["attn_log_scale", "last_chunk"]
     assert list(spec["optional"]) == ["positive_pose", "clip_vision_output", "clip_vision_output_pose", "clip_vision", "sigmas_override"]
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["shift"][1]["default"] == 5.0
@@ -49,13 +49,15 @@ def test_animate2_input_types(node_module):
     assert spec["required"]["scheduler"][0][-1] == "wan_beta"
     assert spec["required"]["steps"][1]["default"] == 10
     assert spec["required"]["attn_log_scale"][1]["default"] == -1.3
+    assert spec["required"]["last_chunk"][0] == ["fit", "full"]
+    assert spec["required"]["last_chunk"][1]["default"] == "fit"
 
 
 # --- Wan Animate (1) node ---
 
 def test_animate1_input_types(node_module):
     spec = node_module.BCVWanAnimateLongVideoSampler.INPUT_TYPES()
-    assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER[:-4] + ["continue_motion_max_frames"]
+    assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER[:-4] + ["continue_motion_max_frames", "last_chunk"]
     assert list(spec["optional"]) == ["clip_vision_output", "face_video", "background_video", "character_mask", "sigmas_override"]
     # core node + official template defaults
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
@@ -65,3 +67,5 @@ def test_animate1_input_types(node_module):
     assert spec["required"]["scheduler"][1]["default"] == "wan_beta"
     assert spec["required"]["steps"][1]["default"] == 6
     assert spec["optional"]["character_mask"][0] == "MASK"
+    assert spec["required"]["last_chunk"][0] == ["fit", "full"]
+    assert spec["required"]["last_chunk"][1]["default"] == "fit"

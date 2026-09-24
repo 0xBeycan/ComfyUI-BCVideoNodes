@@ -84,6 +84,15 @@ def _grid_chunk(frames_per_chunk, overlap):
     return chunk
 
 
+FIT, FULL = "fit", "full"
+# the last_chunk widget: its values, each with the chunk length policy the plan and the loop share
+# and why the plan then samples past total_frames (for the hold log line)
+LAST_CHUNK = {
+    FIT: (next_chunk_length, "the last chunk is snapped up to 4k+1"),
+    FULL: (full_chunk_length, "the last chunk runs the full frames_per_chunk"),
+}
+
+
 def plan_chunks(total_frames, frames_per_chunk, overlap, chunk_length=next_chunk_length):
     """Chunk lengths that cover total_frames, as the loop would run them with the length policy
     `chunk_length` (next_chunk_length or full_chunk_length)."""

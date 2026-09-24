@@ -5,8 +5,6 @@ per core node lives in its model package and registers itself in the "animate" f
 ANIMATE_NODE.
 """
 
-from ...libs.chunking import next_chunk_length
-
 
 def check_pose_percents(start, end):
     """Raises when the pose conditioning would start after it ends."""
@@ -25,22 +23,16 @@ class AnimateAdapter:
     # the videos the core node seeks by video_frame_offset: held on their last frame up to the
     # last frame the plan samples ("pose_video" is the loop's own input, the rest pass through)
     HELD_VIDEOS = ("pose_video", "face_video", "background_video")
-    # why the plan samples past total_frames, for the hold log line
-    OVERSHOOT = "the last chunk is snapped up to 4k+1"
 
-    def __init__(self, node_name):
+    def __init__(self, node_name, last_chunk):
         self.node_name = node_name  # the node's class name, for the log lines
+        self.last_chunk = last_chunk  # the last_chunk widget (libs/chunking.LAST_CHUNK), for the log lines
 
     def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         """Validate / normalize the pass-through inputs before the loop and
         return the frames the core node trims back off every chained chunk.
         Inputs that are the node's own (not the core node's) are popped here."""
         raise NotImplementedError
-
-    def chunk_length(self, produced, total_frames, frames_per_chunk, overlap):
-        """The length of the next chunk; the plan is built from the same function. Default: the
-        last chunk is fitted to what is left, on the 4k+1 grid."""
-        return next_chunk_length(produced, total_frames, frames_per_chunk, overlap)
 
     def check_videos(self, pose_video, animate_inputs):
         """Checks between the pass-through videos, before any is held. Raises on a mismatch."""

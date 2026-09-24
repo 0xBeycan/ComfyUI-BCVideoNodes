@@ -1,10 +1,8 @@
 """The SCAIL-2 Long Video Sampler's chunk loop against the fake WanSCAILToVideo.
 
-ComfyUI itself is stubbed (comfy.*, nodes); torch is real. For the end-to-end alignment a VAE
-that carries each pixel frame's value through its latent (IndexVAE) and a SamplerCustom that
-"generates" what the pose conditioning says wherever the noise mask lets it (PoseFollowingSampler)
-stand in for the model: with run()'s frame-index pose video, output frame i must then show
-driving frame i. Skipped when torch is not installed.
+ComfyUI itself is stubbed (comfy.*, nodes); torch is real. For the end-to-end alignment the
+`aligned` fixture and IndexVAE (sampler_fakes) stand in for the model: with run()'s frame-index
+pose video, output frame i must then show driving frame i. Skipped when torch is not installed.
 """
 
 import sys
@@ -13,45 +11,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import (LATENT_DOWN, SCAIL2, Calls, FakeCLIPVisionEncode, FakeNodeOutput,  # noqa: E402,F401
-                           FakeSamplerCustom, FakeVAE, node_module, reference_mask, run)
-
-
-class IndexVAE(FakeVAE):
-    """Frame-count faithful like FakeVAE, and value faithful: pixel frame 0 lives in channel 0 of
-    latent 0, pixel frame 4k - 3 + j in channel j of latent k. A frame's value is read from its
-    first pixel, and decoded back as a constant frame; no output clamp."""
-
-    def encode(self, pixels):
-        frames = pixels.shape[0]
-        latent = torch.zeros(1, 16, ((frames - 1) // 4) + 1, pixels.shape[1] // LATENT_DOWN, pixels.shape[2] // LATENT_DOWN)
-        values = pixels[:, 0, 0, 0]
-        latent[0, 0, 0] = values[0]
-        for f in range(1, frames):
-            latent[0, (f - 1) % 4, (f - 1) // 4 + 1] = values[f]
-        return latent
-
-    def decode(self, latent):
-        latents = latent.shape[2]
-        values = torch.stack([latent[0, 0, 0, 0, 0]] + [latent[0, j, k, 0, 0] for k in range(1, latents) for j in range(4)])
-        h, w = latent.shape[3] * LATENT_DOWN, latent.shape[4] * LATENT_DOWN
-        return values.view(1, -1, 1, 1, 1).expand(1, len(values), h, w, 3).clone()
-
-    process_output = staticmethod(lambda image: image)
-
-
-class PoseFollowingSampler(FakeSamplerCustom):
-    """The latent frames the noise mask leaves open become the pose conditioning's latents; the
-    known ones (the previous frames) stay."""
-
-    @classmethod
-    def EXECUTE_NORMALIZED(cls, model, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image):
-        FakeSamplerCustom.EXECUTE_NORMALIZED(model, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image)
-        samples = latent_image["samples"]
-        generated = positive[0][1]["pose_video_latent"][..., :1, :1].expand_as(samples)
-        known = latent_image.get("noise_mask")
-        out = dict(latent_image, samples=generated if known is None else torch.where(known > 0, generated, samples))
-        return FakeNodeOutput(out, dict(out))
+from sampler_fakes import (SCAIL2, Calls, FakeCLIPVisionEncode, IndexVAE, aligned, node_module,  # noqa: E402,F401
+                           reference_mask, run)
 
 
 class RecordingCLIPVisionEncode(FakeCLIPVisionEncode):
@@ -61,12 +22,6 @@ class RecordingCLIPVisionEncode(FakeCLIPVisionEncode):
     def EXECUTE_NORMALIZED(cls, clip_vision, image, crop):
         cls.images.append((image.clone(), crop))
         return FakeCLIPVisionEncode.EXECUTE_NORMALIZED(clip_vision, image, crop)
-
-
-@pytest.fixture
-def aligned(node_module, monkeypatch):
-    monkeypatch.setitem(sys.modules["nodes"].NODE_CLASS_MAPPINGS, "SamplerCustom", PoseFollowingSampler)
-    return node_module
 
 
 @pytest.fixture

@@ -103,12 +103,10 @@ and patch underscore names through the `Names` tables.
   (`models/scail2/adapter.py` overrides all of them):
   - `OUTPUTS` / `UPDATE_HINT`: the fewest outputs the core node must return, and the error hint;
   - `HELD_VIDEOS`: the videos the core node seeks by offset, held on their last frame up to the
-    plan's reach; `OVERSHOOT`: why the plan runs past `total_frames`, for that log line;
+    plan's reach;
   - `prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)`:
     validate, rename or pop the node's own inputs, encode what is encoded once per run; returns
     the overlap;
-  - `chunk_length`: the length policy the plan and the loop share (default: the last chunk fitted;
-    SCAIL-2: every chunk full length, `libs/chunking.full_chunk_length`);
   - `check_videos(pose_video, animate_inputs)`: checks between the videos, before any is held;
   - `patch_model`: model patches, once per run;
   - `continuation(anchor, offset)`: the core call's chaining inputs (default `continue_motion`,
@@ -117,6 +115,12 @@ and patch underscore names through the `Names` tables.
   - `unpack(outputs, anchor)`: the outputs as (positive, negative, latent, trim_latent,
     trim_image, video_frame_offset).
   A change to a default is a change to both Wan Animate samplers, which G1 pins.
+- The chunk length policy is not the adapter's: it is the samplers' `last_chunk` widget (the
+  last required widget), `libs/chunking.LAST_CHUNK` (`fit`: the last chunk fitted to what is
+  left; `full`: every chunk full length, the output cut to `total_frames`), with the reason
+  the hold log line gives. The node's default is its `DEFAULT_LAST_CHUNK` (`fit` for both Wan
+  Animate samplers, `full` for SCAIL-2). The adapter gets the value (`self.last_chunk`) for its
+  log lines only.
 
 ## Coding style
 

@@ -76,15 +76,16 @@ def test_the_sampler_widgets_and_defaults(node_module):
     spec = getattr(node_module, SCAIL2).INPUT_TYPES()
     required = spec["required"]
     assert list(required) == SHARED + ["clip_vision", "pose_video_mask", "reference_image_mask", "replacement_mode",
-                                       "pose_strength", "pose_start_percent", "pose_end_percent", "previous_frame_count"]
+                                       "pose_strength", "pose_start_percent", "pose_end_percent", "previous_frame_count",
+                                       "last_chunk"]
     assert list(spec["optional"]) == ["sigmas_override"]
     defaults = {name: required[name][1]["default"] for name in ("width", "height", "frames_per_chunk", "shift", "sampler_name",
                                                                 "scheduler", "steps", "cfg", "seed_mode", "replacement_mode",
                                                                 "pose_strength", "pose_start_percent", "pose_end_percent",
-                                                                "previous_frame_count")}
+                                                                "previous_frame_count", "last_chunk")}
     assert defaults == dict(width=704, height=1280, frames_per_chunk=81, shift=8.0, sampler_name="euler", scheduler="simple",
                             steps=6, cfg=1.0, seed_mode="increment", replacement_mode=False, pose_strength=1.0,
-                            pose_start_percent=0.0, pose_end_percent=1.0, previous_frame_count=5)
+                            pose_start_percent=0.0, pose_end_percent=1.0, previous_frame_count=5, last_chunk="full")
     assert required["width"][1]["step"] == required["height"][1]["step"] == 32
     assert required["previous_frame_count"][1]["step"] == 4
 

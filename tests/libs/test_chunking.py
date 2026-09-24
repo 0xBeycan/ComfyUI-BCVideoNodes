@@ -1,6 +1,7 @@
 import pytest
 
 from bcvideonodes.libs.chunking import (
+    LAST_CHUNK,
     MIN_CHUNK,
     format_plan,
     next_chunk_length,
@@ -121,3 +122,15 @@ def test_format_plan():
     plan = plan_chunks(360, 81, 1)
     text = format_plan(plan, produced_frames(plan, 1), 360, 360, 1)
     assert text == "81 + 81 + 81 + 81 + 41 -> 361 produced -> 360 frames (pose 360, overlap 1)"
+
+
+@pytest.mark.parametrize("policy, plan", [("fit", [81, 81, 81, 13]), ("full", [81, 81, 81, 81])])
+def test_last_chunk_policies_240_at_81_overlap_5(policy, plan):
+    # the README example: fit -> 241 produced, full -> 309 produced, both cut to 240
+    chunk_length, _ = LAST_CHUNK[policy]
+    assert plan_chunks(240, 81, 5, chunk_length) == plan
+    assert produced_frames(plan, 5) == {"fit": 241, "full": 309}[policy]
+
+
+def test_last_chunk_values_are_the_widget_options():
+    assert list(LAST_CHUNK) == ["fit", "full"]

@@ -4,16 +4,17 @@ The core node's chaining contract differs from Wan Animate's: it is seeded with 
 (the last previous_frame_count of them, VAE-encoded into the first latent frames and kept clean
 by a noise mask) and returns 4 outputs, with no trim values, so the trim is computed here. Like
 the Animate nodes it moves video_frame_offset back by the frames it kept and seeks the pose video
-and its colored mask by that offset. SCAIL-2 was trained on 65-81 frame segments, so every chunk
-runs at the full frames_per_chunk and the output is cut to total_frames. The reference is
-CLIP-encoded once per run; in replacement mode on a black background, as the VAE path gets it.
+and its colored mask by that offset. SCAIL-2 was trained on 65-81 frame segments, so the node's
+last_chunk defaults to full (nodes/sampler.py): every chunk, the last one included, runs the full
+frames_per_chunk and the output is cut to total_frames. The reference is CLIP-encoded once per
+run; in replacement mode on a black background, as the VAE path gets it.
 """
 
 import logging
 
 import torch
 
-from ...libs.chunking import full_chunk_length, overlap_for_motion_frames, snap_down
+from ...libs.chunking import FULL, overlap_for_motion_frames, snap_down
 from ..common.animate import AnimateAdapter, check_pose_percents
 from ..common.core_nodes import clip_vision_encode
 
@@ -64,7 +65,6 @@ class SCAIL2Adapter(AnimateAdapter):
     OUTPUTS = 4  # positive, negative, latent, video_frame_offset
     UPDATE_HINT = "Update ComfyUI: this node needs the {} of SCAIL-2 (previous_frames, pose_video_mask)."
     HELD_VIDEOS = ("pose_video", "pose_video_mask")
-    OVERSHOOT = "the last chunk runs the full frames_per_chunk"
 
     def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         if width % SIZE_MULTIPLE or height % SIZE_MULTIPLE:
@@ -74,8 +74,9 @@ class SCAIL2Adapter(AnimateAdapter):
         if not TRAINED_CHUNKS[0] <= chunk <= TRAINED_CHUNKS[1]:
             logging.warning("[%s] frames_per_chunk %d is outside %d-%d, the segment lengths SCAIL-2 was trained on.",
                             self.node_name, chunk, *TRAINED_CHUNKS)
-        logging.info("[%s] every chunk runs the full %d frames (SCAIL-2 was trained on %d-%d frame segments); "
-                     "the output is cut to total_frames.", self.node_name, chunk, *TRAINED_CHUNKS)
+        if self.last_chunk == FULL:
+            logging.info("[%s] every chunk runs the full %d frames (SCAIL-2 was trained on %d-%d frame segments); "
+                         "the output is cut to total_frames.", self.node_name, chunk, *TRAINED_CHUNKS)
 
         check_pose_percents(animate_inputs["pose_start_percent"], animate_inputs["pose_end_percent"])
         # the core node's names for them
@@ -112,9 +113,6 @@ class SCAIL2Adapter(AnimateAdapter):
                              "set replacement_mode to {}, or re-render the masks (SCAIL-2 Colored Mask) with "
                              "replacement_mode {}.".format(rendered, BACKGROUND[rendered], replacement,
                                                            rendered == REPLACEMENT, replacement))
-
-    def chunk_length(self, produced, total_frames, frames_per_chunk, overlap):
-        return full_chunk_length(produced, total_frames, frames_per_chunk, overlap)
 
     def check_videos(self, pose_video, animate_inputs):
         mask = animate_inputs["pose_video_mask"]

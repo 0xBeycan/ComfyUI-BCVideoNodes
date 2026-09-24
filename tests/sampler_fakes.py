@@ -436,6 +436,52 @@ def node_module(monkeypatch):
     return sampler
 
 
+# --- the frame-index model: output frame i shows driving frame i when the chunks are aligned ---
+
+class IndexVAE(FakeVAE):
+    """Frame-count faithful like FakeVAE, and value faithful: pixel frame 0 lives in channel 0 of
+    latent 0, pixel frame 4k - 3 + j in channel j of latent k. A frame's value is read from its
+    first pixel, and decoded back as a constant frame; no output clamp."""
+
+    def encode(self, pixels):
+        frames = pixels.shape[0]
+        latent = torch.zeros(1, 16, ((frames - 1) // 4) + 1, pixels.shape[1] // LATENT_DOWN, pixels.shape[2] // LATENT_DOWN)
+        values = pixels[:, 0, 0, 0]
+        latent[0, 0, 0] = values[0]
+        for f in range(1, frames):
+            latent[0, (f - 1) % 4, (f - 1) // 4 + 1] = values[f]
+        return latent
+
+    def decode(self, latent):
+        latents = latent.shape[2]
+        values = torch.stack([latent[0, 0, 0, 0, 0]] + [latent[0, j, k, 0, 0] for k in range(1, latents) for j in range(4)])
+        h, w = latent.shape[3] * LATENT_DOWN, latent.shape[4] * LATENT_DOWN
+        return values.view(1, -1, 1, 1, 1).expand(1, len(values), h, w, 3).clone()
+
+    process_output = staticmethod(lambda image: image)
+
+
+class PoseFollowingSampler(FakeSamplerCustom):
+    """Generates the pose conditioning (`pose_video_latent`): the latent frames the noise mask leaves open become the pose conditioning's latents; the
+    known ones (the previous frames) stay."""
+
+    @classmethod
+    def EXECUTE_NORMALIZED(cls, model, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image):
+        FakeSamplerCustom.EXECUTE_NORMALIZED(model, add_noise, noise_seed, cfg, positive, negative, sampler, sigmas, latent_image)
+        samples = latent_image["samples"]
+        generated = positive[0][1]["pose_video_latent"][..., :1, :1].expand_as(samples)
+        known = latent_image.get("noise_mask")
+        out = dict(latent_image, samples=generated if known is None else torch.where(known > 0, generated, samples))
+        return FakeNodeOutput(out, dict(out))
+
+
+@pytest.fixture
+def aligned(node_module, monkeypatch):
+    """The sampler Names, with PoseFollowingSampler as SamplerCustom."""
+    monkeypatch.setitem(sys.modules["nodes"].NODE_CLASS_MAPPINGS, "SamplerCustom", PoseFollowingSampler)
+    return node_module
+
+
 NODE_DEFAULTS = {
     ANIMATE1: dict(continue_motion_max_frames=5),
     ANIMATE2: dict(reference_image_strength=1.0, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=0.0),
@@ -475,6 +521,7 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
         seed_mode=seed_mode,
     )
     kwargs.update(NODE_DEFAULTS[node])
+    kwargs["last_chunk"] = getattr(module, node).DEFAULT_LAST_CHUNK  # the widget default, as the graph executor fills it
     if node == SCAIL2:
         # the colored driving mask: the frame index as well, so its seek is visible
         kwargs["pose_video_mask"] = kwargs["pose_video"].clone()

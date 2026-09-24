@@ -6,6 +6,13 @@
   "torch.float32",
   "292cff51b874034ffb3093d4567d2a08"
  ],
+ "a1_last_chunk_full": [
+  "2faea658103f9d1e244f858630591433",
+  "c2803cfa199b6ddb0806c8352128495e",
+  "81 + 81 + 81 + 81 -> 309 produced -> 240 frames (pose 240, overlap 5)",
+  "torch.float32",
+  "a39969b48d5816bb75e2394cbb5d2d19"
+ ],
  "a1_long": [
   "ebe2d4a96e8002175bc1ca09b51b5e20",
   "aa05f655f3b73225ba326d57a1b49ae4",
@@ -54,6 +61,13 @@
   "49 + 49 + 49 + 49 + 49 + 13 -> 253 produced -> 250 frames (pose 100, overlap 1)",
   "torch.float32",
   "036310633551cd2fa7b537d48c3b69df"
+ ],
+ "a2_last_chunk_full": [
+  "9ef633684b288678d11ec933cc320914",
+  "0c7e5a6de8ba64ec7277d3e94bc18b5b",
+  "81 + 81 + 81 + 81 -> 321 produced -> 250 frames (pose 250, overlap 1)",
+  "torch.float32",
+  "fa46e08d45fcad03dfacd05800066125"
  ],
  "a2_long": [
   "a887f0d57a393eb4f68988900a19a4b2",
@@ -148,6 +162,13 @@
   "81 + 81 + 81 + 81 -> 309 produced -> 250 frames (pose 100, overlap 5)",
   "torch.float32",
   "c5e426008bcf0f13ac41f1c2fdcbba50"
+ ],
+ "s2_last_chunk_fit": [
+  "2faea658103f9d1e244f858630591433",
+  "1fcbd069312621674b9e5823b4e25dc1",
+  "81 + 81 + 81 + 13 -> 241 produced -> 240 frames (pose 240, overlap 5)",
+  "torch.float32",
+  "cb6dfc6d70df3d0fc394d40c76d9019e"
  ],
  "s2_long": [
   "af5e654435bfecbbc3322f9cff4c7909",
