@@ -137,11 +137,36 @@ def test_black_background_in_replacement_mode_is_an_error():
 
 # --- the one-frame SAM 3.1 Multiplex track ---------------------------------------------------
 
-from test_sam3_1_multiplex_ab import FakeTracker, person_detection  # noqa: E402
-from test_sam3_1_multiplex_golden import clip, rig  # noqa: E402,F401
+from sam3_1_multiplex_fakes import sam3  # noqa: E402
+from test_sam3_1_multiplex_ab import LOW, FakeModel, FakeSam3, FakeTracker, person_detection  # noqa: E402
 
 
-def test_the_sam_track_runs_on_a_one_frame_reference(rig):
-    out = rig.track(FakeTracker(), clip(n=1, seed=1), detections=lambda real: [person_detection(real)])
-    assert out["error"] is None
-    assert "frames without a mask 0" in out["closing"]
+def test_the_sam_track_runs_on_a_one_frame_reference(monkeypatch, caplog):
+    tracker = FakeTracker()
+
+    def detect(detector, backbone, trunk_out, embedding, text_mask, config):
+        mask, score = person_detection(trunk_out)
+        return mask[None], torch.tensor([score])
+
+    class ProgressBar:
+        def __init__(self, total):
+            pass
+
+        def update(self, value):
+            pass
+
+    monkeypatch.setattr(sam3.mm, "load_model_gpu", lambda model: None)
+    monkeypatch.setattr(sam3.mm, "get_torch_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(sam3.mm, "intermediate_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(sam3, "_multiplex_parts", lambda model: (FakeSam3(tracker), "detector", tracker, "backbone"))
+    monkeypatch.setattr(sam3, "MultiplexState", lambda *args: object())
+    monkeypatch.setattr(sam3, "_prep_frame", lambda frames, idx, device, dtype, size: idx.start)
+    monkeypatch.setattr(sam3, "encode_prompt", lambda *args: (("embedding", None), "text_mask"))
+    monkeypatch.setattr(sam3, "detect_person", detect)
+    monkeypatch.setattr(sam3, "ProgressBar", ProgressBar)
+    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.INFO, logger="BCVideoNodes")
+    images = torch.rand(1, 2 * LOW, 2 * LOW, 3, generator=torch.Generator().manual_seed(1))
+    sam3.track((FakeModel(), object()), images)
+    closing = [r for r in caplog.records if r.name in ("BCVideoNodes", "root")][-1].getMessage()
+    assert "frames without a mask 0" in closing

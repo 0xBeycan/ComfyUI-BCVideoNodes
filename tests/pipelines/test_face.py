@@ -81,6 +81,16 @@ def test_pose_data_without_keypoints_raises():
         face.crop_faces(frames(), {"pose_metas": []})
 
 
+def test_an_empty_crop_on_a_tiny_frame_fails_in_cv2():
+    # the face box lies off a 2x2 frame, so the crop is empty; the centre crop is empty too
+    # (its side is int(0.3 * 2) = 0), and the zeros that stand in for it are 0x0, which cv2.resize refuses
+    cv2 = pytest.importorskip("cv2")
+    kp = np.zeros((69, 3))
+    kp[:, 0], kp[:, 1], kp[:, 2] = 10.0 + np.linspace(-0.1, 0.1, 69), 0.5, 0.9
+    with pytest.raises(cv2.error):
+        face.crop_faces(torch.rand(1, 2, 2, 3), {"pose_metas_original": [{"width": 2, "height": 2, "keypoints_face": kp}]})
+
+
 def test_supplied_face_boxes_ignore_the_padding_and_say_so(caplog):
     images = frames()
     given = [(10, 20, 60, 90)]

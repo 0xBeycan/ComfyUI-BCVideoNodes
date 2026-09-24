@@ -5,7 +5,7 @@ anchors pytest's rootdir at tests/, so pytest itself never imports the repo root
 
 Standard library only at module level: tests/test_package.py and tests/libs/test_chunking.py run
 with nothing but pytest installed. pytest puts this directory on sys.path, which is how the tests
-import names.py, golden.py and the *_fakes.py modules.
+import names.py and the *_fakes.py modules.
 """
 import importlib.util
 import os

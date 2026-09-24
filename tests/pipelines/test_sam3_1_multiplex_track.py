@@ -1,5 +1,6 @@
 """SAM 3.1 Multiplex's entry: input parsing (points, boxes, pose_data) and what `track` rejects,
-and ignores in each mode, on synthetic inputs. No model is loaded.
+and ignores in each mode, and what `_multiplex_parts` accepts as a checkpoint, on synthetic
+inputs. No model is loaded.
 
 The module imports ComfyUI at its top, so this runs where ComfyUI is importable (the pod, with
 the ComfyUI root on PYTHONPATH) and is skipped elsewhere."""
@@ -164,3 +165,43 @@ def test_the_default_wiring_ignores_nothing(fake_segment, caplog, mode):
     with caplog.at_level("INFO"):
         sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=pose_data, mode=mode)
     assert not_used_lines(caplog) == []
+
+
+# --- the model's parts -----------------------------------------------------------------------
+
+def parts_model(sam):
+    """The loaded checkpoint as `_multiplex_parts` reads it: model.model.diffusion_model."""
+    model = type("Model", (), {})()
+    model.model = type("Inner", (), {})()
+    model.model.diffusion_model = sam
+    return model
+
+
+def test_multiplex_parts_refuses_what_is_not_a_multiplex_checkpoint_and_returns_the_parts():
+    def sam(detector=None, tracker=None, name="Checkpoint"):
+        return type(name, (), {"detector": detector, "tracker": tracker})()
+
+    def detector(backbone):
+        return type("Detector", (), {"backbone": backbone})()
+
+    multiplex = type("Vision", (), {"multiplex": True})()
+    single = type("Vision", (), {"multiplex": False})()
+    primitives = ("_compute_backbone_frame", "track_step", "_condition_with_masks", "_deferred_memory_encode",
+                  "_forward_sam_heads")
+    complete = type("Tracker", (), {n: None for n in primitives})()
+    partial = type("Tracker", (), {n: None for n in primitives[:3]})()
+    refused = {
+        "no_detector": sam(name="PlainModel"),
+        "backbone_list": sam(detector([multiplex])),
+        "no_vision_backbone": sam(detector({"language_backbone": None})),
+        "module_dict_not_multiplex": sam(detector(torch.nn.ModuleDict({"vision_backbone": torch.nn.Identity()}))),
+        "not_multiplex": sam(detector({"vision_backbone": single})),
+        "tracker_missing_two": sam(detector({"vision_backbone": multiplex}), partial),
+        "no_tracker": sam(detector({"vision_backbone": multiplex})),
+    }
+    for model in refused.values():
+        with pytest.raises(ValueError):
+            sam3._multiplex_parts(parts_model(model))
+    whole = sam(detector({"vision_backbone": multiplex, "language_backbone": None}), complete)
+    parts = sam3._multiplex_parts(parts_model(whole))
+    assert parts[0] is whole and parts[1] is whole.detector and parts[2] is complete and parts[3] is multiplex

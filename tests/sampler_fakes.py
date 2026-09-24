@@ -31,7 +31,6 @@ sampler = Names("sampler", {
     "_replacement_mask_rows": Ref("models.wan_animate.mask_repair", "replacement_mask_rows"),
     "_seed_frame_attention_bias": Ref("models.wan_animate2.attention", "seed_frame_attention_bias"),
     "_call_node": Ref("models.common.core_nodes", "call_node"),
-    "_with_schema_defaults": Ref("models.common.core_nodes", "with_schema_defaults"),
     **refs("libs.sigmas", "wan_beta_sigmas"),
 }, alias="walong")
 

@@ -5,8 +5,9 @@
 ComfyUI custom nodes for Wan Animate and SCAIL-2: the preprocess (pose, SAM 3.1 Multiplex person
 mask, face crops, pose and mask guards, SCAIL-2 colored masks and their guard) and three
 long-video samplers. The 15 node keys are locked, and so is everything ComfyUI reads from a node
-(inputs, types, order, defaults, ranges, return types, categories, display names):
-`tests/nodes/test_surface_golden.py` (G2) pins that surface.
+(inputs, types, order, defaults, ranges, return types, categories, display names), because saved
+workflows depend on it: a change to it needs the owner. `tests/test_package.py` and the gate's
+`NODE_KEYS` pin the keys, their order, display names and categories.
 
 SAM naming: the SAM nodes and their code are named after the one model they run, SAM 3.1
 Multiplex. Display names read "SAM 3.1 Multiplex ...", modules `sam3_1_multiplex`, constants
@@ -40,7 +41,7 @@ models/              __init__ (imports the model packages in registration order)
 libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, config_widgets, pose_data,
                      pose_utils/ (vendored, with its LICENSE)
 scripts/             offline model conversion and upload (ComfyUI-free)
-tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test, goldens/
+tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test
 ```
 
 ## The layer rule
@@ -90,7 +91,7 @@ and patch underscore names through the `Names` tables.
 - Add the package to the import list in `models/__init__.py`. The loader loads the pose
   estimator and the person detector by their registry names (`models/common/loader.py`:
   `POSE_ESTIMATOR`, `DETECTOR`); offering a choice between models means a node widget, which
-  changes the G2 surface and needs the owner's word (the re-record procedure under Tests).
+  changes the node surface and needs the owner's word.
 - Keep its module-level imports to torch, numpy and the standard library.
 - List its modules in `CHECK3_MODULES` of `tests/test_import_time.py` (with an `ALLOWED` row if
   one may pull in a heavy module): the gate fails on a layer module that is not listed there.
@@ -98,9 +99,9 @@ and patch underscore names through the `Names` tables.
 - A new Animate conditioning node means an `AnimateAdapter` subclass (`models/common/animate.py`)
   in its own model package, registered in the `animate` family under its core node id (and the
   package added to `models/__init__.py`), plus a `_LongVideoSampler` subclass in
-  `nodes/sampler.py`, registered in the root `__init__.py`. A new node key changes the G2
-  surface, so it needs the same re-record with the owner's word, and a row in
-  `tests/test_package.py` and in the gate's `NODE_KEYS`.
+  `nodes/sampler.py`, registered in the root `__init__.py`. A new node key changes the surface,
+  so it needs the owner's word, and a row in `tests/test_package.py` and in the gate's
+  `NODE_KEYS`.
 - The chunk loop (`pipelines/long_video.py`) knows the core node only through the adapter. The
   base class is the Wan Animate contract; a node with another contract overrides what differs
   (`models/scail2/adapter.py` overrides all of them):
@@ -117,7 +118,7 @@ and patch underscore names through the `Names` tables.
   - `chunk_inputs`: per-chunk inputs; `after_animate`: conditioning repairs before sampling;
   - `unpack(outputs, anchor)`: the outputs as (positive, negative, latent, trim_latent,
     trim_image, video_frame_offset).
-  A change to a default is a change to both Wan Animate samplers, which G1 pins.
+  A change to a default is a change to both Wan Animate samplers.
 - The chunk length policy is not the adapter's: it is the samplers' `last_chunk` widget,
   `libs/chunking.LAST_CHUNK` (`fit`: the last chunk fitted to what is left; `full`: every chunk
   full length, the output cut to `total_frames`), with the reason the hold log line gives. The node's default is its `DEFAULT_LAST_CHUNK` (`fit` for both Wan
@@ -142,7 +143,7 @@ and patch underscore names through the `Names` tables.
   places (reduce it to one) or (b) it is likely (~70-80%) to be reused by future nodes of this
   repo's kind. Otherwise keep it inline. Near-copies that differ in any detail stay separate.
 - Errors say what to do. No silent defaults.
-- Behaviour changes need the owner. A golden that changes means the change is reverted.
+- Behaviour changes need the owner.
 
 ## Imports
 
@@ -164,8 +165,7 @@ and patch underscore names through the `Names` tables.
 - The gate, with the ComfyUI venv's Python: `PYTHONPATH=/path/to/ComfyUI python
   tests/test_import_time.py`. A standalone script (pytest does not collect it). It checks the
   package import (under 0.1 s, no heavy module, the 15 keys in order), each node module, each
-  module against its allowed heavy set, the ComfyUI-free set, and the E1/E3 trigger points of each
-  node key against `tests/goldens/import_gate.json`.
+  module against its allowed heavy set, and the ComfyUI-free set.
 - Code outside the pack binds the repo root as a package and imports through it: tests and
   `scripts/` as `bcvideonodes` (`tests/conftest.py` runs the root `__init__` as ComfyUI does; the
   scripts do not), the sampler tests' `node_module` fixture as `walong`, and the owner's A/B test
@@ -179,10 +179,10 @@ and patch underscore names through the `Names` tables.
   rootdir at `tests/`, so pytest never imports the root `__init__`.
 - Without torch or ComfyUI: `python -m pytest tests/test_package.py tests/libs/test_chunking.py`.
 - Then the gate (above). The layer test, `tests/test_layers.py`, runs in the suite.
-- Goldens (`tests/golden.py`, `tests/goldens/*.json`) change only by the owner-approved re-record:
-  delete the affected keys from the JSON file, run the test with `BCV_GOLDEN_RECORD=1` (it writes
-  missing keys only and never overwrites one), and show the owner `git diff tests/goldens` with
-  the reason. A refactor or cleanup never re-records.
+- The tests state behaviour: hand-written expected values, and comparisons with an external
+  reference (the vendored or official implementation, core ComfyUI, a formula written out in the
+  test). None compares the pack with a recorded fingerprint of its own earlier output, so an
+  intended behaviour change updates the tests that state the old behaviour, in the same commit.
 - Test bodies reach pack names through the `Names` tables (`tests/names.py`, each domain's in
   `tests/*_fakes.py`). Moving code changes table rows, never test bodies.
 

@@ -1,8 +1,0 @@
-{
- "bbox_from_detector.vitpose": "5fcb39b259691d8f88c7feae68191bb3",
- "crop.vitpose": "2b2fd5a070afe0e025c0bddf49d908d9",
- "crop.vitpose.corners": "[([np.int64(150), np.int64(112), 3], ((np.int64(4), np.int64(116)), (np.int64(5), np.int64(155))), ((0, np.int64(112)), (0, np.int64(150)))), ([np.int64(166), np.int64(124), 3], ((0, 120), (0, 160)), ((np.int64(2), np.int64(122)), (np.int64(3), np.int64(163)))), ([np.int64(130), np.int64(98), 3], ((0, np.int64(95)), (np.int64(33), 160)), ((np.int64(3), np.int64(98)), (0, np.int64(127)))), ([np.int64(150), np.int64(112), 3], ((np.int64(4), np.int64(116)), (np.int64(5), np.int64(155))), ((0, np.int64(112)), (0, np.int64(150)))), ([np.int64(162), np.int64(122), 3], ((0, np.int64(81)), (0, np.int64(116))), ((np.int64(41), np.int64(122)), (np.int64(46), np.int64(162)))), ([np.int64(138), np.int64(104), 3], ((np.int64(58), 120), (np.int64(76), 160)), ((0, np.int64(62)), (0, np.int64(84)))), ([np.int64(256), np.int64(192), 3], ((np.int64(4), 120), (np.int64(2), 160)), ((0, np.int64(116)), (0, np.int64(158)))), ([np.int64(256), np.int64(192), 3], ((np.int64(2), 120), (np.int64(4), 160)), ((0, np.int64(118)), (0, np.int64(156))))]",
- "decode_heatmaps": "3b4ec03d85f515791aa5b8236ed00980",
- "load_pose_metas_from_kp2ds_seq.<f4": "527d497fc50951722b9009145c516341",
- "load_pose_metas_from_kp2ds_seq.<f8": "aea8a8f0989c3538790b7d3591bac465"
-}

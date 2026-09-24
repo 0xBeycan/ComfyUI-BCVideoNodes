@@ -183,3 +183,28 @@ def test_the_limits_can_be_overridden_per_call():
 
     out = temporal.boxes_over_time(boxes(missing=(20,)), box_window=1)
     assert out[20][0] == pytest.approx(100.0 + 20 - 1)
+
+
+# six boxes on a 120x160 frame: inside, 5 px from the left edge, undetected, close to the top
+# and the bottom, float32 and 4 px from the right edge, undetected again
+TABLE = (
+    np.array([30.0, 20.0, 90.0, 130.0, 0.9]),
+    np.array([5.0, 20.0, 65.0, 130.0, 0.8]),
+    np.array([0.0, 0.0, 120.0, 160.0, -1.0]),
+    np.array([40.0, 3.0, 100.0, 150.0, 0.7]),
+    np.array([50.0, 30.0, 116.0, 140.0, 0.95], dtype=np.float32),
+    np.array([0.0, 0.0, 120.0, 160.0, -1.0]),
+)
+
+
+@pytest.mark.parametrize("box_window", [0, 1, 4])
+def test_widen_over_time_hands_an_undetected_frame_back_as_it_came(box_window):
+    table = list(TABLE)
+    widened = temporal.widen_over_time(table, box_window)
+    assert widened[2] is table[2] and widened[5] is table[5]
+
+
+def test_boxes_over_time_without_a_detection_hands_the_boxes_back_as_they_came():
+    table = [TABLE[2], TABLE[5]]
+    kept = temporal.boxes_over_time(table)
+    assert kept[0] is table[0] and kept[1] is table[1]

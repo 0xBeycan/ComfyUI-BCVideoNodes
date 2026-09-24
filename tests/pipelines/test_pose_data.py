@@ -1,7 +1,7 @@
 """The POSEDATA contract of libs/pose_data.py against the dicts the pose pipeline writes: the
 keys of PoseData, PoseMeta and Detection, in order, are the keys `detect` and `pose_detection`
-produce, so the annotations and the runtime dicts cannot drift apart. Runs on G4's clip and
-models (the scripted detector and pose model) with the temporal layer on and off:
+produce, so the annotations and the runtime dicts cannot drift apart. Runs on pose_fakes' scripted
+clip and models (ScriptedDetector and RecordingPose) with the temporal layer on and off:
 
     python -m pytest tests/pipelines/test_pose_data.py
 """

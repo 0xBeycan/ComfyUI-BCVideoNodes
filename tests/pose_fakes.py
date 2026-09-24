@@ -1,10 +1,11 @@
 """Pose fakes shared by the pose and node tests, and the `pose`, `loader` and `wrappers` Names
 the test bodies read pack names through (tests/names.py).
 
-FakePose, FakeDetector and frames stand in for the models and the clip; peaks gives heatmaps for
-the decode golden. No ComfyUI and no real model.
+FakePose, FakeDetector and frames stand in for the models and the clip. No ComfyUI and no real
+model.
 
-ScriptedDetector and RecordingPose script a clip's person boxes and keypoints for the pose goldens.
+ScriptedDetector and RecordingPose script a clip's person boxes and keypoints
+(tests/pipelines/test_pose_data.py).
 """
 import sys
 import types
@@ -12,7 +13,7 @@ import types
 import numpy as np
 import pytest
 
-from names import Names, Ref, Seam, Value, refs, seams
+from names import Names, Ref, Value, refs, seams
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("cv2")
@@ -32,10 +33,7 @@ except ImportError:
 pose = Names("pose", {
     **refs("pipelines.pose", "KEY_FRAME_BODY_POINTS", "PoseConfig", "asdict", "detect", "draw",
            "key_frame_body_points", "pose_detection"),
-    **refs("pipelines.pose", "snap_to_frame"),
-    **refs("libs.temporal", "widen_over_time"),
     **seams("pipelines.pose", "_to_device"),
-    "ProgressBar": Seam(Ref("comfy.utils", "ProgressBar")),
 })
 loader = Names("loader", {
     # the pose model's and the detector's file literals: the node test compares with these, not
@@ -97,23 +95,7 @@ def frames():
     return torch.rand(B, H, W, 3)
 
 
-# --- heatmaps ----------------------------------------------------------------------------------
-
-K, h, w = 133, 64, 48
-
-
-def peaks():
-    """Heatmaps with one Gaussian per keypoint, each at its own place, clear of the borders."""
-    rng = np.random.default_rng(0)
-    ys, xs = np.mgrid[0:h, 0:w]
-    out = np.zeros((1, K, h, w), np.float32)
-    for k in range(K):
-        cy, cx = rng.uniform(8, h - 8), rng.uniform(8, w - 8)
-        out[0, k] = np.exp(-((ys - cy) ** 2 + (xs - cx) ** 2) / 8.0) * rng.uniform(0.5, 0.95)
-    return out
-
-
-# --- the pose goldens' scripted clip ---------------------------------------------------------
+# --- a scripted clip -----------------------------------------------------------------------------
 
 # One detector row per frame of `frames()`, as (x1, y1, x2, y2, score, person_count); None is a
 # frame the detector found nobody on.

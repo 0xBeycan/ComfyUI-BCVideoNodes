@@ -56,6 +56,11 @@ def test_old_core_is_rejected(node_module, monkeypatch, node):
         run(node_module, pose_frames=81, node=node)
 
 
+def test_a_missing_core_node_is_an_error(node_module):
+    with pytest.raises(RuntimeError):
+        node_module._call_node("NotACoreNode", given=1)
+
+
 @pytest.mark.parametrize("node", [ANIMATE1, ANIMATE2])
 def test_log_prefix_names_the_node(node_module, caplog, node):
     caplog.set_level("INFO")
@@ -145,6 +150,29 @@ def test_animate2_overlap_follows_the_core_constant(node_module, monkeypatch):
     assert count == 200
     assert plan.endswith("overlap 5)")
     assert all(c["continue"] == 5 for c in Calls.animate[1:])
+
+
+class _KeepsFive(FakeWanAnimate2ToVideo):
+    CONTINUE_MOTION_FRAMES = 5
+
+
+class KeepsFiveFrames(FakeWanAnimate2ToVideo):
+    """Keeps 5 continue_motion frames while its constant says 1: the planner assumes an overlap
+    of 1, the node trims 5."""
+
+    CONTINUE_MOTION_FRAMES = 1
+
+    @classmethod
+    def EXECUTE_NORMALIZED(cls, **kwargs):
+        return _KeepsFive.EXECUTE_NORMALIZED(**kwargs)
+
+
+def test_animate2_overlap_self_correction_is_logged(node_module, monkeypatch, caplog):
+    # a core that trims more than its constant says: the loop takes the trim it found
+    monkeypatch.setitem(sys.modules["nodes"].NODE_CLASS_MAPPINGS, "WanAnimate2ToVideo", KeepsFiveFrames)
+    caplog.set_level("INFO")
+    run(node_module, pose_frames=200, frames_per_chunk=49)
+    assert "planner assumed 1; using 5" in caplog.text and " ran: " in caplog.text
 
 
 def test_animate2_chunk_and_step_logging(node_module, caplog):

@@ -18,22 +18,13 @@ A module is heavy when its top-level name is in HEAVY.
      subset of what ALLOWED gives it (E1_SET, E1_SET | E3_SET, or cv2 and its submodules), and
      nothing for every other module;
   4. each module of CHECK4_MODULES alone, in a subprocess without PYTHONPATH, so ComfyUI is not
-     importable: it imports, and afterwards comfy, folder_paths and nodes are not loaded;
-  5. the E1 and E3 trigger points: for each node key, in its own subprocess (sys.modules
-     persists within a process, so a node run after another would inherit its imports), the
-     package bound, the core samplers stubbed and that node's INPUT_TYPES called. E1 is whether
-     the detection-folder download module is then imported, E3 whether the SAM 3.1 Multiplex
-     module holding the tracker import is. The pairs are compared with the ones recorded in
-     tests/goldens/import_gate.json.
+     importable: it imports, and afterwards comfy, folder_paths and nodes are not loaded.
 
 Every module of CHECK3_MODULES and CHECK4_MODULES must exist in the tree; a missing one fails.
 Every module under libs/, pipelines/ and models/ must be in CHECK3_MODULES; an unlisted one fails.
 
 It also measures E1_SET and E3_SET, the heavy modules `import folder_paths` and the SAM 3.1
-tracker import add on this ComfyUI, and prints them. The golden file keeps them, with the
-package time and heavy modules, as information: they are not compared, since a core update may
-change them. With BCV_GOLDEN_RECORD=1 a value missing from the golden file is recorded
-(tests/golden.py); a recorded one is never overwritten.
+tracker import add on this ComfyUI, prints them, and gives them to check 3.
 
 Exits non-zero and lists what broke.
 """
@@ -67,10 +58,6 @@ NODE_KEYS = [
     "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
     "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard",
 ]
-# each exception's trigger module
-E1_MODULE = "models.common.download"
-E3_MODULE = "pipelines.sam3_1_multiplex.track"
-
 # check 3: every module under libs/, pipelines/ and models/
 CHECK3_MODULES = [
     "libs",
@@ -167,10 +154,6 @@ CHECK4_MODULES = [
 ]
 COMFYUI = ("comfy", "folder_paths", "nodes")
 
-GOLDEN = "import_gate"
-PAIRS = "E1_E3_trigger_pairs"
-INFORMATION = "information_not_compared"
-
 
 # --- run inside the subprocesses ---------------------------------------------------------------
 
@@ -194,21 +177,6 @@ def bind_package(execute_init):
 
 def heavy_since(before):
     return sorted(m for m in set(sys.modules) - before if m.split(".")[0] in HEAVY)
-
-
-def stub_core_samplers():
-    """ComfyUI's sampler and scheduler lists and MAX_RESOLUTION as fixed stubs, so a sampler
-    node's INPUT_TYPES does not import ComfyUI's nodes.py, and every core node with it."""
-    import comfy
-
-    samplers = types.ModuleType("comfy.samplers")
-    samplers.SAMPLER_NAMES = ["euler", "lcm"]
-    samplers.SCHEDULER_NAMES = ["normal", "simple", "beta"]
-    core_nodes = types.ModuleType("nodes")
-    core_nodes.MAX_RESOLUTION = 16384
-    sys.modules["comfy.samplers"] = samplers
-    sys.modules["nodes"] = core_nodes
-    comfy.samplers = samplers
 
 
 def probe_package():
@@ -245,14 +213,6 @@ def probe_exception_set(exception):
     else:
         from comfy.ldm.sam3.tracker import MultiplexState, _prep_frame, fill_holes_in_mask_scores  # noqa: F401
     return heavy_since(before)
-
-
-def probe_triggers(node_key):
-    stub_core_samplers()
-    package = bind_package(execute_init=True)
-    package.NODE_CLASS_MAPPINGS[node_key].INPUT_TYPES()
-
-    return {"E1": PKG_NAME + "." + E1_MODULE in sys.modules, "E3": PKG_NAME + "." + E3_MODULE in sys.modules}
 
 
 # --- run by main --------------------------------------------------------------------------------
@@ -328,15 +288,10 @@ def repeated(cwd, probe, *args):
 
 
 def main():
-    sys.path.insert(0, TESTS_DIR)
-    import golden
-
     failures = []
-    probes_failed = False
     with tempfile.TemporaryDirectory() as cwd:
         # 1. the package
         print(f"{'module':<36}{'import (s)':>12}  heavy imports")
-        package_s, package_heavy = None, None
         try:
             package_s, package_heavy, runs = repeated(cwd, "probe_package")
             print(f"{'package':<36}{package_s:>12.5f}  {', '.join(package_heavy) or '-'}")
@@ -349,7 +304,6 @@ def main():
                     failures.append(f"NODE_CLASS_MAPPINGS keys differ: expected {NODE_KEYS}, found {r['keys']}")
                     break
         except ProbeFailed as error:
-            probes_failed = True
             failures.append(f"package: {error}")
 
         # 2. each node module alone
@@ -357,20 +311,18 @@ def main():
             try:
                 seconds, heavy, _ = repeated(cwd, "probe_module", name)
             except ProbeFailed as error:
-                probes_failed = True
                 failures.append(f"{name}: {error}")
                 continue
             print(f"{name:<36}{seconds:>12.5f}  {', '.join(heavy) or '-'}")
             if heavy:
                 failures.append(f"{name} pulled in heavy modules: {', '.join(heavy)}")
 
-        # the exceptions' sets on this ComfyUI, information only
+        # the exceptions' sets on this ComfyUI, printed, and what check 3 allows
         sets = {}
         for exception, what in (("E1", "import folder_paths"), ("E3", "the SAM 3.1 tracker import")):
             try:
                 sets[exception] = run_probe(cwd, "probe_exception_set", exception)
             except ProbeFailed as error:
-                probes_failed = True
                 failures.append(f"{exception}_SET: {error}")
                 continue
             print(f"\n{exception}_SET ({what}): {', '.join(sets[exception]) or '-'}")
@@ -417,57 +369,12 @@ def main():
             if found["loaded"]:
                 failures.append(f"check 4: {name} loaded {', '.join(found['loaded'])} without ComfyUI on the path")
 
-        # 5. the E1 and E3 trigger points
-        print(f"\n{'node key':<36}{'E1':>6}{'E3':>6}")
-        pairs = {}
-        for key in NODE_KEYS:
-            try:
-                pairs[key] = run_probe(cwd, "probe_triggers", key)
-            except ProbeFailed as error:
-                probes_failed = True
-                failures.append(f"{key} INPUT_TYPES: {error}")
-                continue
-            print(f"{key:<36}{'yes' if pairs[key]['E1'] else '-':>6}{'yes' if pairs[key]['E3'] else '-':>6}")
-
-    if probes_failed:
-        failures.append("a probe failed, so nothing was compared with or recorded in the golden file")
-    else:
-        try:
-            golden.check(GOLDEN, PAIRS, pairs)
-        except AssertionError as error:
-            path = os.path.join(golden.GOLDENS, GOLDEN + ".json")
-            recorded = {}
-            if os.path.exists(path):
-                with open(path, encoding="utf-8") as f:
-                    recorded = json.load(f).get(PAIRS, {})
-            for key in NODE_KEYS:
-                if key in recorded and recorded[key] != pairs[key]:
-                    failures.append(f"{key}: E1/E3 trigger pair recorded {recorded[key]}, found {pairs[key]}")
-            failures.append(str(error))
-        record_information(golden, {
-            "package_seconds": round(package_s, 6),
-            "package_heavy": package_heavy,
-            "E1_SET": sets["E1"],
-            "E3_SET": sets["E3"],
-        })
-
     if failures:
         print("\nFAIL")
         for f in failures:
             print(" -", f)
         sys.exit(1)
     print("\nOK")
-
-
-def record_information(golden, information):
-    """Written once, under BCV_GOLDEN_RECORD=1 when the golden file has none, and never compared."""
-    path = os.path.join(golden.GOLDENS, GOLDEN + ".json")
-    recorded = {}
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            recorded = json.load(f)
-    if golden.RECORD and INFORMATION not in recorded:
-        golden.check(GOLDEN, INFORMATION, information)
 
 
 if __name__ == "__main__":

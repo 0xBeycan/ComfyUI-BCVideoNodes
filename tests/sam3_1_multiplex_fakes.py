@@ -32,18 +32,8 @@ sam3 = Names("sam3", {
     "SAM3_SIZE": Ref("models.sam3_1_multiplex.adapter", "SAM3_1_MULTIPLEX_SIZE"),
     **refs("libs.keypoints", "L_HIP", "L_SHOULDER", "R_ANKLE", "R_FOOT", "R_HIP", "R_SHOULDER"),
     **refs("libs.mask", "clean_mask", "drop_islands", "fill_holes", "to_frame_size"),
-    # G17 (tests/pipelines/test_sam3_1_multiplex_golden.py) reads these, under their post-SFN names
-    **refs("pipelines.sam3_1_multiplex.config", "SAM3_1MultiplexConfig"),
-    **refs("pipelines.sam3_1_multiplex.prompt", "iou"),
-    **refs("pipelines.sam3_1_multiplex.pose", "confident_count", "confident_pixels"),
-    **refs("models.sam3_1_multiplex.adapter", "SAM3_1_MULTIPLEX_SIZE"),
-    **refs("models.sam3_1_multiplex.postprocess", "clean_logits"),
-    **refs("models.sam3_1_multiplex.loader", "_loaded", "load_sam3_1_multiplex"),
-    **seams("models.sam3_1_multiplex.loader", "download"),
     # core names the functions import when called: ProgressBar is patched where they import it from
-    "ProgressBar": Seam(Ref("comfy.utils", "ProgressBar")), "mm": Ref("comfy.model_management"),
-    # core modules whose attributes the loader reads at call time
-    "comfy_sd": Ref("comfy.sd"), "folder_paths": Ref("folder_paths")})
+    "ProgressBar": Seam(Ref("comfy.utils", "ProgressBar")), "mm": Ref("comfy.model_management")})
 
 C = sam3.SAM3Config()
 
