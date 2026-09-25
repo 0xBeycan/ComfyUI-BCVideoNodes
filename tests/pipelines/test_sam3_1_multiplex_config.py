@@ -48,7 +48,7 @@ def test_config_fields_carry_a_mode_tagged_tooltip_and_a_range():
     for f in dataclasses.fields(sam3.SAM3Config):
         tip = f.metadata["tooltip"]
         tag = tip[:tip.index("]") + 1]
-        assert tag in ("[prompt]", "[prompt, max_objects > 1]", "[box_keypoint]"), f.name
+        assert tag in ("[prompt]", "[prompt, max_objects 1]", "[prompt, max_objects > 1]", "[box_keypoint]"), f.name
         tags.setdefault(tag, []).append(f.name)
         if isinstance(f.default, str):
             assert f.default in f.metadata["choices"], f.name
@@ -59,6 +59,7 @@ def test_config_fields_carry_a_mode_tagged_tooltip_and_a_range():
                                 "fill_hole_area", "memory_gap", "anchor_matching", "unmatched_counting"]
     assert tags["[prompt, max_objects > 1]"] == ["new_object_threshold", "assoc_iou", "duplicate_frames",
                                                  "occlusion_iou", "shrink_keep"]
+    assert tags["[prompt, max_objects 1]"] == ["anchor_output"]
 
 
 def test_config_ab_switches_default_to_ours_and_reject_other_values():
@@ -69,3 +70,10 @@ def test_config_ab_switches_default_to_ours_and_reject_other_values():
         with pytest.raises(ValueError, match=name):
             sam3.SAM3Config(**{name: "theirs"})
     assert c.mask_threshold == -1.0
+
+
+def test_config_anchor_output_defaults_to_the_propagated_mask_and_rejects_other_values():
+    assert sam3.SAM3Config().anchor_output == sam3.PROPAGATED
+    sam3.SAM3Config(anchor_output=sam3.DETECTION)
+    with pytest.raises(ValueError, match="anchor_output"):
+        sam3.SAM3Config(anchor_output="meta")

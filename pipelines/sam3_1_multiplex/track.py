@@ -167,8 +167,10 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
             unused += [f"sam3_config.{n}" for n in changed_fields(config, "[box_keypoint]")]
             if max_objects == 1:
                 unused += [f"sam3_config.{n} (max_objects 1)" for n in changed_fields(config, "[prompt, max_objects > 1]")]
-            elif sink is not None:
-                unused.append("the logits sink (max_objects > 1)")
+            else:
+                unused += [f"sam3_config.{n} (max_objects > 1)" for n in changed_fields(config, "[prompt, max_objects 1]")]
+                if sink is not None:
+                    unused.append("the logits sink (max_objects > 1)")
             if unused:
                 log.info(f"prompt mode segments from the text alone; {', '.join(unused)} not used")
             if not prompt or not prompt.strip():
@@ -186,7 +188,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
                                                          ("object_index", object_index, -1)) if v != default]
             if bboxes is not None:
                 unused.append("pose_data's person boxes (bboxes replace them)")
-            unused += [f"sam3_config.{n}" for n in changed_fields(config, "[prompt]") + changed_fields(config, "[prompt, max_objects > 1]")]
+            unused += [f"sam3_config.{n}" for tag in ("[prompt]", "[prompt, max_objects 1]", "[prompt, max_objects > 1]")
+                       for n in changed_fields(config, tag)]
             if not config.temporal:
                 unused += [f"sam3_config.{n} (temporal off)" for n in changed_fields(config, names=TRACKER_FIELDS)]
             if unused:

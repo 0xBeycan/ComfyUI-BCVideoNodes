@@ -284,6 +284,32 @@ def test_a6_a7_are_read_with_several_objects(rig):
     assert ours["false starts"] == 1 and "false starts" not in meta
 
 
+def test_anchor_output_propagated_shows_the_tracked_mask_and_tracks_the_same(rig):
+    """A re-anchor frame shows the mask the tracker propagated onto it instead of the taller
+    detection; the tracker is asked exactly the same, so every other frame is unchanged."""
+    ours, ours_log, ours_result = rig(config(anchor_output=sam3.DETECTION), detections=anchor_taller)
+    masks, log, result = rig(config(anchor_output=sam3.PROPAGATED), detections=anchor_taller)
+    assert log == ours_log and result == ours_result
+    assert conditioned(log, 16)[0] == conditioned(log, 32)[0] == 72   # re-anchored with the detection
+    for f in range(N):
+        if f in (16, 32):
+            # the tracker's mask on that frame: the person's box, 8 rows (two memories readable)
+            tracked = sam3.to_frame_size(box(*position(f), h=8, ring=1)[None, None], H, W)
+            assert torch.equal(masks[f], tracked) and not torch.equal(masks[f], ours[f]), f
+        else:
+            assert torch.equal(masks[f], ours[f]), f
+
+
+def test_anchor_output_is_named_unused_with_several_objects(fake_segments, caplog):
+    with caplog.at_level("INFO"):
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), config=config(anchor_output=sam3.DETECTION))
+    assert "anchor_output" not in not_used(caplog)
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), max_objects=2, config=config(anchor_output=sam3.DETECTION))
+    assert "sam3_config.anchor_output (max_objects > 1)" in not_used(caplog)
+
+
 def reproduce(low, how, H, W, threshold, mask_threshold, tracker_size, cfg, raw=False):
     """A frame's mask from its dumped logits, by the recipe `track` documents. `raw`: the logits
     are the ones before prompt mode's output cleaning (info["raw"]), cleaned here."""
@@ -301,9 +327,10 @@ def reproduce(low, how, H, W, threshold, mask_threshold, tracker_size, cfg, raw=
     return torch.from_numpy(sam3.clean_mask(cut.numpy(), cfg)).float()
 
 
-def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch):
+@pytest.mark.parametrize("anchor_output, shows_conditioning", [("detection", [2, 16, 32]), ("propagated", [2])])
+def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch, anchor_output, shows_conditioning):
     got = {}
-    cfg = config()
+    cfg = config(anchor_output=anchor_output)
     rig(cfg, ring=2, speck=True)   # installs the stand-ins
     masks = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
                        logits_sink=lambda logits, info: got.update(logits=logits, info=info))
@@ -312,8 +339,8 @@ def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch):
     assert [info["cut"][f] for f in (2, 16, 32)] == ["birth", "anchor", "anchor"] and set(info["cut"]) == {"prompt", "birth", "anchor"}
     assert info["threshold"] == 0.0 and info["fill_hole_area"] == cfg.fill_hole_area
     # the logits before the output's cleaning, except where the frame shows the conditioning
-    # mask itself: the birth frame and the anchors
-    assert [f for f in range(N) if not info["raw"][f]] == [2, 16, 32]
+    # mask itself: the birth frame, and the anchors unless they show the propagated mask
+    assert [f for f in range(N) if not info["raw"][f]] == shows_conditioning
     assert got["logits"][10][SPECK].min() == 5.0
     for f in range(N):
         assert got["logits"][f].dtype == torch.float16 and got["logits"][f].shape == (LOW, LOW)
@@ -562,7 +589,7 @@ def ringed_detections(real):
 
 def test_the_logits_dump_names_birth_and_anchor_frames(rig):
     got = {}
-    cfg = config()
+    cfg = config(anchor_output=sam3.DETECTION)   # the anchors show their conditioning mask
     rig(cfg, detections=ringed_detections, ring=2)
     masks = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
                        logits_sink=lambda logits, info: got.update(logits=logits, info=info))

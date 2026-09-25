@@ -11,6 +11,9 @@ def _field(default, lo, hi, step, doc):
 # always run, "meta" is Meta's (easy-sam3 @ 88fe578) ported onto core's primitives.
 OURS, META = "ours", "meta"
 
+# What a prompt-mode re-anchor frame shows (`anchor_output`).
+DETECTION, PROPAGATED = "detection", "propagated"
+
 
 def _choice(default, choices, doc):
     return field(default=default, metadata={"choices": tuple(choices), "tooltip": doc})
@@ -144,6 +147,14 @@ class SAM3_1MultiplexConfig:
     max_hole_fraction: float = _field(0.01, 0.0, 1.0, 0.005, "[box_keypoint] enclosed holes up to this share of the mask's area are filled")
     refine: bool = field(default=True, metadata={"tooltip": "[box_keypoint] feed the prompted mask back to the decoder once to refine it"})
     temporal: bool = field(default=True, metadata={"tooltip": "[box_keypoint] propagate with the tracker between prompts; off prompts every frame on its own"})
+
+    # --- [prompt, max_objects 1] ---
+    # Last, so the widgets of saved workflows keep their positions.
+    # The detector mask a re-anchor frame is conditioned with drops a motion-blurred limb the
+    # tracker still carries on that frame; easy-sam3 shows the tracker's mask there. The track
+    # is re-anchored with the detection either way: only what the frame shows changes. The default
+    # shows the propagated mask, as easy-sam3 does.
+    anchor_output: str = _choice(PROPAGATED, (DETECTION, PROPAGATED), "[prompt, max_objects 1] what a re-anchor frame shows. propagated (default): the mask the tracker propagated onto that frame; detection: the detector mask the track is re-anchored with. The track is re-anchored with the detection either way")
 
     def __post_init__(self):
         for f in fields(self):

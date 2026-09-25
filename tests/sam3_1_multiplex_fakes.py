@@ -6,7 +6,7 @@ import numpy as np
 from names import Names, Ref, Seam, refs, seams
 
 sam3 = Names("sam3", {
-    **refs("pipelines.sam3_1_multiplex.config", "META", "OURS"),
+    **refs("pipelines.sam3_1_multiplex.config", "DETECTION", "META", "OURS", "PROPAGATED"),
     **refs("pipelines.sam3_1_multiplex.prompt",
            "PROMPT", "anchor_detections", "non_overlapping", "suppress_recently_occluded", "suppress_shrunk"),
     **refs("pipelines.sam3_1_multiplex.pose",

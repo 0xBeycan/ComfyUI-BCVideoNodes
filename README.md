@@ -85,7 +85,11 @@ starts with the mode it affects.
 
 The `[prompt]` fields `anchor_matching` and `unmatched_counting` switch one
 step of the tracking policy between this pack's (`ours`, the default) and
-Meta's (`meta`), for the multi-person A/B. Prompt mode cuts every frame's
+Meta's (`meta`), for the multi-person A/B. `anchor_output` (last field, read
+at `max_objects` 1) picks what a re-anchor frame shows: the mask the tracker
+propagated onto that frame (`propagated`, the default) or the detection the
+track is re-anchored with (`detection`); the tracking is the same either
+way. Prompt mode cuts every frame's
 mask logits at 0; box_keypoint cuts its prompted frames at `mask_threshold`
 and its propagated ones at 0.
 

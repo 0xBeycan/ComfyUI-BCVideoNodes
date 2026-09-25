@@ -34,7 +34,7 @@ from ...models.sam3_1_multiplex.adapter import (DEFAULT_SAM3_1_MULTIPLEX, backbo
                                                 new_output_dict, object_score, propagation_backbone, store_output,
                                                 track_and_clean)
 from ...models.sam3_1_multiplex.postprocess import clean_logits, low_res_logits
-from .config import OURS, logits_record, report_counts
+from .config import DETECTION, OURS, logits_record, report_counts
 
 
 # What the person is called to SAM. A bare noun scores higher and more evenly across clips,
@@ -206,7 +206,9 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     dict, receives each output frame's low-res logits (see `logits_record`).
 
     The [prompt] A/B switches of `config` pick ours or Meta's side of a policy step (A6, A7); at
-    their defaults this is the policy described in the module docstring."""
+    their defaults this is the policy described in the module docstring. `anchor_output` picks
+    what a re-anchor frame shows (the detection, or the mask the tracker propagated onto it); the
+    tracking is the same either way."""
     from comfy.utils import ProgressBar
     (c, N, H, W, device, dtype, frames, detector, tracker, backbone, embedding, text_mask,
      size, backbone_fn, lookback) = _prompt_setup(model, clip, images, prompt, config)
@@ -289,7 +291,10 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                     current = condition_on_mask(
                         tracker, clean_logits(det_masks[anchor:anchor + 1], c.fill_hole_area), f, vision_feats,
                         vision_pos, feat_sizes, high_res, output_dict, N, mux, backbone, frame, trunk_out)
-                    shown, dumped, how = current["pred_masks"], None, "anchor"
+                    if c.anchor_output == DETECTION:
+                        shown, dumped = current["pred_masks"], None
+                    # else the frame keeps showing the mask the tracker propagated onto it
+                    how = "anchor"
                     counts["reconditioned"] += 1
                     prune_conditioning(output_dict["cond_frame_outputs"])
 
