@@ -100,3 +100,94 @@ def test_supplied_face_boxes_ignore_the_padding_and_say_so(caplog):
     assert torch.equal(plain[0], padded[0]) and plain[1] == padded[1]
     lines = [r.getMessage() for r in caplog.records if "not used" in r.getMessage()]
     assert lines == ["[BCVideoNodes] face_bboxes connected: cut as given; pose_data's face keypoints and face_padding 10 not used"]
+
+
+def moving_pose_data(spreads, centres=None, width=W, height=H):
+    """One frame per entry of `spreads`: a face keypoint cloud of that half-size (normalised)
+    around `centres[i]` (default the upper middle)."""
+    centres = centres or [(0.5, 0.3)] * len(spreads)
+    metas = []
+    for (cx, cy), spread in zip(centres, spreads):
+        kp = np.zeros((69, 3))
+        kp[:, 0] = cx + np.linspace(-spread, spread, 69)
+        kp[:, 1] = cy + np.linspace(-spread, spread, 69)
+        kp[:, 2] = 0.9
+        metas.append({"width": width, "height": height, "keypoints_face": kp})
+    return {"pose_metas_original": metas}
+
+
+def side(box):
+    return np.sqrt((box[2] - box[0]) * (box[3] - box[1]))
+
+
+def test_size_is_the_default_smoothing():
+    pd = moving_pose_data([0.05, 0.08, 0.05, 0.06, 0.05])
+    assert face.DEFAULT_FACE_BOX_SMOOTHING == "size"
+    assert face.face_bboxes_from_pose(pd, W, H) == face.face_bboxes_from_pose(pd, W, H, smoothing="size")
+
+
+def test_smoothing_off_leaves_the_boxes_as_they_were():
+    pd = moving_pose_data([0.05, 0.08, 0.05, 0.06, 0.05])
+    plain = face.face_bboxes_from_pose(pd, W, H, smoothing="off")
+    # each frame on its own, as before the switch existed
+    assert plain == [face.face_bboxes_from_pose({"pose_metas_original": [m]}, W, H, smoothing="off")[0]
+                     for m in pd["pose_metas_original"]]
+
+
+def test_median_smoothing_is_the_per_coordinate_median_of_a_centred_window():
+    pd = moving_pose_data([0.05, 0.08, 0.04, 0.09, 0.05, 0.06, 0.07])
+    raw = np.array(face.face_bboxes_from_pose(pd, W, H, smoothing="off"), dtype=np.float64)
+    smoothed = face.face_bboxes_from_pose(pd, W, H, smoothing="median")
+    half = face.MEDIAN_WINDOW // 2
+    expected = [tuple(int(v) for v in np.median(raw[max(0, i - half):i + half + 1], axis=0)) for i in range(len(raw))]
+    assert smoothed == expected
+
+
+def test_size_smoothing_keeps_the_centre_and_flattens_a_size_pulse():
+    spreads = [0.05] * 6 + [0.07] + [0.05] * 6
+    pd = moving_pose_data(spreads)
+    raw = face.face_bboxes_from_pose(pd, W, H, smoothing="off")
+    smoothed = face.face_bboxes_from_pose(pd, W, H, smoothing="size")
+    for r, s in zip(raw, smoothed):
+        assert abs((r[0] + r[2]) / 2 - (s[0] + s[2]) / 2) <= 1 and abs((r[1] + r[3]) / 2 - (s[1] + s[3]) / 2) <= 1
+    pulse = side(raw[6]) / side(raw[0]) - 1
+    assert side(smoothed[6]) / side(smoothed[0]) - 1 < pulse / 2
+    # the frames far from the pulse keep (almost) their size
+    assert abs(side(smoothed[0]) - side(raw[0])) <= 2
+
+
+def test_size_smoothing_on_a_clip_shorter_than_its_kernel():
+    pd = moving_pose_data([0.05, 0.07])
+    assert len(face.face_bboxes_from_pose(pd, W, H, smoothing="size")) == 2
+
+
+def test_a_frame_without_face_keypoints_keeps_its_box_and_is_left_out_of_the_smoothing():
+    pd = moving_pose_data([0.05] * 5)
+    pd["pose_metas_original"][2]["keypoints_face"][:, :2] = np.nan
+    raw = face.face_bboxes_from_pose(pd, W, H, smoothing="off")
+    for mode in ("median", "size"):
+        smoothed = face.face_bboxes_from_pose(pd, W, H, smoothing=mode)
+        assert smoothed[2] == raw[2]
+        assert smoothed[1] == raw[1] and smoothed[3] == raw[3]
+
+
+def test_smoothing_comes_before_the_padding():
+    pd = moving_pose_data([0.05, 0.07, 0.05])
+    smoothed = face.face_bboxes_from_pose(pd, W, H, smoothing="size")
+    padded = face.face_bboxes_from_pose(pd, W, H, face_padding=4, smoothing="size")
+    assert padded == [(x1 - 4, y1 - 4, x2 + 4, y2 + 4) for x1, y1, x2, y2 in smoothed]
+
+
+def test_an_unknown_smoothing_raises():
+    with pytest.raises(ValueError, match="face_box_smoothing must be one of"):
+        face.face_bboxes_from_pose(pose_data(), W, H, smoothing="gauss")
+
+
+def test_supplied_face_boxes_ignore_the_smoothing_and_say_so(caplog):
+    given = [(10, 20, 60, 90)]
+    with caplog.at_level("INFO"):
+        _, boxes = face.crop_faces(frames(), pose_data(), face_padding=10, face_bboxes=given, smoothing="size")
+    assert boxes == given * B
+    lines = [r.getMessage() for r in caplog.records if "not used" in r.getMessage()]
+    assert lines == ["[BCVideoNodes] face_bboxes connected: cut as given; pose_data's face keypoints and face_padding 10"
+                     " and face_box_smoothing size not used"]

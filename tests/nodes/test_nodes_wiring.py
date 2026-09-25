@@ -50,9 +50,11 @@ def test_every_input_reaches_the_function(node_id):
         assert {n for n in params if n != "self" and params[n].kind is not params[n].VAR_KEYWORD} <= names
     else:
         assert {n for n in params if n != "self"} == names
-    for name in types.get("optional", {}):
+    # an optional link defaults to None; an optional widget to the widget's own default
+    for name, options in types.get("optional", {}).items():
         if name in params:
-            assert params[name].default is None, name
+            widget_default = options[1].get("default") if len(options) > 1 else None
+            assert params[name].default == widget_default, name
 
 
 @pytest.mark.parametrize("node_id, config_cls", [("BCVPoseConfig", pose.PoseConfig), ("BCVSAM3Config", sam3.SAM3Config)])

@@ -105,14 +105,19 @@ and its propagated ones at 0.
   hand-placed one is dropped.
 - In `box_keypoint` mode, connected `bboxes` replace `pose_data`'s person
   boxes and count as detections on every frame.
-- `face_bboxes` on Face Crop are cut as given; `pose_data`'s face keypoints
-  and `face_padding` are then not used.
+- `face_bboxes` on Face Crop are cut as given; `pose_data`'s face keypoints,
+  `face_padding` and `face_box_smoothing` are then not used.
 - A keypoint at exactly `min_keypoint_conf` counts as found.
 
 ### Face Crop
 
 - in: `images`, `pose_data`; optional `face_bboxes` (BBOX, cut as they are)
 - widget: `face_padding` 0 (pixels added around the keypoint face box)
+- optional widget: `face_box_smoothing` `size` (default: the box centre
+  kept, its width and height averaged over a centred Gaussian of sigma 2
+  frames: stops the crop's size pulsing without letting a fast face leave
+  its box), `off` (each frame's own box) or `median` (per-coordinate median
+  over 5 frames)
 - out: `face_images` (512 x 512, Wan Animate's `face_video`), `face_bboxes`
 
 ### Pose Guard and Mask Guard
