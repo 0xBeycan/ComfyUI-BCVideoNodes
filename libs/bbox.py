@@ -1,14 +1,20 @@
 """The one reader of a BBOX input, shared by Pose Detection and SAM3's box_keypoint mode so both
 accept the same boxes and reject the same mistakes with the same message. It also holds the
 small box helpers: a box's corners as floats (box_corners), supplied boxes as detections
-(supplied_boxes), the box of a frame where nobody was detected (whole_frame_box) and the in-frame
-rule of the points JSON (point_in_frame)."""
+(supplied_boxes), the box of a frame where nobody was detected (whole_frame_box), every box widened
+to its neighbours' (widen_over_time) and the in-frame rule of the points JSON (point_in_frame)."""
 import json
 import numbers
 
 import numpy as np
 
 KJ_KEYS = ("startX", "startY", "endX", "endY")
+
+# The detector's box jumps around between frames - it shrinks to the upper body when the
+# person comes close, and around the blur when they move fast - and both the pose crop and
+# the mask prompt then miss the legs or the feet. The box of each frame is widened to the
+# boxes of its neighbours within this many frames, which the person cannot leave that fast.
+BOX_WINDOW = 4
 
 
 def box_corners(box):
@@ -75,6 +81,21 @@ def supplied_boxes(bboxes, frames):
 def whole_frame_box(W, H):
     """The box of a frame where nobody was detected: the whole W x H frame, score -1."""
     return np.array([0.0, 0.0, W, H, -1.0])
+
+
+def widen_over_time(bboxes, box_window=BOX_WINDOW):
+    """Each detected (x1, y1, x2, y2, score) box widened to the union of the detected boxes
+    within `box_window` frames either side, keeping its score. Undetected frames (score -1) are
+    left alone: they are the whole frame already."""
+    out = []
+    for i, bbox in enumerate(bboxes):
+        if bbox[4] <= 0:
+            out.append(bbox)
+            continue
+        near = [b for b in bboxes[max(0, i - box_window):i + box_window + 1] if b[4] > 0]
+        out.append(np.array([min(b[0] for b in near), min(b[1] for b in near),
+                             max(b[2] for b in near), max(b[3] for b in near), bbox[4]]))
+    return out
 
 
 def point_in_frame(x, y, W, H):

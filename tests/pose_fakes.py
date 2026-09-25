@@ -148,38 +148,20 @@ def _recording_layout():
     return layout.astype(np.float32)
 
 
-# (frame, keypoint): (dx, dy, confidence) on that frame. Keypoint 40 is unconfident for two
-# frames between confident ones (RECOVERED), 60 jumps on frame 6 (REPLACED), 80 jumps on the
-# last frame, with nothing after it (DROPPED); the right hip is unconfident on frame 0.
-RECORDING_FAULTS = {
-    (4, 40): (0.0, 0.0, 0.1), (5, 40): (0.0, 0.0, 0.1),
-    (6, 60): (70.0, 0.0, 0.9),
-    (11, 80): (70.0, 0.0, 0.9),
-    (0, 12): (0.0, 0.0, 0.3),
-}
-
-
 class RecordingPose:
     """A pose model that records every call's crop, centre and scale and answers with
-    `_recording_layout`, moved down `drift` px per call, whatever the crop: its scripted
-    `faults` make the temporal layer recover, replace and drop."""
+    `_recording_layout`, moved down `drift` px per call, whatever the crop."""
 
     input_shape = [1, 3, 256, 192]
 
-    def __init__(self, faults=RECORDING_FAULTS, drift=0.25):
+    def __init__(self, drift=0.25):
         self.layout = _recording_layout()
-        self.faults = faults
         self.drift = drift
         self.calls = []
 
     def keypoints(self, i):
         kp = self.layout.copy()
         kp[:, 1] += np.float32(self.drift * i)
-        for (frame, k), (dx, dy, conf) in self.faults.items():
-            if frame == i:
-                kp[k, 0] += np.float32(dx)
-                kp[k, 1] += np.float32(dy)
-                kp[k, 2] = conf
         return kp
 
     def __call__(self, img, center, scale):

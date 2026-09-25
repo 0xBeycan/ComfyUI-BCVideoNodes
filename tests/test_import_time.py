@@ -64,7 +64,6 @@ CHECK3_MODULES = [
     "libs.log",
     "libs.bbox",
     "libs.keypoints",
-    "libs.temporal",
     "libs.mask",
     "libs.chunking",
     "libs.sigmas",

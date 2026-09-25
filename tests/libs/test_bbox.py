@@ -1,4 +1,5 @@
-"""The shared BBOX reader Pose Detection and SAM3 both call. No ComfyUI and no model:
+"""The shared BBOX reader Pose Detection and SAM3 both call, and the box widening over the
+neighbouring frames. No ComfyUI and no model:
 
     python -m pytest tests/libs/test_bbox.py
 """
@@ -7,7 +8,7 @@ import json
 import numpy as np
 import pytest
 
-from bcvideonodes.libs.bbox import parse_bboxes
+from bcvideonodes.libs.bbox import parse_bboxes, widen_over_time
 
 
 def test_one_flat_box_is_used_on_every_frame():
@@ -72,3 +73,32 @@ def test_an_empty_list_or_a_non_box_raises():
         parse_bboxes(7, 1)
     with pytest.raises(ValueError):
         parse_bboxes({"x": 1}, 1)
+
+
+# six boxes on a 120x160 frame: inside, 5 px from the left edge, undetected, close to the top
+# and the bottom, float32 and 4 px from the right edge, undetected again
+TABLE = (
+    np.array([30.0, 20.0, 90.0, 130.0, 0.9]),
+    np.array([5.0, 20.0, 65.0, 130.0, 0.8]),
+    np.array([0.0, 0.0, 120.0, 160.0, -1.0]),
+    np.array([40.0, 3.0, 100.0, 150.0, 0.7]),
+    np.array([50.0, 30.0, 116.0, 140.0, 0.95], dtype=np.float32),
+    np.array([0.0, 0.0, 120.0, 160.0, -1.0]),
+)
+
+
+@pytest.mark.parametrize("box_window", [0, 1, 4])
+def test_widen_over_time_hands_an_undetected_frame_back_as_it_came(box_window):
+    table = list(TABLE)
+    widened = widen_over_time(table, box_window)
+    assert widened[2] is table[2] and widened[5] is table[5]
+
+
+def test_widen_over_time_takes_the_union_of_the_detected_neighbours_and_keeps_the_score():
+    widened = widen_over_time(list(TABLE), 1)
+    # frame 1: frames 0-2, the undetected frame 2 not counted
+    assert widened[1].tolist() == [5.0, 20.0, 90.0, 130.0, 0.8]
+    # frame 3: frames 2-4, the undetected frame 2 not counted
+    assert widened[3].tolist() == [40.0, 3.0, 116.0, 150.0, 0.7]
+    # box_window 0 keeps every detected box as it was
+    assert [b.tolist() for b in widen_over_time(list(TABLE), 0)] == [b.tolist() for b in TABLE]

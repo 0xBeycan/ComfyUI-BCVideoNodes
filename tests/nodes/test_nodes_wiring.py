@@ -171,7 +171,7 @@ def same(a, b):
 def test_the_preprocess_wrapper_is_the_three_nodes_chained(fake_models, mode):
     images = frames()
     widgets = dict(body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5)
-    config = pose.PoseConfig(temporal=False)
+    config = pose.PoseConfig()
     wrapped = nodes.BCVWanAnimatePreprocess().process(images, face_padding=8, mode=mode, prompt=sam3.PROMPT,
                                                       pose_config=config, **widgets)
 

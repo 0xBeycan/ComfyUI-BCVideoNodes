@@ -36,7 +36,7 @@ class BCVPoseDetection:
     RETURN_NAMES = ("pose_images", "pose_data", "bboxes", "key_frame_body_points")
     FUNCTION = "detect"
     CATEGORY = PREPROCESS
-    DESCRIPTION = "Wholebody pose on every frame: YOLOv10x finds the person (skipped when bboxes are connected), ViTPose-H gives the 133 keypoints, which are read against the frames around them, and the pose images are drawn at the frame size. key_frame_body_points is frame 0's confident body keypoints as a points JSON string (KJNodes PointsEditor format). The models are downloaded on first use."
+    DESCRIPTION = "Wholebody pose on every frame: YOLOv10x finds the person (skipped when bboxes are connected), ViTPose-H gives the 133 keypoints, and the pose images are drawn at the frame size. key_frame_body_points is frame 0's confident body keypoints as a points JSON string (KJNodes PointsEditor format). The models are downloaded on first use."
 
     def detect(self, images, body_stick_width, hand_stick_width, draw_head, draw_threshold, bboxes=None, pose_config=None):
         from ..models.common import loader

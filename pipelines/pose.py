@@ -1,6 +1,5 @@
 """Pose detection over a batch of frames: the person box (YOLO, or boxes the caller supplies),
-the 133 COCO-WholeBody keypoints (ViTPose), read against the frames around them, and
-the pose images drawn from them.
+the 133 COCO-WholeBody keypoints (ViTPose), and the pose images drawn from them.
 
 The detector and the pose model are passed in as the wrapper objects the models package
 builds; nothing here loads a model, and nothing here calls SAM3 - the mask is its own node
@@ -14,10 +13,8 @@ import numpy as np
 import torch
 
 from ..libs import log
-from ..libs.bbox import box_corners, point_in_frame, supplied_boxes, whole_frame_box
+from ..libs.bbox import BOX_WINDOW, box_corners, point_in_frame, supplied_boxes, whole_frame_box, widen_over_time
 from ..libs.pose_data import PoseData
-from ..libs.temporal import (BOX_WINDOW, DROPPED, MAX_GAP, MAX_RESIDUAL, MAX_STEP, MEASURED, RECOVERED, REPLACED,
-                             all_measured, boxes_over_time, keypoints_over_time, widen_over_time)
 from ..libs.video import as_numpy
 from ..models.common.pose_input import pose_crop
 from ..models.common.wrapper import load_models as _to_device
@@ -41,7 +38,7 @@ class PoseConfig:
     """The Pose Detection tunables. Defaults are the measured values; the Pose Config node
     only overrides them. Each field's metadata holds its range and a one-line description. A
     field changed from its default that the run does not read (detection_threshold with
-    supplied boxes, the temporal_* fields with temporal off) is named in one console line."""
+    supplied boxes) is named in one console line."""
 
     min_keypoint_conf: float = field(default=0.3, metadata={
         "min": 0.0, "max": 1.0, "step": 0.05,
@@ -49,17 +46,6 @@ class PoseConfig:
     detection_threshold: float = field(default=0.05, metadata={
         "min": 0.0, "max": 1.0, "step": 0.01,
         "doc": "Person detector (YOLO) score below which a box is discarded. Ignored when bboxes is connected (YOLO does not run)"})
-    temporal: bool = field(default=True, metadata={
-        "doc": "Read boxes and keypoints against the frames around them (fill short gaps, replace glitches); off ignores the temporal_* fields (not SAM 3.1 Multiplex Config's temporal)"})
-    temporal_max_gap: int = field(default=MAX_GAP, metadata={
-        "min": 0, "max": 30, "step": 1,
-        "doc": "Longest run of unconfident frames a keypoint is bridged over. Ignored with temporal off"})
-    temporal_max_step: float = field(default=MAX_STEP, metadata={
-        "min": 0.0, "max": 1.0, "step": 0.01,
-        "doc": "Fastest motion, in box diagonals per frame, a bridged gap may span. Ignored with temporal off"})
-    temporal_max_residual: float = field(default=MAX_RESIDUAL, metadata={
-        "min": 0.0, "max": 2.0, "step": 0.01,
-        "doc": "Distance, in box diagonals, from its neighbours' median past which a keypoint is a glitch. Ignored with temporal off"})
     box_window: int = field(default=BOX_WINDOW, metadata={
         "min": 0, "max": 30, "step": 1,
         "doc": "Frames either side whose person boxes each frame's box is widened to; supplied bboxes are widened too"})
@@ -71,15 +57,9 @@ class PoseConfig:
                 raise ValueError(f"PoseConfig.{f.name} is {value}; it must be within {meta['min']}..{meta['max']}")
 
 
-# The fields only the temporal layer reads.
-TEMPORAL_FIELDS = ("temporal_max_gap", "temporal_max_step", "temporal_max_residual")
-
-
 def unused_config_fields(config, supplied_boxes):
     """(name, why) for every PoseConfig field changed from its default that this run does not read."""
     why = {"detection_threshold": "bboxes connected, the detector does not run"} if supplied_boxes else {}
-    if not config.temporal:
-        why.update(dict.fromkeys(TEMPORAL_FIELDS, "temporal off"))
     return [(f.name, why[f.name]) for f in fields(config) if f.name in why and getattr(config, f.name) != f.default]
 
 
@@ -149,13 +129,10 @@ def detect(detector, pose_model, images, bboxes=None, config=None
 
     Returns (pose_data, boxes). pose_data carries the per-frame pose metas (`pose_metas` as
     AAPoseMeta for drawing, `pose_metas_original` as dicts with the normalised keypoints),
-    `detections` (the person box as everything downstream sees it: interpolated from the
-    neighbouring detections where the detector found nobody when the temporal layer is on,
-    widened to the neighbouring frames' boxes and extended to frame edges it nearly touches,
-    its score, -1 when nothing was detected, and the number of people the detector was fairly
-    sure of), `keypoint_source`, which names every keypoint the temporal layer wrote rather
-    than the model, so a filled value is never read as a measurement (all MEASURED with the
-    layer off), and `pose_config`, the config the pose was made with. boxes are the same
+    `detections` (the person box as everything downstream sees it: widened to the neighbouring
+    frames' boxes and extended to frame edges it nearly touches, the whole frame where nothing
+    was detected; its score, -1 when nothing was detected; and the number of people the detector
+    was fairly sure of) and `pose_config`, the config the pose was made with. boxes are the same
     boxes as (x1, y1, x2, y2) tuples, one per frame.
     """
     from comfy.utils import ProgressBar
@@ -185,10 +162,7 @@ def detect(detector, pose_model, images, bboxes=None, config=None
             result["frames without a person"] = sum(1 for b in raw if b[-1] <= 0)
             result["frames with several people"] = sum(1 for n in person_counts if n > 1)
     # one set of boxes for everything downstream: the pose crop, the mask prompt and the guard
-    if config.temporal:
-        boxes = [snap_to_frame(b, W, H) for b in boxes_over_time(raw, config.box_window)]
-    else:
-        boxes = [snap_to_frame(b, W, H) for b in widen_over_time(raw, config.box_window)]
+    boxes = [snap_to_frame(b, W, H) for b in widen_over_time(raw, config.box_window)]
 
     kp2ds = []
     with log.step(f"extracting keypoints on {B} frames"):
@@ -197,19 +171,6 @@ def detect(detector, pose_model, images, bboxes=None, config=None
             kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
             pbar.update_absolute(B + i + 1)
     kp2ds = np.concatenate(kp2ds, 0)
-
-    if config.temporal:
-        result = {}
-        with log.step("reading the keypoints against the frames around them", result):
-            kp2ds, source = keypoints_over_time(kp2ds, boxes, max_gap=config.temporal_max_gap,
-                                                max_step=config.temporal_max_step,
-                                                max_residual=config.temporal_max_residual)
-            for name, code in (("recovered", RECOVERED), ("replaced", REPLACED), ("dropped", DROPPED)):
-                hit = source == code
-                result[f"keypoints {name}"] = f"{int(hit.sum())} on {int(hit.any(axis=1).sum())} frames"
-            result["keypoints the model gave"] = f"{100 * (source == MEASURED).mean():.1f}%"
-    else:
-        source = all_measured(kp2ds)
     pose_metas = load_pose_metas_from_kp2ds_seq(kp2ds, width=W, height=H)
 
     pose_data = {
@@ -219,7 +180,6 @@ def detect(detector, pose_model, images, bboxes=None, config=None
             {"bbox": [float(v) for v in box[:4]], "score": float(box[4]), "persons": int(count)}
             for box, count in zip(boxes, person_counts)
         ],
-        "keypoint_source": source.tolist(),
         "pose_config": asdict(config),
     }
     return pose_data, [box_corners(box) for box in boxes]

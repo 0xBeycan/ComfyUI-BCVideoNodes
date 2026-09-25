@@ -31,10 +31,9 @@ boxes come out at the size of the frames that went in.
 
 ### Pose Detection
 
-YOLOv10x finds the person, ViTPose-H gives the 133 COCO-WholeBody
-keypoints, the keypoints are read against the frames around them (short gaps
-bridged, glitches replaced, every filled keypoint labelled as such in
-`pose_data`), and the pose images are drawn.
+YOLOv10x finds the person, each frame's box is widened to the boxes of the
+frames around it (`box_window`), ViTPose-H gives the 133 COCO-WholeBody
+keypoints on every frame, and the pose images are drawn.
 
 - in: `images`; optional `bboxes` (BBOX, one `(x1, y1, x2, y2)` per frame or
   one for all: the detector is then skipped), `pose_config` (POSE_CONFIG)
@@ -50,8 +49,7 @@ bridged, glitches replaced, every filled keypoint labelled as such in
 
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
-`pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`, `temporal`,
-`temporal_max_gap`, `temporal_max_step`, `temporal_max_residual`,
+`pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
 `box_window`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
 `draw_threshold` (also carried in `pose_data`).

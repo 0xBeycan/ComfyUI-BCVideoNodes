@@ -38,7 +38,7 @@ models/              __init__ (imports the model packages in registration order)
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, yolo/, sam3_1_multiplex/ (adapter, loader,
                      postprocess), wan_animate/, wan_animate2/, scail2/
-libs/                log, bbox, keypoints, temporal, mask, chunking, sigmas, video, color, config_widgets, pose_data,
+libs/                log, bbox, keypoints, mask, chunking, sigmas, video, color, config_widgets, pose_data,
                      pose_utils/ (vendored, with its LICENSE)
 scripts/             offline model conversion and upload (ComfyUI-free)
 tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test

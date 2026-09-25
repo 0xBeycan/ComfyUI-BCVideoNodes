@@ -35,7 +35,7 @@ def test_supplied_boxes_need_no_detector_object():
 
 
 def test_a_single_supplied_box_is_used_on_every_frame():
-    config = pose.PoseConfig(temporal=False, box_window=0)
+    config = pose.PoseConfig(box_window=0)
     _, boxes = pose.detect(NoDetector(), FakePose(), frames(), bboxes=[(30.0, 20.0, 90.0, 140.0, 0.5)], config=config)
     assert boxes == [(30.0, 20.0, 90.0, 140.0)] * B
 
@@ -65,16 +65,18 @@ def test_the_detection_threshold_reaches_the_detector_and_is_restored():
 
 def test_pose_data_keys():
     pose_data, _ = pose.detect(FakeDetector(), FakePose(), frames())
-    assert set(pose_data) == {"pose_metas", "pose_metas_original", "detections", "keypoint_source", "pose_config"}
+    assert set(pose_data) == {"pose_metas", "pose_metas_original", "detections", "pose_config"}
     assert pose_data["pose_config"] == pose.asdict(pose.PoseConfig())
-    assert np.array(pose_data["keypoint_source"]).shape == (B, 133)
 
 
-def test_temporal_off_marks_every_keypoint_measured():
-    conf = np.full(133, 0.9)
+def test_the_keypoints_are_the_pose_model_output_unchanged():
+    conf = np.full(133, 0.9, dtype=np.float32)
     conf[7] = 0.1
-    pose_data, _ = pose.detect(FakeDetector(), FakePose(conf), frames(), config=pose.PoseConfig(temporal=False))
-    assert not np.any(pose_data["keypoint_source"])
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(conf), frames())
+    for meta in pose_data["pose_metas_original"]:
+        assert meta["keypoints_body"].dtype == np.float32
+        # keypoint 7 (the left elbow, AAPose body 6) keeps the model's 0.1 on every frame
+        assert meta["keypoints_body"][6, 2] == np.float32(0.1)
 
 
 def test_config_values_out_of_range_raise():
@@ -101,7 +103,7 @@ def test_key_frame_body_points_is_the_points_editor_string():
 def test_key_frame_body_points_keeps_only_confident_points():
     conf = np.full(133, 0.9, dtype=np.float32)
     conf[[5, 6]] = 0.2  # the shoulders; the neck is their mean, so it drops too
-    pose_data, _ = pose.detect(FakeDetector(), FakePose(conf), frames(), config=pose.PoseConfig(temporal=False))
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(conf), frames())
     points = json.loads(pose.key_frame_body_points(pose_data, 0.5))
     body = pose_data["pose_metas_original"][0]["keypoints_body"]
     kept = [i for i in pose.KEY_FRAME_BODY_POINTS if body[i, 2] >= 0.5]
@@ -109,7 +111,7 @@ def test_key_frame_body_points_keeps_only_confident_points():
 
 
 def test_key_frame_body_points_is_an_empty_list_without_a_confident_point():
-    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.1), frames(), config=pose.PoseConfig(temporal=False))
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.1), frames())
     assert pose.key_frame_body_points(pose_data, 0.5) == "[]"
 
 
@@ -126,7 +128,7 @@ def test_key_frame_body_points_leaves_out_keypoints_outside_the_frame():
 
 
 def test_draw_threshold_decides_what_is_drawn():
-    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.6), frames(), config=pose.PoseConfig(temporal=False))
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.6), frames())
     assert pose.draw(pose_data, draw_threshold=0.5).sum() > 0
     assert pose.draw(pose_data, draw_threshold=0.7, draw_head=False).sum() == 0
 
@@ -152,14 +154,6 @@ def test_supplied_boxes_ignore_the_detection_threshold_in_one_line(caplog):
     assert not_used_lines(caplog) == ["[BCVideoNodes] pose_config.detection_threshold "
                                       "(bboxes connected, the detector does not run) not used"]
     assert plain["detections"] == changed["detections"]
-
-
-def test_temporal_off_ignores_the_temporal_fields_in_one_line(caplog):
-    with caplog.at_level("INFO"):
-        pose.detect(FakeDetector(), FakePose(), frames(),
-                    config=pose.PoseConfig(temporal=False, temporal_max_gap=3, box_window=2))
-    (line,) = not_used_lines(caplog)
-    assert "pose_config.temporal_max_gap (temporal off)" in line and "box_window" not in line
 
 
 def test_the_default_config_ignores_nothing(caplog):

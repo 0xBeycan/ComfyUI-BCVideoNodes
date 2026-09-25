@@ -143,7 +143,7 @@ class SAM3_1MultiplexConfig:
     # 1.2%) and every one below it was clothing or hair the decoder had dropped.
     max_hole_fraction: float = _field(0.01, 0.0, 1.0, 0.005, "[box_keypoint] enclosed holes up to this share of the mask's area are filled")
     refine: bool = field(default=True, metadata={"tooltip": "[box_keypoint] feed the prompted mask back to the decoder once to refine it"})
-    temporal: bool = field(default=True, metadata={"tooltip": "[box_keypoint] propagate with the tracker between prompts; off prompts every frame on its own (not Pose Config's temporal)"})
+    temporal: bool = field(default=True, metadata={"tooltip": "[box_keypoint] propagate with the tracker between prompts; off prompts every frame on its own"})
 
     def __post_init__(self):
         for f in fields(self):
