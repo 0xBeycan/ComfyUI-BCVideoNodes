@@ -1,16 +1,18 @@
 """The SCAIL-2 guard on synthetic clips: guard_fakes.clip()'s drifting person rendered through the
-SCAIL-2 colored masks. A clean clip passes in both modes, each injected fault fires its own check
-on its own frames only, the mode comes from the reference border, and the crop geometry is core's.
+SCAIL-2 colored masks, with and without its pose. A clean clip passes in both modes, each injected
+fault fires its own check on its own frames only, the mode comes from the reference border, and
+the crop geometry is core's.
 The crop test reads comfy.utils, so this runs where ComfyUI is importable:
 
     PYTHONPATH=/path/to/ComfyUI python -m pytest tests/pipelines/test_guard_scail2.py
 """
+import dataclasses
 import json
 
 import pytest
 import torch
 
-from guard_fakes import H, N, W, clip
+from guard_fakes import MASK, H, N, W, clip, drop_keypoints, origin
 from scail2_fakes import scail2
 
 
@@ -28,9 +30,10 @@ def reference_only(mask, replacement_mode):
     return scail2.render_identity(mask, scail2.PALETTE[0], scail2.backgrounds(replacement_mode)[1])
 
 
-def guard_run(pose_video_mask, reference_image_mask, enabled=True, config=None):
+def guard_run(pose_video_mask, reference_image_mask, enabled=True, config=None, pose_data=None):
     """(passed, flags, reference record, report, metrics record), without stopping."""
-    out = scail2.check_scail2(pose_video_mask, reference_image_mask, config, enabled=enabled, stop_on_fail=False)
+    out = scail2.check_scail2(pose_video_mask, reference_image_mask, config, enabled=enabled, stop_on_fail=False,
+                              pose_data=pose_data)
     assert out[0] is pose_video_mask and out[1] is reference_image_mask
     report, metrics, timeline = out[2:]
     assert timeline.shape[0] == 1 and timeline.shape[-1] == 3
@@ -51,14 +54,15 @@ def test_blank_driving_frames_are_driving_empty(replacement_mode):
     masks = clip()[0]
     masks[[5, 6, 20]] = 0
     passed, flags, _, report, _ = guard_run(*rendered(replacement_mode, driving=masks))
-    assert passed and flags == {"driving_empty": [5, 6, 20]}, report
+    # frames 5-6 and frame 20 drop the whole person between frames that hold her: two dropouts
+    assert passed and flags == {"driving_empty": [5, 6, 20], "mask_loss": [5, 6, 20]}, report
     assert "- driving_empty (warning): 3 frame(s), longest run 2: 5-6, 20" in report
 
 
 def test_a_detached_region_is_driving_fragmented_and_a_speck_is_data():
     masks = clip()[0]
     masks[12, 280:320, 200:240] = 1.0   # 1600 px, 6.7% of the person: a second object
-    masks[14, 300:316, 220:236] = 1.0   # 256 px, 1.1%: a speck
+    masks[14, 0:16, 220:236] = 1.0      # 256 px, 1.1%: a speck
     passed, flags, _, report, record = guard_run(*rendered(False, driving=masks))
     assert passed and flags == {"driving_fragmented": [12]}, report
     assert record["frames"][14]["fragments"] == [round(256 / 24000, 4)]
@@ -88,23 +92,16 @@ def test_a_split_reference_mask_is_reference_fragmented():
     assert passed and flags == {} and record["flags"] == ["reference_fragmented"], report
 
 
-def test_a_reference_the_center_crop_cuts_is_reference_cropped():
-    # a landscape reference for the portrait generation: core keeps its middle half
+def test_what_the_center_crop_cuts_off_the_reference_is_data_not_a_check():
+    # a landscape reference for the portrait generation: core keeps its middle half, whatever the
+    # guard says, so the share it cuts off is measured and never flagged
     reference = torch.zeros(1, H, 2 * W)
     reference[0, 40:280, 60:160] = 1.0
     x, y = scail2.center_crop(2 * W, H, W, H)
     assert (x, y) == (W // 2, 0)
     passed, _, record, report, _ = guard_run(*rendered(False, reference=reference))
-    assert record["cropped"] == pytest.approx((W // 2 - 60) / 100) and record["flags"] == ["reference_cropped"], report
-    assert passed
-
-
-def test_the_cropped_threshold_is_the_config_s():
-    reference = torch.zeros(1, H, 2 * W)
-    reference[0, 40:280, 60:160] = 1.0
-    config = scail2.SCAIL2GuardConfig(max_reference_cropped=0.7)
-    _, _, record, _, metrics = guard_run(*rendered(False, reference=reference), config=config)
-    assert record["flags"] == [] and metrics["thresholds"]["max_reference_cropped"] == 0.7
+    assert record["cropped"] == pytest.approx((W // 2 - 60) / 100) and record["flags"] == [], report
+    assert passed and "cropped 0.600" in report
 
 
 @pytest.mark.parametrize("replacement_mode, flagged", [(False, []), (True, ["reference_misaligned"])])
@@ -166,16 +163,80 @@ def test_the_metrics_record():
     _, _, _, _, record = guard_run(*rendered(True))
     assert list(record) == ["guard", "thresholds", "enabled", "flags", "reference", "frames"]
     assert record["guard"] == "scail2"
-    assert record["thresholds"] == {"max_reference_cropped": 0.02, "min_reference_iou": 0.4}
+    assert record["thresholds"] == {"min_reference_iou": 0.4, "draw_threshold": None, **dataclasses.asdict(MASK)}
     assert record["enabled"] == sorted(scail2.SCAIL2_CHECKS)
     assert tuple(record["reference"]) == scail2.SCAIL2_REFERENCE
     assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"]) and len(record["frames"]) == N
 
 
 def test_the_warnings_and_the_failures():
-    warnings = {"driving_empty", "driving_fragmented", "reference_fragmented", "reference_cropped", "reference_misaligned"}
-    assert set(scail2.SCAIL2_CHECKS) - scail2.WARNINGS == {"no_driving_person", "reference_empty"}
+    warnings = {"driving_empty", "driving_fragmented", "reference_fragmented", "reference_misaligned", "mask_loss",
+                "mask_attached_leak", "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable"}
+    # mask_empty and mask_leak come with pose_data and stop as they do in the Mask Guard
+    assert set(scail2.SCAIL2_CHECKS) - scail2.WARNINGS == {"no_driving_person", "reference_empty", "mask_empty",
+                                                           "mask_leak"}
     assert set(scail2.SCAIL2_CHECKS) & scail2.WARNINGS == warnings
+
+
+def test_without_pose_data_the_report_names_what_it_did_not_check():
+    _, _, _, report, record = guard_run(*rendered(False))
+    assert ("- without pose_data, not checked: mask_empty, mask_leak, mask_attached_leak, mask_missing_keypoints, "
+            "mask_missed_limb, body_not_drawn, mask_unstable") in report
+    assert record["frames"][5]["keypoint_recall"] is None and record["frames"][5]["missed_limbs"] == []
+
+
+def test_a_region_the_driving_mask_drops_for_one_frame_is_mask_loss():
+    masks = clip()[0]
+    x1, y1 = origin(20)
+    masks[20, y1 + 150:y1 + 180, x1 + 40:x1 + 70] = 0
+    passed, flags, _, report, record = guard_run(*rendered(False, driving=masks))
+    assert passed and flags == {"mask_loss": [20]}, report
+    assert record["frames"][20]["mask_loss"] == pytest.approx(15 / 240)
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_with_pose_data_the_driving_mask_gets_the_pose_based_checks(replacement_mode):
+    masks, pose_data = clip()
+    for i in (20, 21):                    # the mask loses the right hand
+        x1, y1 = origin(i)
+        masks[i, y1 + 90:y1 + 135, x1:x1 + 30] = 0
+    drop_keypoints(pose_data, range(5, 35), list(range(8, 20)))   # the pose loses the lower body
+    driving, reference = rendered(replacement_mode, driving=masks)
+    passed, flags, _, report, record = guard_run(driving, reference)
+    assert passed and flags == {"mask_loss": [20, 21]}, report       # the hand is back on frame 22
+    passed, flags, _, report, record = guard_run(driving, reference, pose_data=pose_data)
+    assert passed and flags["mask_missed_limb"] == [20, 21] and flags["body_not_drawn"] == list(range(5, 35)), report
+    assert "without pose_data" not in report and record["thresholds"]["draw_threshold"] == 0.5
+    assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"])
+
+
+def test_with_pose_data_a_piece_holding_her_keypoints_is_her():
+    masks, pose_data = clip()
+    masks[30, 40:, 90:190] = 1.0      # the body runs off the bottom edge
+    masks[30, 0:40, W - 40:] = 1.0    # her hand comes back in at the top right corner, 1600 px
+    pts = pose_data["pose_metas_original"][30]["keypoints_body"].copy()
+    pts[4] = ((W - 15) / W, 10 / H, 0.9)
+    pose_data["pose_metas_original"][30]["keypoints_body"] = pts
+    driving, reference = rendered(False, driving=masks)
+    _, flags, _, report, record = guard_run(driving, reference)
+    assert flags["driving_fragmented"] == [30] and record["frames"][30]["fragments"], report
+    _, flags, _, report, record = guard_run(driving, reference, pose_data=pose_data)
+    assert "driving_fragmented" not in flags and record["frames"][30]["fragments"] == [], report
+
+
+def test_with_pose_data_an_empty_driving_frame_the_pose_sees_fails():
+    masks, pose_data = clip()
+    masks[20] = 0
+    passed, flags, _, report, _ = guard_run(*rendered(False, driving=masks), pose_data=pose_data)
+    assert not passed and flags["mask_empty"] == [20] and flags["driving_empty"] == [20], report
+
+
+def test_pose_data_of_other_frames_is_an_error():
+    driving, reference = rendered(False)
+    _, pose_data = clip()
+    small = torch.nn.functional.interpolate(driving.movedim(-1, 1), size=(H // 2, W // 2)).movedim(1, -1)
+    with pytest.raises(ValueError, match="run Pose Detection on the driving frames at the generation size"):
+        scail2.check_scail2(small, reference, pose_data=pose_data)
 
 
 def test_combine_guards_does_not_take_the_scail2_metrics():

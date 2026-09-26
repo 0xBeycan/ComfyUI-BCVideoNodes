@@ -70,11 +70,13 @@ def write_report(title, rows: Union[list[PoseRow], list[MaskRow], list[Preproces
 
 
 def _finish(title, guard, rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow]], flags, thresholds,
-            enabled, panels, stop_on_fail):
+            enabled, panels, stop_on_fail, note=None):
     """Report, metrics and timeline of one guard run; stops the workflow on a failed enabled
     check when `stop_on_fail`. `guard` names the group in the metrics (None for the combined
-    run, whose metrics keep the layout they always had)."""
+    run, whose metrics keep the layout they always had); `note` is a last report line."""
     report, passed = write_report(title, rows, flags, enabled)
+    if note:
+        report += f"\n- {note}"
     record = {"guard": guard} if guard else {}
     record.update({"thresholds": thresholds, "enabled": sorted(enabled), "flags": flags, "frames": rows})
     metrics = json.dumps(record)

@@ -2,6 +2,7 @@
 SCAIL-2 Long Video Sampler. The preprocess wrapper calls the individual nodes, so it computes
 exactly what the chained nodes compute."""
 
+from ..libs.config_widgets import config_inputs
 from .common import _config
 from .guard import _guard_inputs
 from .sam3_1_multiplex import BCVSAM3VideoTrack
@@ -74,7 +75,8 @@ class BCVSCAIL2Preprocess:
         return (pose_video, pose_video_mask, reference_image_mask, mask, reference_mask)
 
 
-SCAIL2_GUARD_TOOLTIP = "Stop the workflow when a SCAIL-2 check fails (no driving frame has the person, the reference mask has no character). Warnings never stop. Off still measures and reports every check."
+SCAIL2_GUARD_TOOLTIP = "Stop the workflow when a SCAIL-2 check fails (no driving frame has the person, the reference mask has no character; with pose_data also an empty or leaking driving mask). Warnings never stop. Off still measures and reports every check."
+POSE_DATA_TOOLTIP = "Pose Detection on the driving frames, at the generation size (the frames SCAIL-2 Preprocess got). Optional, but it gives the best result: with it the driving mask also gets the Mask Guard's pose-based checks; without it the guard cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece is the person."
 
 
 class BCVSCAIL2PreprocessGuard:
@@ -82,21 +84,26 @@ class BCVSCAIL2PreprocessGuard:
     def INPUT_TYPES(cls):
         from ..pipelines import guard
 
-        return {"required": {
-            "pose_video_mask": ("IMAGE", {"tooltip": "The colored driving mask (SCAIL-2 Preprocess or SCAIL-2 Colored Mask), at the generation size."}),
-            "reference_image_mask": ("IMAGE", {"tooltip": "The colored reference mask. The mode is read from its border, as the sampler reads it."}),
-            **_guard_inputs(guard.SCAIL2GuardConfig, "scail2_guard", SCAIL2_GUARD_TOOLTIP),
-        }}
+        return {
+            "required": {
+                "pose_video_mask": ("IMAGE", {"tooltip": "The colored driving mask (SCAIL-2 Preprocess or SCAIL-2 Colored Mask), at the generation size."}),
+                "reference_image_mask": ("IMAGE", {"tooltip": "The colored reference mask. The mode is read from its border, as the sampler reads it."}),
+                **_guard_inputs(guard.SCAIL2GuardConfig, "scail2_guard", SCAIL2_GUARD_TOOLTIP),
+                **config_inputs(guard.MaskGuardConfig),
+            },
+            "optional": {"pose_data": ("POSEDATA", {"tooltip": POSE_DATA_TOOLTIP})},
+        }
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "STRING", "IMAGE")
     RETURN_NAMES = ("pose_video_mask", "reference_image_mask", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = SCAIL
-    DESCRIPTION = "Checks the colored masks of SCAIL-2 Preprocess before the sampler, without a pose (end-to-end SCAIL-2 draws none), on the person as the sampler reads it (blue above 225/255). Stops the workflow when scail2_guard is on and no driving frame has the person or the reference mask has no character. Warnings, which never stop: blank or split-up driving frames (normal when the person leaves the shot or is occluded), a split-up reference mask, a reference character the core node's center crop cuts, and in replacement mode a reference not placed like the first driving frame. 'metrics' has every measurement and 'timeline' plots the driving frames. Both masks pass through."
+    DESCRIPTION = "Checks the colored masks of SCAIL-2 Preprocess before the sampler, on the person as the sampler reads it (blue above 225/255); end-to-end SCAIL-2 draws no pose, so pose_data is optional. Stops the workflow when scail2_guard is on and no driving frame has the person or the reference mask has no character (with pose_data also on an empty or leaking driving mask). Warnings, which never stop: blank or split-up driving frames (normal when the person leaves the shot or is occluded), a region the driving mask drops for one frame, a split-up reference mask, in replacement mode a reference not placed like the first driving frame, and with pose_data the Mask Guard's pose-based warnings. 'metrics' has every measurement and 'timeline' plots the driving frames. Both masks pass through."
 
-    def check(self, pose_video_mask, reference_image_mask, scail2_guard, **thresholds):
+    def check(self, pose_video_mask, reference_image_mask, scail2_guard, pose_data=None, **thresholds):
         from ..pipelines import guard
         from ..pipelines.guard import scail2
 
         return tuple(scail2.check_scail2(pose_video_mask, reference_image_mask, _config(guard.SCAIL2GuardConfig, thresholds),
-                                         enabled=scail2_guard))
+                                         enabled=scail2_guard, pose_data=pose_data,
+                                         mask_config=_config(guard.MaskGuardConfig, thresholds)))

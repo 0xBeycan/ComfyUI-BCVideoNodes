@@ -165,18 +165,49 @@ not draw, unstable). The guards count what the pose images draw, at
 `draw_threshold`. The detector is not judged: its box count and missed frames
 are in the metrics as data. Every measurement is always reported and plotted;
 with the switch (`pose_guard` / `mask_guard`) on, a failed check stops the
-workflow with the report, since sampling on a wrong pose or mask is wasted.
-Checks that cannot tell a defect from what the scene really does are warnings
-and never stop: a limb missing for a stretch (`pose_limb_gap`), small detached
-specks (`mask_specks`), background attached to the body
-(`mask_attached_leak`), one limb end outside the mask (`mask_missed_limb`). The thresholds are
-widgets generated from `PoseGuardConfig` / `MaskGuardConfig` in
-`pipelines/guard/config.py`.
+workflow with the report. Only damage diffusion cannot absorb stops: a torso
+jump (`pose_jump`), a subject switch (`subject_switch`), an empty, leaking or
+fragmented mask (`mask_empty`, `mask_leak`, `mask_fragmented`). Everything
+else is a warning and never stops: an incomplete skeleton
+(`pose_incomplete`), a limb spike (`pose_spike`), a limb missing for a
+stretch (`pose_limb_gap`), small detached specks (`mask_specks`), background
+attached to the body (`mask_attached_leak`), keypoints outside the mask
+(`mask_missing_keypoints`), one limb end outside the mask
+(`mask_missed_limb`), body the pose does not draw (`body_not_drawn`), an
+unstable mask (`mask_unstable`), a region the mask drops for one frame
+(`mask_loss`). The thresholds are widgets generated from `PoseGuardConfig` /
+`MaskGuardConfig` in `pipelines/guard/config.py`.
+
+A missing limb is one that should be drawn and is not: the person faces the
+camera, the limb is in the shot and in sight, and the pose does not draw it.
+A limb out of the frame (its keypoint placed at or beyond the edge, within a
+limb's width) or hidden (its keypoint placed on another part of the body -
+behind the body, the hair or a hand - or the person turned to profile or
+away) is never missing: `pose_limb_gap`, `pose_incomplete` and
+`body_not_drawn` leave it alone. `mask_missed_limb` counts only a limb end
+the mask lost: not a keypoint the pose checks call a spike, not a wrist whose
+hand folds back over the forearm, not a keypoint in a small notch of the
+mask, not a limb drawn along the outside of the mask in fast motion.
+`mask_loss` is a region the mask drops for a run of 1 to 8 frames while
+holding it on the frames before and after, flagged over the whole run. It is
+measured by its thickness (the radius of the largest disc inside it, as a
+fraction of the frame's shorter side), so a dropped hand or foot counts and
+the slivers an outline jitters by do not: over `max_mask_loss` on a single
+frame, over twice that on a longer run. A limb that moved away and came back
+leaves the same trace, but the mask shows it nearby meanwhile; such a run is
+not a loss. With `pose_data`, a region the drawn skeleton crosses on the
+dropped frames counts from half the threshold (the pose sees the body there).
+Without `pose_data` a thin dropout of a small moving part (a foot that also
+moves between the frames around the loss) can stay under the threshold, and
+a limb moving within the area both frames around the run hold is not told
+apart from a loss.
 
 - Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
   `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
-- Mask Guard: in `mask`, `pose_data`; out `mask` (unchanged), `report`,
-  `metrics`, `timeline`
+- Mask Guard: in `mask`, optional `pose_data`; out `mask` (unchanged),
+  `report`, `metrics`, `timeline`. `pose_data` gives the best result: without
+  it the guard runs only `mask_fragmented`, `mask_specks` and `mask_loss`,
+  and the report names the checks it did not run.
 
 ### WanAnimate Preprocess and WanAnimate Preprocess Guard
 
@@ -230,9 +261,12 @@ is a later phase).
 
 ### SCAIL-2 Preprocess Guard
 
-Checks the two colored masks before the SCAIL-2 sampler, without a pose
-(end-to-end SCAIL-2 draws none), on the person as the sampler reads it (blue
-above 225/255). The mode is read from the reference mask's border, as the
+Checks the two colored masks before the SCAIL-2 sampler, on the person as
+the sampler reads it (blue above 225/255). End-to-end SCAIL-2 draws no pose,
+so `pose_data` is optional: connected (Pose Detection on the driving frames
+at the generation size), the driving mask also gets the Mask Guard's
+pose-based checks, with their levels, and a detached piece holding the
+person's keypoints is her. The mode is read from the reference mask's border, as the
 sampler reads it; the driving mask is taken to be at the generation size. On
 SCAIL-2's own examples blank frames and a split-up mask are normal (the person
 leaves the shot, a passer-by occludes her), so only two checks stop the
@@ -241,20 +275,21 @@ workflow (with `scail2_guard` on): no driving frame has the person
 (`reference_empty`). Warnings, which never stop: a driving frame without the
 person (`driving_empty`), a detached region at least 5% of the largest one
 on a driving frame or on the reference (`driving_fragmented`,
-`reference_fragmented`), more than `max_reference_cropped` (0.02) of the
-reference character outside the center crop the core node cuts the
-reference to (`reference_cropped`: a portrait reference in a landscape
-generation loses the head or the feet), and, in replacement mode only, a
-reference whose character overlaps the first driving frame's person by an
-IoU below `min_reference_iou` (0.4) after that crop (`reference_misaligned`).
-Both thresholds are first values, not calibrated yet. Measured as data: the
-mask area, the share of the mask the sampler's half-size latent cut keeps
-(`latent_kept`: a thin limb can vanish there), the mask IoU with the
-previous frame, and the reference's IoU and scale against the first driving
-frame.
+`reference_fragmented`), a region the driving mask drops for one frame
+(`mask_loss`), and, in replacement mode only, a reference whose
+character overlaps the first driving frame's person by an IoU below
+`min_reference_iou` (0.4) after the center crop the core node cuts the
+reference to (`reference_misaligned`). The threshold is a first value, not
+calibrated yet. Measured as data: the mask area, the share of the mask the
+sampler's half-size latent cut keeps (`latent_kept`: a thin limb can vanish
+there), the mask IoU with the previous frame, the share of the reference
+character that crop cuts off (`cropped`: the core node crops the reference
+to the generation's aspect ratio either way), and the reference's IoU and
+scale against the first driving frame.
 
-- in: `pose_video_mask`, `reference_image_mask` (IMAGE); widgets
-  `scail2_guard` (on) and the two thresholds (`SCAIL2GuardConfig` in
+- in: `pose_video_mask`, `reference_image_mask` (IMAGE), optional
+  `pose_data`; widgets `scail2_guard` (on), the reference threshold
+  (`SCAIL2GuardConfig`) and the mask thresholds (`MaskGuardConfig`, in
   `pipelines/guard/config.py`)
 - out: `pose_video_mask`, `reference_image_mask` (unchanged), `report`,
   `metrics` (JSON: `"guard": "scail2"`, the driving frames, the reference

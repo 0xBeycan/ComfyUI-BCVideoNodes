@@ -6,25 +6,41 @@ from typing import Optional, TypedDict
 
 import numpy as np
 
+from ...libs.keypoints import L_HIP, L_SHOULDER, LIMBS, NECK, R_HIP, R_SHOULDER
 from ...libs.pose_data import Detection, PoseData, PoseMeta
 
 
 TORSO = [0, 1, 2, 5, 8, 11]  # nose, neck, shoulders, hips: cannot jump a quarter of the body in one frame
 LIMB_ENDS = [3, 6, 4, 7, 9, 12, 10, 13, 18, 19]  # elbows, wrists, knees, ankles, feet
+# Each arm and leg beyond its torso joint (elbow, wrist; knee, ankle, foot), and the arm or leg
+# every body keypoint carries: the torso joint its own, a limb keypoint the one it is part of.
+R_ARM, L_ARM, R_LEG, L_LEG = (3, 4), (6, 7), (9, 10, 19), (12, 13, 18)
+CARRIES = {2: R_ARM, 3: R_ARM, 4: R_ARM, 5: L_ARM, 6: L_ARM, 7: L_ARM,
+           8: R_LEG, 9: R_LEG, 10: R_LEG, 19: R_LEG, 11: L_LEG, 12: L_LEG, 13: L_LEG, 18: L_LEG}
+# The hand keypoints of each arm (a wrist's own hand).
+HANDS = {R_ARM: "keypoints_right_hand", L_ARM: "keypoints_left_hand"}
 # The keypoint sets of pose_metas_original beside the body; a piece of mask holding any of
 # them belongs to the person.
 WHOLE_BODY = ("keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face")
-# Checks that cannot tell a defect from something the scene really does: reported, never stop.
-WARNINGS = {"pose_limb_gap", "mask_attached_leak", "mask_specks", "mask_missed_limb",
-            "driving_empty", "driving_fragmented", "reference_fragmented", "reference_cropped", "reference_misaligned"}
+# Only damage diffusion cannot absorb stops: an empty, leaking or split mask, a torso jump, a
+# subject switch; for SCAIL-2 no person to drive and no character on the reference. Every other
+# check is a warning: reported, never stops.
+WARNINGS = {"pose_incomplete", "pose_spike", "pose_limb_gap", "mask_attached_leak", "mask_specks",
+            "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable", "mask_loss",
+            "driving_empty", "driving_fragmented", "reference_fragmented", "reference_misaligned"}
 # In the order each group tests them on a frame; the report lists the checks in the order
 # they first fired, and this order breaks the tie between two that first fire on one frame.
 POSE_CHECKS = ("pose_incomplete", "pose_jump", "pose_spike", "pose_limb_gap", "subject_switch")
 MASK_CHECKS = ("mask_empty", "mask_leak", "mask_attached_leak", "mask_fragmented", "mask_specks",
-               "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable")
-# The SCAIL-2 guard's: the driving-frame checks, then the reference checks.
-SCAIL2_DRIVING_CHECKS = ("no_driving_person", "driving_empty", "driving_fragmented")
-SCAIL2_REFERENCE_CHECKS = ("reference_empty", "reference_fragmented", "reference_cropped", "reference_misaligned")
+               "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable", "mask_loss")
+# The mask checks that read nothing from pose_data; the others need it.
+POSE_FREE_MASK_CHECKS = ("mask_fragmented", "mask_specks", "mask_loss")
+# The SCAIL-2 guard's: the driving-frame checks - its own, then the Mask Guard's (mask_loss
+# always, the rest with pose_data; driving_fragmented stands for mask_fragmented and mask_specks,
+# a split-up driving mask being normal on SCAIL-2's material) - then the reference checks.
+SCAIL2_DRIVING_CHECKS = ("no_driving_person", "driving_empty", "driving_fragmented") + tuple(
+    name for name in MASK_CHECKS if name not in ("mask_fragmented", "mask_specks"))
+SCAIL2_REFERENCE_CHECKS = ("reference_empty", "reference_fragmented", "reference_misaligned")
 SCAIL2_CHECKS = SCAIL2_DRIVING_CHECKS + SCAIL2_REFERENCE_CHECKS
 BOX_MARGIN = 0.10
 # Completeness is measured against the frames within this many either side. A limb that at
@@ -57,6 +73,30 @@ SKELETON_REACH = 0.5
 # taken in against the body as well.
 LEAK_WINDOW = 2
 LEAK_REACH = 0.25
+# A limb's width, in body scales. A joint closer to the frame edge than that is cut by it; the
+# end of a limb is the disc of that width around its keypoint; a limb that runs outside the mask
+# for more than that beyond its end's own distance from it lies beside the body, not out of it.
+LIMB_WIDTH = 0.25
+# mask_loss: a region the mask holds on the frame before a run of up to LOSS_WINDOW frames (a
+# quarter of a second) and on the frame after it, and drops on every frame of the run. A limb
+# that moved away over the run and came back leaves the same trace, but it is somewhere while it
+# is away: mask the ends do not hold turns up within LOSS_REACH of the shorter side per frame of
+# the run (up to LOSS_REACH_FRAMES frames) around the region, at least LOSS_GAIN of its area on
+# average; a dropped part is nowhere. A run of two frames or more has to be LOSS_RUN times as
+# thick as max_mask_loss: over several frames the mask's own changes leave out-and-back traces
+# too (a limb moving inside the area both ends hold, background both ends take in between the
+# legs). When the drawn skeleton crosses the region on at least half the frames of the run, the
+# pose sees the body there, and LOSS_DRAWN of max_mask_loss is thick enough.
+LOSS_WINDOW = 8
+LOSS_REACH, LOSS_REACH_FRAMES = 0.05, 4
+LOSS_GAIN = 0.25
+LOSS_RUN = 2.0
+LOSS_DRAWN = 0.5
+# The person faces the camera when her right shoulder is left of her left one on the image by at
+# least this share of her torso (neck to the middle of the hips): turned to profile the shoulders
+# close up (a quarter turn short of profile they are still about half the torso apart), with her
+# back to the camera they swap sides.
+FRONTAL_SHARE = 0.3
 # The box-based checks compare the mask with the detector's box, so they only mean anything
 # on a frame the detector and the pose model agree on. On a motion-blurred frame the box
 # shrinks around the blurred body while the mask (carried by the tracker) still covers the
@@ -73,19 +113,25 @@ FRAGMENT_FRACTION = 0.05  # and above this one they count as a second object
 # The per-frame measurements of each group, and of both together in the order `metrics`
 # lists them. `frame` and `box_iou_prev` are in both: the mask checks need the box motion.
 # `detected` and `persons` are the detector's, kept as data: the guard does not judge it.
+# Without pose_data the mask row's pose-based measurements are None (lists empty).
 POSE_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints", "drawn_limbs",
             "box_iou_prev", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
 MASK_ROW = ("frame", "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak",
             "fragments", "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn",
-            "box_iou_prev", "mask_iou_prev")
+            "box_iou_prev", "mask_iou_prev", "mask_loss", "mask_loss_run", "mask_loss_drawn")
 PREPROCESS_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints", "drawn_limbs",
                   "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak", "fragments",
                   "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn", "box_iou_prev",
-                  "mask_iou_prev", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
+                  "mask_iou_prev", "mask_loss", "mask_loss_run", "mask_loss_drawn", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes",
+                  "limb_gaps")
 
-# The SCAIL-2 guard's per-frame measurements of the colored driving mask.
-SCAIL2_ROW = ("frame", "mask_area", "fragments", "latent_kept", "mask_iou_prev")
-# and its one record of the reference mask
+# The SCAIL-2 guard's per-frame measurements of the colored driving mask: its own, then the
+# mask row's (the pose-based ones None without pose_data).
+SCAIL2_ROW = ("frame", "mask_area", "fragments", "latent_kept", "mask_iou_prev", "mask_loss", "mask_loss_run",
+              "mask_loss_drawn", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak",
+              "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn", "box_iou_prev")
+# and its one record of the reference mask; `cropped` is data: core center-crops the reference
+# to the generation's aspect ratio whatever the guard says
 SCAIL2_REFERENCE = ("mode", "area", "fragments", "cropped", "iou_first_frame", "scale_first_frame", "flags")
 
 # The rows above as the dicts the checks build: the same keys in the same order, which is the
@@ -108,17 +154,20 @@ class PoseRow(TypedDict):
 class MaskRow(TypedDict):
     frame: int
     mask_area: float
-    mask_to_box: float
+    mask_to_box: Optional[float]
     box_reliable: bool
-    mask_outside_box: float
-    attached_leak: float
+    mask_outside_box: Optional[float]
+    attached_leak: Optional[float]
     fragments: list[float]
-    keypoint_recall: float
+    keypoint_recall: Optional[float]
     missed_keypoints: list[str]
     missed_limbs: list[str]
-    body_not_drawn: float
+    body_not_drawn: Optional[float]
     box_iou_prev: Optional[float]
     mask_iou_prev: Optional[float]
+    mask_loss: Optional[float]
+    mask_loss_run: Optional[float]
+    mask_loss_drawn: Optional[float]
 
 
 class PreprocessRow(TypedDict):
@@ -129,17 +178,20 @@ class PreprocessRow(TypedDict):
     drawn_keypoints: int
     drawn_limbs: int
     mask_area: float
-    mask_to_box: float
+    mask_to_box: Optional[float]
     box_reliable: bool
-    mask_outside_box: float
-    attached_leak: float
+    mask_outside_box: Optional[float]
+    attached_leak: Optional[float]
     fragments: list[float]
-    keypoint_recall: float
+    keypoint_recall: Optional[float]
     missed_keypoints: list[str]
     missed_limbs: list[str]
-    body_not_drawn: float
+    body_not_drawn: Optional[float]
     box_iou_prev: Optional[float]
     mask_iou_prev: Optional[float]
+    mask_loss: Optional[float]
+    mask_loss_run: Optional[float]
+    mask_loss_drawn: Optional[float]
     torso_jump: float
     pose_completeness: float
     lost_limbs: list[str]
@@ -153,6 +205,18 @@ class Scail2Row(TypedDict):
     fragments: list[float]
     latent_kept: Optional[float]
     mask_iou_prev: Optional[float]
+    mask_loss: Optional[float]
+    mask_loss_run: Optional[float]
+    mask_loss_drawn: Optional[float]
+    mask_to_box: Optional[float]
+    box_reliable: bool
+    mask_outside_box: Optional[float]
+    attached_leak: Optional[float]
+    keypoint_recall: Optional[float]
+    missed_keypoints: list[str]
+    missed_limbs: list[str]
+    body_not_drawn: Optional[float]
+    box_iou_prev: Optional[float]
 
 
 class Scail2Reference(TypedDict):
@@ -199,9 +263,10 @@ def _draw_threshold(pose_data: PoseData) -> float:
     return threshold
 
 
-def _thresholds(pose_data: PoseData, config):
-    """What a check runs with: the draw threshold of `pose_data`, then every field of `config`."""
-    return {"draw_threshold": _draw_threshold(pose_data), **asdict(config)}
+def _thresholds(pose_data: Optional[PoseData], config):
+    """What a check runs with: the draw threshold of `pose_data` (None without it), then every
+    field of `config`."""
+    return {"draw_threshold": None if pose_data is None else _draw_threshold(pose_data), **asdict(config)}
 
 
 def _in_frame(kps, W, H):
@@ -213,17 +278,123 @@ def box_sides(x1, y1, x2, y2):
     return max(x2 - x1, 1.0), max(y2 - y1, 1.0)
 
 
+def _keypoint_rows(meta: PoseMeta, key):
+    """The keypoint set `key` of `meta` as [K, 3] float64 rows (x, y, confidence)."""
+    return np.asarray(meta[key], dtype=np.float64).reshape(-1, 3)
+
+
+def _body(meta: PoseMeta, W, H, draw_threshold):
+    """One frame's body keypoints in pixels [20, 3] and which of them are drawn."""
+    kps = _keypoint_rows(meta, "keypoints_body") * np.array([W, H, 1.0])
+    return kps, kps[:, 2] >= draw_threshold
+
+
+def _hand(meta: PoseMeta, arm, W, H, draw_threshold, fingers_only=False):
+    """The drawn keypoints of the hand of `arm` (R_ARM or L_ARM) in pixels [K, 2]; with
+    `fingers_only`, without the hand's own wrist point (its first keypoint)."""
+    if HANDS[arm] not in meta:
+        return np.empty((0, 2))
+    hand = _keypoint_rows(meta, HANDS[arm])[1 if fingers_only else 0:] * np.array([W, H, 1.0])
+    return hand[hand[:, 2] >= draw_threshold, :2]
+
+
 def _frame_pose(meta: PoseMeta, det: Detection, W, H, draw_threshold):
     """One frame's box size and diagonal, its body keypoints in pixels, which are drawn, and
     which of those lie inside the frame (a keypoint off the canvas is not seen)."""
     x1, y1, x2, y2 = det["bbox"]
     bw, bh = box_sides(x1, y1, x2, y2)
     diag = float(np.hypot(bw, bh))
-    kps = np.asarray(meta["keypoints_body"], dtype=np.float64).copy()
-    kps[:, 0] *= W
-    kps[:, 1] *= H
-    drawn = kps[:, 2] >= draw_threshold
+    kps, drawn = _body(meta, W, H, draw_threshold)
     return bw, bh, diag, kps, drawn, drawn & _in_frame(kps, W, H)
+
+
+def body_scale(kps, drawn):
+    """The person's size on this frame in pixels: the widest of the shoulders, the hips and
+    1.5 x neck-to-nose, whichever are drawn (at least 1)."""
+    def length(a, b):
+        return float(np.hypot(*(kps[a, :2] - kps[b, :2]))) if drawn[a] and drawn[b] else 0.0
+
+    return max(length(2, 5), length(8, 11), 1.5 * length(1, 0), 1.0)
+
+
+def facing_camera(kps, drawn):
+    """Whether the person faces the camera (FRONTAL_SHARE). Without both shoulders it cannot be
+    told and counts as facing; without the neck or a hip only their sides are compared."""
+    if not (drawn[R_SHOULDER] and drawn[L_SHOULDER]):
+        return True
+    width = kps[L_SHOULDER, 0] - kps[R_SHOULDER, 0]
+    hips = [kps[j, :2] for j in (R_HIP, L_HIP) if drawn[j]]
+    if not (drawn[NECK] and hips):
+        return bool(width > 0)
+    return bool(width >= FRONTAL_SHARE * float(np.hypot(*(kps[NECK, :2] - np.mean(hips, axis=0)))))
+
+
+def out_of_shot(point, W, H, scale):
+    """Whether a keypoint the pose model placed at `point` is out of the shot: outside the frame
+    or within LIMB_WIDTH body scales of its edge. The model places a joint it cannot see at the
+    edge of what it sees."""
+    x, y = point
+    return min(x, W - 1 - x, y, H - 1 - y) < LIMB_WIDTH * scale
+
+
+def _to_segment(point, a, b):
+    """The distance from `point` to the segment a-b."""
+    ab = b - a
+    t = float(np.clip(np.dot(point - a, ab) / max(float(np.dot(ab, ab)), 1e-9), 0.0, 1.0))
+    return float(np.hypot(*(point - (a + t * ab))))
+
+
+def hidden_by_body(point, kps, drawn, hands, own, scale):
+    """Whether a keypoint the pose model placed at `point` lies on another drawn part of the
+    person, within SKELETON_REACH body scales of it: the torso, the head, the other limbs or a
+    hand. What the body, the hair or a hand hides, the model places on what hides it. `own` is
+    the arm or leg the limb belongs to, which does not hide it; `hands` the drawn keypoints of
+    the hands of the other arms."""
+    reach = SKELETON_REACH * scale
+    for a, b in LIMBS:
+        if drawn[a] and drawn[b] and a not in own and b not in own and _to_segment(point, kps[a, :2], kps[b, :2]) <= reach:
+            return True
+    others = [kps[j, :2] for j in np.flatnonzero(drawn) if j not in own] + list(hands)
+    return any(float(np.hypot(*(point - p))) <= reach for p in others)
+
+
+def accounted_limbs(meta: PoseMeta, W, H, draw_threshold):
+    """Per limb of LIMBS, whether the frame accounts for it: the limb is drawn, or it cannot be
+    seen - the person does not face the camera, or each of its undrawn ends is out of the shot
+    or hidden by another part of the body. Only the rest is a missing limb: the person faces the
+    camera, the limb is in the shot and in sight, and the pose does not draw it."""
+    kps, drawn = _body(meta, W, H, draw_threshold)
+    limbs = np.array([drawn[a] and drawn[b] for a, b in LIMBS], dtype=bool)
+    if limbs.all():
+        return limbs
+    if not facing_camera(kps, drawn):
+        return np.ones(len(LIMBS), dtype=bool)
+    scale = body_scale(kps, drawn)
+    for j, (a, b) in enumerate(LIMBS):
+        if limbs[j]:
+            continue
+        own = set(CARRIES.get(a, ())) | set(CARRIES.get(b, ()))
+        arms = [arm for arm in HANDS if not own & set(arm)]
+        hands = [p for arm in arms for p in _hand(meta, arm, W, H, draw_threshold)]
+        limbs[j] = all(out_of_shot(kps[e, :2], W, H, scale) or hidden_by_body(kps[e, :2], kps, drawn, hands, own, scale)
+                       for e in (a, b) if not drawn[e])
+    return limbs
+
+
+def out_of_shot_limbs(meta: PoseMeta, W, H, draw_threshold):
+    """The limbs with one end drawn and the other out of the shot, as (drawn end, where the
+    model placed the other) in pixels: the part of the body in the frame that the pose image
+    cannot draw, since the rest of the limb is beyond the edge."""
+    kps, drawn = _body(meta, W, H, draw_threshold)
+    scale = body_scale(kps, drawn)
+    out = []
+    for a, b in LIMBS:
+        if drawn[a] == drawn[b]:
+            continue
+        end, other = (a, b) if drawn[a] else (b, a)
+        if out_of_shot(kps[other, :2], W, H, scale):
+            out.append((kps[end, :2], kps[other, :2]))
+    return out
 
 
 def _box_iou_prev(detections: list[Detection], i):

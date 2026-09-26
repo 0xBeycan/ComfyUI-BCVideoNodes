@@ -32,6 +32,7 @@ PREPROCESS_PANELS = [
 
 SCAIL2_PANELS = [
     ("driving mask", [("mask area / frame", "mask_area", "blue"), ("mask kept by the latent cut", "latent_kept", "green")]),
+    ("mask vs pose", [("keypoints inside mask", "keypoint_recall", "blue"), ("body not drawn", "body_not_drawn", "red")]),
     ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue")]),
 ]
 

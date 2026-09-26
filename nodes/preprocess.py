@@ -61,7 +61,7 @@ class BCVWanAnimatePreprocessGuard:
                 "pose_guard": pose["pose_guard"],
                 "mask_guard": mask["mask_guard"],
                 **{k: v for k, v in pose.items() if k not in ("pose_data", "pose_guard")},
-                **{k: v for k, v in mask.items() if k not in ("mask", "pose_data", "mask_guard")},
+                **{k: v for k, v in mask.items() if k not in ("mask", "mask_guard")},
             },
         }
 
@@ -69,15 +69,15 @@ class BCVWanAnimatePreprocessGuard:
     RETURN_NAMES = ("mask", "pose_data", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = "BCVideoNodes/Wan/Animate"
-    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler: a failed check of an enabled guard stops the workflow with the report; 'metrics' has every measurement per frame and 'timeline' plots them."
+    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler: a failed check of an enabled guard stops the workflow with the report, warnings never stop; 'metrics' has every measurement per frame and 'timeline' plots them."
 
     def check(self, mask, pose_data, pose_guard, mask_guard, **thresholds):
         from ..pipelines import guard
 
         # each group measures without stopping; the combined report decides
-        _, _, pose_metrics, _ = guard.check_pose(pose_data, _config(guard.PoseGuardConfig, thresholds), enabled=pose_guard,
-                                                 stop_on_fail=False)
+        pose_config = _config(guard.PoseGuardConfig, thresholds)
+        _, _, pose_metrics, _ = guard.check_pose(pose_data, pose_config, enabled=pose_guard, stop_on_fail=False)
         _, _, mask_metrics, _ = guard.check_mask(mask, pose_data, _config(guard.MaskGuardConfig, thresholds), enabled=mask_guard,
-                                                 stop_on_fail=False)
+                                                 stop_on_fail=False, max_limb_spike=pose_config.max_limb_spike)
         report, metrics, timeline = guard.combine_guards(pose_metrics, mask_metrics)
         return (mask, pose_data, report, metrics, timeline)

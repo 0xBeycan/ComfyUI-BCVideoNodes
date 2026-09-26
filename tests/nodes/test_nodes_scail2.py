@@ -82,24 +82,36 @@ def test_black_background_is_the_last_required_widget_and_off_by_default():
     assert required["black_background"][1]["default"] is False
 
 
-def test_the_guard_node_passes_the_masks_through_and_is_the_pipeline():
-    mask = torch.zeros(3, 64, 32)
-    mask[:, 20:40, 10:20] = 1.0
-    pose_video_mask, reference_image_mask = scail2.colored_masks(mask, False, mask[:1])
-    defaults = {name: options[1]["default"] for name, options in nodes._config_inputs(scail2.SCAIL2GuardConfig).items()}
-    out = nodes.BCVSCAIL2PreprocessGuard().check(pose_video_mask, reference_image_mask, True, **defaults)
+def widget_defaults(config_cls):
+    return {name: options[1]["default"] for name, options in nodes._config_inputs(config_cls).items()}
+
+
+@pytest.mark.parametrize("with_pose", [False, True])
+def test_the_guard_node_passes_the_masks_through_and_is_the_pipeline(with_pose):
+    from guard_fakes import clip
+
+    masks, pose_data = clip()
+    pose_video_mask, reference_image_mask = scail2.colored_masks(masks, False, masks[:1])
+    guard_values, mask_values = widget_defaults(scail2.SCAIL2GuardConfig), widget_defaults(scail2.MaskGuardConfig)
+    pose_data = pose_data if with_pose else None
+    out = nodes.BCVSCAIL2PreprocessGuard().check(pose_video_mask, reference_image_mask, True, pose_data=pose_data,
+                                                 **guard_values, **mask_values)
     assert len(out) == len(nodes.BCVSCAIL2PreprocessGuard.RETURN_NAMES)
     assert out[0] is pose_video_mask and out[1] is reference_image_mask
-    expected = scail2.check_scail2(pose_video_mask, reference_image_mask, scail2.SCAIL2GuardConfig(**defaults))
+    expected = scail2.check_scail2(pose_video_mask, reference_image_mask, scail2.SCAIL2GuardConfig(**guard_values),
+                                   pose_data=pose_data, mask_config=scail2.MaskGuardConfig(**mask_values))
     assert out[2:4] == expected[2:4] and same(out[4], expected[4])
 
 
 def test_the_guard_node_widgets():
-    required = nodes.BCVSCAIL2PreprocessGuard.INPUT_TYPES()["required"]
-    assert list(required) == ["pose_video_mask", "reference_image_mask", "scail2_guard", "max_reference_cropped",
-                              "min_reference_iou"]
+    spec = nodes.BCVSCAIL2PreprocessGuard.INPUT_TYPES()
+    required = spec["required"]
+    assert list(required) == ["pose_video_mask", "reference_image_mask", "scail2_guard", "min_reference_iou",
+                              *widget_defaults(scail2.MaskGuardConfig)]
     assert required["scail2_guard"][1]["default"] is True
-    assert "Uncalibrated" in required["max_reference_cropped"][1]["tooltip"]
+    assert "Uncalibrated" in required["min_reference_iou"][1]["tooltip"]
+    assert list(spec["optional"]) == ["pose_data"] and spec["optional"]["pose_data"][0] == "POSEDATA"
+    assert "Optional, but it gives the best result" in spec["optional"]["pose_data"][1]["tooltip"]
 
 
 def test_the_guard_node_off_never_stops():

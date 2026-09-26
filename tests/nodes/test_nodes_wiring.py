@@ -26,7 +26,7 @@ from sam3_1_multiplex_fakes import sam3  # noqa: E402
 
 from guard_fakes import MASK as MASK_THRESHOLDS  # noqa: E402
 from guard_fakes import POSE as POSE_THRESHOLDS  # noqa: E402
-from guard_fakes import LEGS, clip, drop_keypoints  # noqa: E402
+from guard_fakes import clip  # noqa: E402
 from pose_fakes import FakeDetector, FakePose, frames, loader, pose  # noqa: E402
 
 
@@ -87,26 +87,45 @@ def thresholds(config):
 
 def test_the_guard_widgets_are_the_guard_configs():
     assert list(spec("BCVPoseGuard")["required"]) == ["pose_data", "pose_guard"] + [f.name for f in dataclasses.fields(guard.PoseGuardConfig)]
-    assert list(spec("BCVMaskGuard")["required"]) == ["mask", "pose_data", "mask_guard"] + [f.name for f in dataclasses.fields(guard.MaskGuardConfig)]
+    assert list(spec("BCVMaskGuard")["required"]) == ["mask", "mask_guard"] + [f.name for f in dataclasses.fields(guard.MaskGuardConfig)]
+    assert list(spec("BCVMaskGuard")["optional"]) == ["pose_data"]
+    assert "Optional, but it gives the best result" in spec("BCVMaskGuard")["optional"]["pose_data"][1]["tooltip"]
     both = spec("BCVWanAnimatePreprocessGuard")["required"]
     assert list(both)[:4] == ["mask", "pose_data", "pose_guard", "mask_guard"]
     assert set(both) == set(spec("BCVPoseGuard")["required"]) | set(spec("BCVMaskGuard")["required"])
 
 
-def test_the_guard_nodes_return_what_the_guard_does():
+@pytest.mark.parametrize("with_pose", [True, False])
+def test_the_guard_nodes_return_what_the_guard_does(with_pose):
     masks, pose_data = clip()
     out = nodes.BCVPoseGuard().check(pose_data, True, **thresholds(POSE_THRESHOLDS))
     direct = guard.check_pose(pose_data, POSE_THRESHOLDS)
     assert out[0] is pose_data and out[1:3] == direct[1:3] and torch.equal(out[3], direct[3])
-    out = nodes.BCVMaskGuard().check(masks, pose_data, True, **thresholds(MASK_THRESHOLDS))
+    pose_data = pose_data if with_pose else None
+    out = nodes.BCVMaskGuard().check(masks, True, pose_data=pose_data, **thresholds(MASK_THRESHOLDS))
     direct = guard.check_mask(masks, pose_data, MASK_THRESHOLDS)
     assert out[0] is masks and out[1:3] == direct[1:3] and torch.equal(out[3], direct[3])
+
+
+def test_the_guard_wrapper_reads_the_spike_threshold_of_its_pose_guard():
+    # a wrist that jumps 40 px off the body for a frame: a spike at the default 0.08 of the frame
+    # height (26 px), and a limb end the mask lost when max_limb_spike is raised above the jump
+    masks, pose_data = clip()
+    pts = pose_data["pose_metas_original"][20]["keypoints_body"].copy()
+    pts[4, 0] -= 40 / masks.shape[2]
+    pose_data["pose_metas_original"][20]["keypoints_body"] = pts
+    for spike, flagged in ((0.08, "pose_spike"), (0.2, "mask_missed_limb")):
+        values = {**thresholds(POSE_THRESHOLDS), "max_limb_spike": spike, **thresholds(MASK_THRESHOLDS)}
+        flags = json.loads(nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, True, True, **values)[3])["flags"]
+        assert list(flags) == [flagged], flags
 
 
 @pytest.mark.parametrize("switches", [(True, True), (False, True), (True, False), (False, False)])
 def test_the_guard_wrapper_is_the_two_guards_combined(switches):
     masks, pose_data = clip()
-    drop_keypoints(pose_data, range(18, 24), LEGS)   # a pose fault, so the switches matter
+    pts = pose_data["pose_metas_original"][12]["keypoints_body"].copy()
+    pts[guard.TORSO, 0] += 0.5                       # a torso jump, a pose fault that stops, so the switches matter
+    pose_data["pose_metas_original"][12]["keypoints_body"] = pts
     pose_guard, mask_guard = switches
     values = {**thresholds(POSE_THRESHOLDS), **thresholds(MASK_THRESHOLDS)}
     try:
@@ -117,7 +136,7 @@ def test_the_guard_wrapper_is_the_two_guards_combined(switches):
     pose_metrics = guard.check_pose(pose_data, POSE_THRESHOLDS, pose_guard, stop_on_fail=False)[2]
     mask_metrics = guard.check_mask(masks, pose_data, MASK_THRESHOLDS, mask_guard, stop_on_fail=False)[2]
     if pose_guard:
-        assert isinstance(wrapped, guard.GuardFailed) and "pose_incomplete" in str(wrapped)
+        assert isinstance(wrapped, guard.GuardFailed) and "pose_jump" in str(wrapped)
         with pytest.raises(guard.GuardFailed) as chained:
             guard.combine_guards(pose_metrics, mask_metrics)
         assert str(wrapped) == str(chained.value)
