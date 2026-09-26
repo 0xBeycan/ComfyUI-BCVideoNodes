@@ -14,6 +14,13 @@ OURS, META = "ours", "meta"
 # What a prompt-mode re-anchor frame shows (`anchor_output`).
 DETECTION, PROPAGATED = "detection", "propagated"
 
+# The range of the frames the image encoder sees (`input_range`), the decoder token a propagated
+# frame's object pointer is built from (`obj_ptr_token`), and the logits its spatial memory is
+# encoded from (`memory_mask`).
+UNIT_RANGE, SIGNED_RANGE = "0..1", "-1..1"
+TOKEN_0, BEST_IOU = "token_0", "best_iou"
+CLEANED, RAW = "cleaned", "raw"
+
 
 def _choice(default, choices, doc):
     return field(default=default, metadata={"choices": tuple(choices), "tooltip": doc})
@@ -26,24 +33,24 @@ class SAM3_1MultiplexConfig:
     other mode's, the multi-object ones at max_objects 1, the tracker ones with `temporal` off
     in box_keypoint mode) is named in one console line, never raised on.
 
-    `[prompt]` defaults are measured on SAM 3.1 with PROMPT (1116 frames across eight clips):
-    the person's presence-corrected score never fell below 0.62, and the best detection that
-    was not the person never passed 0.29 after NMS. (The query score alone carries no
-    information here - it never left 0.96-0.995.) Meta thresholds the same presence-corrected
-    score (sam3_image.py joins them into pred_logits), but its values were set on SAM 3.0, and
-    SAM 3.1's scores sit on a different scale, so they do not transfer. The multi-object fields
-    are Meta's own values (the IoU and frame-count thresholds of its video policy, as vendored
-    by easy-sam3): they compare masks
-    with masks, not scores, so they carry over. `[box_keypoint]` defaults are the swept values
-    of the box+keypoint branch."""
+    The `[prompt]` defaults are easy-sam3's set (its thresholds, its re-anchor and memory policy)
+    on SAM 3.1 fed the input range it was trained on: the set validated on the eight test clips
+    against the earlier defaults, which stay settable field by field. With max_objects > 1 the
+    shared defaults apply (input range, pointer token, memory_gap, thresholds) with that path's
+    own anchor policy, which is not yet measured. The score is the
+    presence-corrected one (sam3_image.py joins query and presence into pred_logits); the query
+    score alone carries no information here. The multi-object fields are Meta's own values (the
+    IoU and frame-count thresholds of its video policy, as vendored by easy-sam3): they compare
+    masks with masks, not scores. `[box_keypoint]` defaults are the swept values of the
+    box+keypoint branch."""
 
     # --- [prompt] ---
-    # Where the track is born. In the middle of the empty band: roughly twice the junk and
-    # well under the weakest frame a clip has opened on (Meta's 0.70 sits 0.002 under one).
-    birth_threshold: float = _field(0.50, 0.0, 1.0, 0.01, "[prompt] a detection this confident starts a track")
-    # At the band's floor, so a frame where presence collapses still produces a detection
-    # for the probation window to match the track against.
-    detection_threshold: float = _field(0.30, 0.0, 1.0, 0.01, "[prompt] SAM 3.1 Multiplex detections below this presence-corrected score are dropped (Pose Config's detection_threshold is the person detector's)")
+    # Where the track is born: easy-sam3's value, so only a detection the model is sure of starts
+    # a track. 0.50 was the earlier default.
+    birth_threshold: float = _field(0.70, 0.0, 1.0, 0.01, "[prompt] a detection this confident starts a track. 0.70 (default): easy-sam3's value; the earlier default was 0.50")
+    # easy-sam3's value: a weak detection is noise, not a person to match the track against.
+    # 0.30 was the earlier default.
+    detection_threshold: float = _field(0.50, 0.0, 1.0, 0.01, "[prompt] SAM 3.1 Multiplex detections below this presence-corrected score are dropped (Pose Config's detection_threshold is the person detector's). 0.50 (default): easy-sam3's value; the earlier default was 0.30")
     # Plain IoU, not core's max(IoU, IoM): IoM calls a hand inside a body the same detection.
     nms_iou: float = _field(0.10, 0.0, 1.0, 0.01, "[prompt] two detections that overlap this much are the same body")
     match_iou: float = _field(0.50, 0.0, 1.0, 0.01, "[prompt] a detection and a track are the same person above this IoU")
@@ -53,16 +60,16 @@ class SAM3_1MultiplexConfig:
     recondition_every: int = _field(16, 1, 512, 1, "[prompt] every this many frames an agreeing detection re-anchors a track")
     # The IoU is what makes an anchor safe - it has to be the same body the track already
     # has - so the score only has to keep the frames where presence collapsed from becoming
-    # anchors. It sits at the lower quartile of the hardest clip measured, which is where
-    # Meta's 0.80 already is; lower rejects nothing, the person never scored under 0.62.
+    # anchors. Meta's and easy-sam3's value.
     recondition_score: float = _field(0.80, 0.0, 1.0, 0.01, "[prompt] a detection must score this much to re-anchor a track")
     recondition_iou: float = _field(0.80, 0.0, 1.0, 0.01, "[prompt] and overlap the track this much")
     # Cleaning at the decoder's own 288x288 output rather than after the upsample is both
     # cheaper and sharper: bilinear upsampling smears a speck into something with area.
     fill_hole_area: int = _field(16, 0, 4096, 1, "[prompt] islands and holes smaller than this many pixels of the 288x288 decoder output are removed")
-    # The tracker reads the last num_maskmem - 1 frames of non-conditioning memory; clearing
-    # that many frames either side of a fresh anchor is what makes it an anchor.
-    memory_gap: int = _field(7, 0, 64, 1, "[prompt] frames of non-conditioning memory cleared either side of a fresh anchor")
+    # Frames held out of memory after a fresh anchor. easy-sam3 holds none: a frame held out
+    # leaves the frames after it tracking from the anchor alone. 7 was the earlier default,
+    # with clear_on_anchor on.
+    memory_gap: int = _field(0, 0, 64, 1, "[prompt] frames after a fresh anchor whose memory is not encoded. 0 (default): every frame is memory, as in easy-sam3, so the frames after an anchor keep tracking from their own history; the earlier default was 7")
     # --- [prompt] A/B against Meta's policy (specs/mask-process.md, A6 and A7) ---
     # Each switch defaults to ours; "meta" is Meta's behaviour ported onto core's primitives.
     # Read with any max_objects.
@@ -156,6 +163,40 @@ class SAM3_1MultiplexConfig:
     # shows the propagated mask, as easy-sam3 does.
     anchor_output: str = _choice(PROPAGATED, (DETECTION, PROPAGATED), "[prompt, max_objects 1] what a re-anchor frame shows. propagated (default): the mask the tracker propagated onto that frame; detection: the detector mask the track is re-anchored with. The track is re-anchored with the detection either way")
 
+    # --- [prompt] how SAM 3.1 Multiplex is run: the defaults are Meta's / easy-sam3's side ---
+    # Last, so the widgets of saved workflows keep their positions.
+    # Core hands the image encoder the frames in [0, 1]. SAM 3.1 was trained on [-1, 1],
+    # (x - 0.5) / 0.5, as Meta's preprocessing and easy-sam3 feed it; the checkpoint does not
+    # fold that in. On [0, 1] black reads as mid-grey and contrast is halved, so a dark,
+    # blurred limb dropped out.
+    input_range: str = _choice(SIGNED_RANGE, (UNIT_RANGE, SIGNED_RANGE), "[prompt] the range of the frames SAM 3.1 Multiplex's image encoder sees, for the detector and the tracker alike. -1..1 (default): x * 2 - 1, the range SAM 3.1 was trained on; 0..1: as core hands them over, the earlier default, which halves contrast and loses dark, blurred limbs")
+    # Every propagated frame's object pointer is attended by the frames after it. Meta's SAM 3.1
+    # and easy-sam3 build it from the token of the mask the decoder selects; core from mask
+    # token 0, which can describe a different mask than the one the frame shows.
+    obj_ptr_token: str = _choice(BEST_IOU, (TOKEN_0, BEST_IOU), "[prompt] which decoder token a propagated frame's object pointer, read by the frames after it, is built from. best_iou (default): the token of the mask the decoder selects (the highest predicted IoU), as Meta's SAM 3.1 and easy-sam3 do, so the pointer describes the mask the frame shows; token_0: mask token 0, core's, the earlier default")
+    # easy-sam3 encodes a propagated frame's memory from its cleaned logits; Meta's own code from
+    # the decoder's, with no hole filling.
+    memory_mask: str = _choice(CLEANED, (CLEANED, RAW), "[prompt] which mask logits a propagated frame's spatial memory is encoded from. cleaned (default): the ones the frame shows, after the fill_hole_area cleaning, as in easy-sam3; raw: the decoder's, before it. The frame shows the cleaned mask either way")
+
+    # --- [prompt, max_objects 1] the re-anchor and memory policy: easy-sam3's by default ---
+    # Last, so the widgets of saved workflows keep their positions. The other side of each is the
+    # earlier policy, which made a re-anchor frame the only memory: the propagated frames before
+    # it dropped, the ones after it held off for memory_gap, the detector mask as its memory. A
+    # detector mask missing a limb then blacked that limb out of the frames that followed.
+    # With several objects (max_objects > 1) none of these is read: that path keeps the earlier
+    # policy.
+    clear_on_anchor: bool = field(default=False, metadata={"tooltip": "[prompt, max_objects 1] at a re-anchor, drop the spatial memory of the propagated frames before it. off (default): keep it, as easy-sam3 does, so the frames after an anchor still remember the body; on: drop it, the earlier default. Several objects: not read"})
+    # easy-sam3 conditions the anchor frame with the detector mask, but the spatial memory it keeps
+    # for that frame is the tracker's own mask; the detector mask only reaches the object pointer.
+    anchor_mask: str = _choice(PROPAGATED, (DETECTION, PROPAGATED), "[prompt, max_objects 1] which mask a re-anchor frame's spatial memory is encoded from, as a conditioning memory. propagated (default): the mask the tracker propagated onto that frame, as easy-sam3 does, so a detector mask that misses a limb no longer blacks it out for the frames that follow; detection: the detector mask, the earlier default. The object pointer comes from the detection either way. Several objects: not read")
+    max_conditioning_frames: int = _field(4, 2, 16, 1, "[prompt, max_objects 1] how many conditioning frames (the birth and the re-anchors) the tracker attends; the oldest drop out first. 4 (default): the newest four, as easy-sam3 does; the earlier default was 2, the birth and the newest anchor. Several objects: not read")
+    keep_birth_frame: bool = field(default=False, metadata={"tooltip": "[prompt, max_objects 1] keep the birth frame among the conditioning frames whatever max_conditioning_frames drops. off (default): it drops out like any anchor once newer ones replace it, as easy-sam3 does, so the tracker leans on recent frames; on: it stays, the earlier default. Several objects: not read"})
+    # easy-sam3 re-anchors only a track the tracker itself is sure of (its object-score logit > 0.8).
+    anchor_track_score: float = _field(0.8, 0.0, 20.0, 0.05, "[prompt, max_objects 1] re-anchor only where the tracker's own object-score logit on the frame is above this. 0.8 (default): easy-sam3's gate, the tracker must itself be sure of the person; 0: off, the earlier default. Several objects: not read")
+    # easy-sam3's memory selection: a propagated frame is memory only if its object score times its
+    # predicted IoU passes 0.01, and the lookup ranks the frames that pass, skipping the anchors.
+    memory_selection: bool = field(default=True, metadata={"tooltip": "[prompt, max_objects 1] easy-sam3's memory selection: the tracker reads the newest propagated frames whose mean of normalized object score times predicted IoU is above 0.01 (the frame before always), anchors skipped, each in the slot of its rank. on (default): frames where the tracker lost the person do not become memory; off: the six frames before, by distance, the earlier default. Several objects: not read"})
+
     def __post_init__(self):
         for f in fields(self):
             choices = f.metadata.get("choices")
@@ -182,7 +223,8 @@ def logits_record(logits, N):
     output frame was cut from, None for a frame without output) and "cut" (how: "prompt",
     "prompted" or "propagated"; segment_by_prompt marks its birth frame "birth" and its
     re-anchor frames "anchor"). segment_by_prompt adds "raw": whether a frame's logits are the
-    ones before the output's speck and pinhole cleaning (clean_logits)."""
+    ones before the output's speck and pinhole cleaning (clean_logits), and "anchors": one
+    prompt.AnchorLog per re-anchor slot."""
     if logits is None:
         return None
     logits.update({"logits": [None] * N, "cut": [None] * N})

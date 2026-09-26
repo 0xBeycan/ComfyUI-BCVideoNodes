@@ -24,7 +24,7 @@ class BCVSAM3VideoTrack:
             "required": {
                 "images": ("IMAGE",),
                 "mode": (list(sam3.MODES), {"default": sam3.MODE_PROMPT, "tooltip": "prompt: SAM 3.1 Multiplex finds the person from the text prompt alone; limits: a limb the frame edge cuts can be left out, thin hair strands are not followed. box_keypoint: the person is described by pose_data's box and body keypoints (needs pose_data), the v1 behaviour; limits: frame 0 can take in background around the person, and objects the arm reaches can be pulled into the mask. Mask Guard reports both (mask_specks, mask_attached_leak, mask_missing_keypoints). Inputs the mode does not read are ignored with one console line, so switching needs no rewiring."}),
-                "prompt": ("STRING", {"default": sam3.PROMPT, "tooltip": "[prompt] what to segment. The thresholds were measured with the default. Ignored in box_keypoint mode."}),
+                "prompt": ("STRING", {"default": sam3.PROMPT, "tooltip": "[prompt] what to segment. The defaults were validated with this prompt. Ignored in box_keypoint mode."}),
                 "max_objects": ("INT", {"default": 1, "min": 1, "max": 16, "step": 1, "tooltip": "[prompt] how many tracks may be born and kept; above 1 the [prompt, max_objects > 1] config fields apply. Ignored in box_keypoint mode, which tracks the one person the pose describes."}),
                 "object_index": ("INT", {"default": -1, "min": -1, "max": 15, "step": 1, "tooltip": "[prompt] which tracked object the mask is: -1 the union of every tracked object, k object k (numbered from 0). Ignored in box_keypoint mode."}),
             },

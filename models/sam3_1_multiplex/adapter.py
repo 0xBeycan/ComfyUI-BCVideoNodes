@@ -59,11 +59,17 @@ def propagation_backbone(backbone):
     return backbone_fn
 
 
-def backbone_frame(tracker, backbone_fn, frames, frame_idx, device, dtype, size):
-    """Frame `frame_idx` of `frames` [N, 3, H, W] as the tracker takes it, and its backbone
-    features: (frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out)."""
+def backbone_frame(tracker, backbone_fn, frames, frame_idx, device, dtype, size, signed_input=False):
+    """Frame `frame_idx` of `frames` [N, 3, H, W] (values in [0, 1]) as the tracker takes it, and
+    its backbone features: (frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out).
+
+    Core hands the image encoder the resized frame in [0, 1]. `signed_input` maps it to [-1, 1],
+    x * 2 - 1: SAM's (x - 0.5) / 0.5, applied after the resize as Meta's SAM 3.1 preprocessing
+    does. The returned frame is the one the encoder saw."""
     from comfy.ldm.sam3.tracker import _prep_frame
     frame = _prep_frame(frames, slice(frame_idx, frame_idx + 1), device, dtype, size)
+    if signed_input:
+        frame = frame * 2 - 1
     vision_feats, vision_pos, feat_sizes, high_res, trunk_out = tracker._compute_backbone_frame(
         backbone_fn, frame, frame_idx=frame_idx)
     return frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out
@@ -77,22 +83,76 @@ def condition_on_mask(tracker, mask, frame_idx, vision_feats, vision_pos, feat_s
                                          output_dict, num_frames, mux, backbone, frame, trunk_out, threshold=0.0)
 
 
-def track_frame(tracker, frame_idx, vision_feats, vision_pos, feat_sizes, output_dict, num_frames, high_res, mux):
+def track_frame(tracker, frame_idx, vision_feats, vision_pos, feat_sizes, output_dict, num_frames, high_res, mux,
+                best_iou_pointer=False, record_iou=False):
     """The tracker's output for frame `frame_idx`, propagated from the memory in `output_dict`,
-    with no memory encoded for it yet (track_step, run_mem_encoder=False)."""
-    return tracker.track_step(
-        frame_idx=frame_idx, is_init_cond_frame=False, current_vision_feats=vision_feats,
-        current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
-        output_dict=output_dict, num_frames=num_frames, propagation_high_res=high_res,
-        multiplex_state=mux, run_mem_encoder=False)
+    with no memory encoded for it yet (track_step, run_mem_encoder=False).
+
+    Core builds the frame's object pointer from mask token 0 of the propagation decoder. With
+    `best_iou_pointer` it is built from the output token of the mask the decoder selects - the
+    highest predicted IoU, the mask the frame shows - as Meta's SAM 3.1 does
+    (use_multimask_token_for_obj_ptr), and the output carries that mask's index per object,
+    "mask_index" ([objects] long). With `record_iou` the output carries the decoder's highest
+    predicted IoU per object, "iou_pred" ([objects])."""
+    def step():
+        return tracker.track_step(
+            frame_idx=frame_idx, is_init_cond_frame=False, current_vision_feats=vision_feats,
+            current_vision_pos_embeds=vision_pos, feat_sizes=feat_sizes, mask_inputs=None,
+            output_dict=output_dict, num_frames=num_frames, propagation_high_res=high_res,
+            multiplex_state=mux, run_mem_encoder=False)
+    if not (best_iou_pointer or record_iou):
+        return step()
+    # The decoder's two-way transformer returns every output token, and its IoU head scores the
+    # masks; core keeps only mask token 0 of the first. Both are read as the decoder computes them.
+    decoder = tracker.sam_mask_decoder
+    seen = {"tokens": [], "iou": []}
+    hooks = [decoder.transformer.register_forward_hook(lambda module, args, out: seen["tokens"].append(out[0])),
+             decoder.iou_prediction_head.register_forward_hook(lambda module, args, out: seen["iou"].append(out))]
+    try:
+        current = step()
+    finally:
+        for hook in hooks:
+            hook.remove()
+    if len(seen["tokens"]) != 1 or len(seen["iou"]) != 1:
+        raise RuntimeError(f"expected one propagation decoder call for frame {frame_idx}, saw {len(seen['tokens'])}; "
+                           "this ComfyUI's SAM 3.1 tracker propagates differently. Set obj_ptr_token to token_0 "
+                           "and memory_selection off")
+    decoder = tracker.sam_mask_decoder
+    M, T = decoder.num_multiplex, decoder.num_mask_output_per_object
+    ious = mux.demux(seen["iou"][0].view(-1, M, T))   # [objects, T], as core's _forward_propagation reads them
+    if record_iou:
+        current["iou_pred"] = ious.max(dim=-1).values
+    if best_iou_pointer:
+        _pointer_from_best_mask(tracker, current, seen["tokens"][0], ious, mux)
+    return current
+
+
+def _pointer_from_best_mask(tracker, current, tokens, ious, mux):
+    """Replace the object pointer of the propagated output `current` with the one built from the
+    output token of its best-IoU mask, and record that mask's index as current["mask_index"].
+    `tokens` are the decoder transformer's output tokens [buckets, 2 M + M T, C] (core's order:
+    M object-score tokens, M IoU tokens, M x T mask tokens), `ious` the IoU head's predictions
+    per object [objects, T]. The selection and the pointer are core's `_forward_propagation`,
+    token 0 replaced."""
+    decoder = tracker.sam_mask_decoder
+    M, T = decoder.num_multiplex, decoder.num_mask_output_per_object
+    B = tokens.shape[0]
+    mask_tokens = mux.demux(tokens[:, 2 * M:2 * M + M * T].view(B, M, T, -1))   # [objects, T, C]
+    best = torch.argmax(ious, dim=-1)                                           # [objects]
+    token = mask_tokens[torch.arange(mask_tokens.shape[0], device=best.device), best]
+    obj_ptr = tracker.obj_ptr_proj(token)
+    is_obj = (current["object_score_logits"] > 0).float()
+    obj_ptr = is_obj * obj_ptr + (1 - is_obj) * tracker.no_obj_ptr_linear(obj_ptr)
+    current["obj_ptr"] = mux.mux(obj_ptr)
+    current["mask_index"] = best
 
 
 def track_and_clean(tracker, frame_idx, vision_feats, vision_pos, feat_sizes, output_dict, num_frames, high_res,
-                    mux, fill_hole_area):
-    """The tracker's output for one propagated frame, its mask logits cleaned in place
-    (clean_channel_logits), and the logits before the cleaning: (current, raw)."""
+                    mux, fill_hole_area, best_iou_pointer=False, record_iou=False):
+    """The tracker's output for one propagated frame (track_frame), its mask logits cleaned in
+    place (clean_channel_logits), and the logits before the cleaning: (current, raw)."""
     current = track_frame(tracker, frame_idx, vision_feats, vision_pos, feat_sizes, output_dict, num_frames,
-                          high_res, mux)
+                          high_res, mux, best_iou_pointer, record_iou)
     raw = current["pred_masks"]
     current["pred_masks"] = clean_channel_logits(raw, fill_hole_area)
     return current, raw
@@ -178,16 +238,23 @@ def store_output(output_dict, frame_idx, current, lookback):
     forget_older(output_dict["non_cond_frame_outputs"], frame_idx, lookback)
 
 
-def encode_memory(tracker, output, vision_feats, feat_sizes, mux, device):
+def encode_memory(tracker, output, vision_feats, feat_sizes, mux, device, conditioning=False):
     """Encode one object's spatial memory from the mask logits of `output` with the tracker's
-    deferred memory encoder; it lands in `output`'s maskmem entries."""
-    tracker._deferred_memory_encode(output, 1, vision_feats, feat_sizes, mux, device)
+    deferred memory encoder; it lands in `output`'s maskmem entries. `conditioning` sets the
+    memory's conditioning channel to 1.0, "trust it", as a birth or anchor frame's memory has;
+    otherwise it is 0.0, a propagated frame's."""
+    if conditioning:
+        tracker._deferred_memory_encode(output, 1, vision_feats, feat_sizes, mux, device,
+                                        cond_obj_mask=torch.ones(1, dtype=torch.bool, device=device))
+    else:
+        tracker._deferred_memory_encode(output, 1, vision_feats, feat_sizes, mux, device)
 
 
-def encode_memory_into(tracker, source, current, vision_feats, feat_sizes, mux, device):
+def encode_memory_into(tracker, source, current, vision_feats, feat_sizes, mux, device, conditioning=False):
     """Encode the spatial memory of `source` (an output, or {"pred_masks": ...}) with the
-    tracker's deferred memory encoder, and give that memory to the output `current`."""
-    encode_memory(tracker, source, vision_feats, feat_sizes, mux, device)
+    tracker's deferred memory encoder (encode_memory), and give that memory to the output
+    `current`."""
+    encode_memory(tracker, source, vision_feats, feat_sizes, mux, device, conditioning)
     current["maskmem_features"] = source["maskmem_features"]
     current["maskmem_pos_enc"] = source["maskmem_pos_enc"]
 

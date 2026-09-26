@@ -1,4 +1,5 @@
-"""The SAM3 A/B switches (specs/mask-process.md A6, A7) and the logits dump on a scripted
+"""The SAM3 A/B switches (specs/mask-process.md A6, A7), the switches between our way and Meta's of
+running SAM 3.1 Multiplex (input_range, obj_ptr_token, memory_mask) and the logits dump on a scripted
 stand-in for core's tracker and SAM 3.1's detector. No model is loaded: the stand-ins answer the primitives
 segment_by_prompt / segment_by_prompt_multi / segment_by_pose drive (`_condition_with_masks`,
 `track_step`, `_deferred_memory_encode`, the detections, the box_keypoint decoder) with small
@@ -103,7 +104,11 @@ class FakeTracker:
     def _deferred_memory_encode(self, current, N_obj, vision_feats, feat_sizes, mux, device, cond_obj_mask=None):
         current["maskmem_features"] = ("mem", int((current["pred_masks"] > 0).sum()), vision_feats[0])
         current["maskmem_pos_enc"] = [0]
-        self.log.append(("encode", vision_feats[0], int((current["pred_masks"] > 0).sum())))
+        if cond_obj_mask is None:
+            self.log.append(("encode", vision_feats[0], int((current["pred_masks"] > 0).sum())))
+        else:   # a conditioning memory
+            self.log.append(("encode cond", vision_feats[0], int((current["pred_masks"] > 0).sum()),
+                             tuple(cond_obj_mask.tolist())))
 
 
 class FakeModel:
@@ -132,9 +137,14 @@ def default_detections(real):
 
 @pytest.fixture
 def rig(monkeypatch):
-    """Patches the model-facing calls; returns run(config, detections=..., **tracker_kwargs)."""
-    def run(config=None, detections=default_detections, multi=0, **tracker_kwargs):
-        tracker = FakeTracker(**tracker_kwargs)
+    """Patches the model-facing calls; returns run(config, detections=..., **tracker_kwargs).
+    `tracker` replaces the FakeTracker, `prep` the frame preparation (by default the frame is
+    its index), `core_mux` keeps core's MultiplexState, and `logits` is segment_by_prompt's."""
+    core_multiplex_state = sam3.MultiplexState
+
+    def run(config=None, detections=default_detections, multi=0, tracker=None, prep=None, core_mux=False, logits=None,
+            **tracker_kwargs):
+        tracker = tracker or FakeTracker(**tracker_kwargs)
 
         def detect(detector, backbone, trunk_out, embedding, text_mask, config):
             found = detections(trunk_out)
@@ -147,15 +157,15 @@ def rig(monkeypatch):
         monkeypatch.setattr(sam3, "_multiplex_parts", lambda model: (None, None, tracker, None))
         monkeypatch.setattr(sam3, "encode_prompt", lambda *a: (None, None))
         monkeypatch.setattr(sam3, "detect_person", detect)
-        monkeypatch.setattr(sam3, "_prep_frame", lambda frames, idx, device, dtype, size: idx.start)
-        monkeypatch.setattr(sam3, "MultiplexState", lambda *a: object())
+        monkeypatch.setattr(sam3, "_prep_frame", prep or (lambda frames, idx, device, dtype, size: idx.start))
+        monkeypatch.setattr(sam3, "MultiplexState", core_multiplex_state if core_mux else (lambda *a: object()))
         images = torch.zeros(N, H, W, 3)
-        config = config or sam3.SAM3Config()
+        config = config or sam3.SAM3Config(**EARLIER)
         result = {}
         if multi:
             masks = sam3.segment_by_prompt_multi(FakeModel(), object(), images, "p", config, multi, -1, result=result)
         else:
-            masks = sam3.segment_by_prompt(FakeModel(), object(), images, "p", config, result=result)
+            masks = sam3.segment_by_prompt(FakeModel(), object(), images, "p", config, result=result, logits=logits)
         run.tracker = tracker
         return masks, tracker.log, result
     return run
@@ -234,8 +244,17 @@ def conditioned(log, real):
     return entry[3], entry[4]
 
 
+# The earlier [prompt] defaults: the baseline the switch tests below measure each switch against
+# (every value stays settable). The defaults now are easy-sam3's set; test_the_defaults_run_easy_sam3_s_policy
+# runs them.
+EARLIER = dict(input_range="0..1", obj_ptr_token="token_0", memory_gap=7, clear_on_anchor=True, anchor_mask="detection",
+               max_conditioning_frames=2, keep_birth_frame=True, anchor_track_score=0.0, memory_selection=False,
+               detection_threshold=0.30, birth_threshold=0.50)
+
+
 def config(**kwargs):
-    return sam3.SAM3Config(**kwargs)
+    """A config on the EARLIER baseline, with `kwargs` on top."""
+    return sam3.SAM3Config(**{**EARLIER, **kwargs})
 
 
 def anchor_taller(real):
@@ -352,7 +371,7 @@ def test_the_module_sink_is_used_when_none_is_passed(rig, monkeypatch):
     got = []
     rig()
     monkeypatch.setattr(sam3, "LOGITS_SINK", lambda logits, info: got.append(len(logits)))
-    sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3))
+    sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=config())
     assert got == [N]
 
 
@@ -601,3 +620,459 @@ def test_the_logits_dump_names_birth_and_anchor_frames(rig):
     for f in range(N):
         again = reproduce(got["logits"][f], "prompt", H, W, info["threshold"], None, 0, cfg, info["raw"][f])
         assert torch.equal(again, masks[f]), f
+
+
+# --- our way or Meta's of running SAM 3.1 Multiplex: input_range, obj_ptr_token, memory_mask ---
+
+CPU = torch.device("cpu")
+
+
+class FrameRecorder:
+    """What backbone_frame hands the tracker's backbone, recorded."""
+    def _compute_backbone_frame(self, backbone_fn, frame, frame_idx=None):
+        self.frame = frame
+        return [frame], None, [(1, 1)], None, frame
+
+
+def test_input_range_maps_the_resized_frame_to_minus_one_one():
+    torch.manual_seed(0)
+    frames = torch.rand(3, 3, 12, 20)
+    unit, signed = FrameRecorder(), FrameRecorder()
+    sam3.backbone_frame(unit, None, frames, 1, CPU, torch.float32, 16)
+    sam3.backbone_frame(signed, None, frames, 1, CPU, torch.float32, 16, signed_input=True)
+    # 0..1: core's frame, untouched; -1..1: SAM's (x - 0.5) / 0.5 of it
+    core = sam3._prep_frame(frames, slice(1, 2), CPU, torch.float32, 16)
+    assert torch.equal(unit.frame, core)
+    assert torch.equal(signed.frame, core * 2 - 1)
+    black, white = FrameRecorder(), FrameRecorder()
+    sam3.backbone_frame(black, None, torch.zeros(1, 3, 12, 20), 0, CPU, torch.float32, 16, signed_input=True)
+    sam3.backbone_frame(white, None, torch.ones(1, 3, 12, 20), 0, CPU, torch.float32, 16, signed_input=True)
+    assert set(black.frame.unique().tolist()) == {-1.0} and torch.allclose(white.frame, torch.ones(1), atol=1e-6)
+
+
+class RangeTracker(FakeTracker):
+    """FakeTracker given frames that hold their index / 100, a value in [0, 1] (`range_prep`), or
+    that value's x * 2 - 1 when `signed`: it reads the index back and records every value its
+    backbone was given."""
+    def __init__(self, signed=False, **kwargs):
+        super().__init__(**kwargs)
+        self.signed = signed
+        self.seen = []
+
+    def _compute_backbone_frame(self, backbone_fn, frame, frame_idx=None):
+        value = float(frame)
+        real = round(((value + 1) / 2 if self.signed else value) * 100)
+        self.seen.append((real, value))
+        return super()._compute_backbone_frame(backbone_fn, real, frame_idx)
+
+
+def range_prep(frames, idx, device, dtype, size):
+    return torch.tensor(idx.start / 100)
+
+
+@pytest.mark.parametrize("multi", [0, 2])
+def test_input_range_reaches_every_frame_the_backbone_is_given(rig, multi):
+    """Detector and tracker share the backbone call; the forward pass, the births and anchors and
+    the backwards fill all go through it. With -1..1 every one of them gets x * 2 - 1 and nothing
+    else changes."""
+    runs = {}
+    for signed in (False, True):
+        tracker = RangeTracker(signed)
+        cfg = config(input_range=sam3.SIGNED_RANGE if signed else sam3.UNIT_RANGE)
+        masks, log, result = rig(cfg, detections=two_people if multi else default_detections, multi=multi,
+                                 tracker=tracker, prep=range_prep)
+        runs[signed] = masks, log, result, tracker.seen
+    (unit, unit_log, unit_result, unit_seen), (signed, signed_log, signed_result, signed_seen) = runs[False], runs[True]
+    assert unit_result.get("tracked backwards") or multi   # the backwards fill ran
+    assert len(signed_seen) == len(unit_seen) > N
+    assert all(value == float(torch.tensor(real / 100)) for real, value in unit_seen)
+    assert all(value == float(torch.tensor(real / 100) * 2 - 1) for real, value in signed_seen)
+    assert [real for real, _ in signed_seen] == [real for real, _ in unit_seen]
+    assert torch.equal(signed, unit) and signed_log == unit_log and signed_result == unit_result
+
+
+class Tokens(torch.nn.Module):
+    """A decoder transformer's stand-in: returns the output tokens it is given."""
+    def forward(self, tokens):
+        return tokens, None
+
+
+class Scores(torch.nn.Module):
+    """An IoU head's stand-in: returns the scores it is given."""
+    def forward(self, iou):
+        return iou
+
+
+class Negate(torch.nn.Module):
+    def forward(self, x):
+        return -x
+
+
+class ScriptedDecoder(torch.nn.Module):
+    """Core's propagation decoder, scripted: in core's token order (M object-score tokens, M IoU
+    tokens, M x T mask tokens), mask token t of every slot is the vector t + 1, and on frame
+    `real` mask best.get(real, 0) has the highest IoU."""
+    num_multiplex, num_mask_output_per_object, C = 16, 3, 4
+
+    def __init__(self, best):
+        super().__init__()
+        self.best = best
+        self.transformer, self.iou_prediction_head = Tokens(), Scores()
+
+    def forward(self, real):
+        M, T = self.num_multiplex, self.num_mask_output_per_object
+        tokens = torch.zeros(1, 2 * M + M * T, self.C)
+        tokens[0, 2 * M:] = torch.arange(1.0, T + 1).repeat(M)[:, None]
+        iou = torch.zeros(1, M, T)
+        iou[..., self.best.get(real, 0)] = 1.0
+        return self.transformer(tokens)[0], self.iou_prediction_head(iou)
+
+
+class PointerTracker(FakeTracker):
+    """FakeTracker with the propagation decoder above and core's pointer (mask token 0,
+    projected by the identity; the no-object pointer is its negative). It logs the pointer each
+    propagated frame reads from the frame before it: ("ptr", frame index, its first value)."""
+    def __init__(self, best, **kwargs):
+        super().__init__(**kwargs)
+        self.sam_mask_decoder = ScriptedDecoder(best)
+        self.obj_ptr_proj, self.no_obj_ptr_linear = torch.nn.Identity(), Negate()
+
+    def track_step(self, frame_idx, is_init_cond_frame, current_vision_feats, current_vision_pos_embeds, feat_sizes,
+                   mask_inputs, output_dict, num_frames, propagation_high_res=None, multiplex_state=None,
+                   run_mem_encoder=True, **kwargs):
+        before = output_dict["non_cond_frame_outputs"].get(frame_idx - 1)
+        self.log.append(("ptr", frame_idx, float(before["obj_ptr"].flatten()[0]) if before and "obj_ptr" in before
+                         else None))
+        out = super().track_step(frame_idx, is_init_cond_frame, current_vision_feats, current_vision_pos_embeds,
+                                 feat_sizes, mask_inputs, output_dict, num_frames, propagation_high_res,
+                                 multiplex_state, run_mem_encoder)
+        tokens, _ = self.sam_mask_decoder(current_vision_feats[0])
+        M, T = ScriptedDecoder.num_multiplex, ScriptedDecoder.num_mask_output_per_object
+        token_0 = multiplex_state.demux(tokens[:, 2 * M:2 * M + M * T].view(1, M, T, -1))[:, 0]
+        out["obj_ptr"] = multiplex_state.mux(token_0)
+        return out
+
+
+def pointers(log):
+    """{frame index: the first value of the pointer that frame read from the frame before it}."""
+    return {e[1]: e[2] for e in log if e[0] == "ptr" and e[2] is not None}
+
+
+def test_obj_ptr_token_best_iou_stores_the_selected_masks_token_for_the_next_frames(rig, caplog):
+    """On frames 10 and 20 the decoder selects mask 2 and mask 1: with best_iou the frame after
+    each reads the pointer of that mask's token (value 3, 2) instead of token 0's (1). The masks
+    are the tracker's either way, and the dump says which mask each propagated frame selected."""
+    best = {10: 2, 20: 1}
+    runs = {}
+    for token in (sam3.TOKEN_0, sam3.BEST_IOU):
+        dump = {}
+        with caplog.at_level("INFO"):
+            runs[token] = rig(config(obj_ptr_token=token), tracker=PointerTracker(best), core_mux=True, logits=dump)
+        runs[token] += (dump, " ".join(r.getMessage() for r in caplog.records if "obj_ptr_token" in r.getMessage()))
+        caplog.clear()
+    (ours, ours_log, ours_result, ours_dump, ours_line) = runs[sam3.TOKEN_0]
+    (meta, meta_log, meta_result, meta_dump, meta_line) = runs[sam3.BEST_IOU]
+    read, read_before = pointers(meta_log), pointers(ours_log)
+    assert set(read_before.values()) == {1.0}
+    assert read[11] == 3.0 and read[21] == 2.0
+    assert {f: v for f, v in read.items() if f not in (11, 21)} == {f: v for f, v in read_before.items() if f not in (11, 21)}
+    assert torch.equal(meta, ours) and meta_result == ours_result
+    assert [e for e in meta_log if e[0] != "ptr"] == [e for e in ours_log if e[0] != "ptr"]
+    # born on frame 2, filled backwards over 0-1; every other frame was propagated
+    assert "mask_index" not in ours_dump and not ours_line
+    assert meta_dump["mask_index"] == [best.get(f, 0) if f != 2 else None for f in range(N)]
+    assert "a mask other than token 0 on 2 of 39 propagated frame(s)" in meta_line
+
+
+def test_obj_ptr_token_best_iou_reaches_the_logits_sink(rig):
+    got = {}
+    cfg = config(obj_ptr_token=sam3.BEST_IOU)
+    rig(cfg, tracker=PointerTracker({10: 2}), core_mux=True)   # installs the stand-ins
+    sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
+               logits_sink=lambda logits, info: got.update(info=info))
+    assert got["info"]["mask_index"][10] == 2 and got["info"]["mask_index"][2] is None
+    rig(config(), tracker=PointerTracker({10: 2}), core_mux=True)
+    sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=config(),
+               logits_sink=lambda logits, info: got.update(info=info))
+    assert "mask_index" not in got["info"]
+
+
+C_TINY = 32
+
+
+class CorePropagation(torch.nn.Module):
+    """The propagation path of core's SAM31Tracker.track_step: core's own `_forward_propagation`
+    on a tiny seeded decoder (d_model 32), fed the frame's features as they are (no memory
+    attention). The IoU head's output is pinned to select mask `best`, the object score to
+    `present`."""
+    d_model, image_size = C_TINY, 16
+
+    def __init__(self, best, present):
+        super().__init__()
+        torch.manual_seed(0)
+        ops, M, C = sam3.ops.disable_weight_init, 16, C_TINY
+        self.sam_mask_decoder = sam3.MultiplexMaskDecoder(C, M, 3, operations=ops)
+        self.obj_ptr_proj = sam3.MLP(C, C, C, 3, operations=ops)
+        self.no_obj_ptr_linear = ops.Linear(C, C)
+        self.output_valid_embed = torch.nn.Parameter(torch.empty(M, C))
+        self.output_invalid_embed = torch.nn.Parameter(torch.empty(M, C))
+        for p in self.parameters():
+            p.data.normal_(0, 0.2)
+        self.image_pe_layer = sam3.PositionEmbeddingRandom(C // 2)
+        iou, score = self.sam_mask_decoder.iou_prediction_head.layers[-1], self.sam_mask_decoder.pred_obj_score_head.layers[-1]
+        iou.weight.data.zero_()
+        iou.bias.data = torch.nn.functional.one_hot(torch.tensor(best), 3).float() * 5
+        score.weight.data.zero_()
+        score.bias.data.fill_(3.0 if present else -3.0)
+
+    def track_step(self, frame_idx, is_init_cond_frame, current_vision_feats, current_vision_pos_embeds, feat_sizes,
+                   mask_inputs, output_dict, num_frames, propagation_high_res=None, multiplex_state=None,
+                   run_mem_encoder=True, **kwargs):
+        low, high, obj_ptr, score = sam3.SAM31Tracker._forward_propagation(
+            self, current_vision_feats[-1], propagation_high_res, multiplex_state=multiplex_state)
+        return {"pred_masks": low, "pred_masks_high_res": high, "obj_ptr": obj_ptr, "object_score_logits": score}
+
+
+@pytest.mark.parametrize("present", [True, False])
+@pytest.mark.parametrize("best", [0, 1, 2])
+def test_best_iou_pointer_is_meta_s_on_core_s_decoder(best, present):
+    """On core's decoder: best_iou leaves the frame's mask and score alone, records the mask
+    core selected, and builds the pointer as Meta's SAM 3.1 does from the output token that
+    mask was decoded from; with mask 0 selected that is core's pointer, bit for bit."""
+    tracker = CorePropagation(best, present)
+    M, T, C = 16, 3, C_TINY
+    feats, high_res = torch.randn(1, C, 4, 4), [torch.randn(1, C, 16, 16), torch.randn(1, C, 8, 8)]
+    mux = sam3.MultiplexState(1, M, CPU, torch.float32)
+    seen = {}
+    hook = tracker.sam_mask_decoder.transformer.register_forward_hook(lambda m, a, out: seen.update(hs=out[0], src=out[1]))
+    core = sam3.track_frame(tracker, 5, [feats], None, None, {}, 10, high_res, mux)
+    hook.remove()
+    ours = sam3.track_frame(tracker, 5, [feats], None, None, {}, 10, high_res, mux, best_iou_pointer=True)
+    assert "mask_index" not in core and ours["mask_index"].tolist() == [best]
+    assert torch.equal(ours["pred_masks"], core["pred_masks"])
+    assert torch.equal(ours["object_score_logits"], core["object_score_logits"])
+    token = mux.demux(seen["hs"][:, 2 * M:2 * M + M * T].view(1, M, T, -1))[:, best]
+    if present:   # the token decodes the mask core selected (core's hypernetwork and upscaling)
+        dec = tracker.sam_mask_decoder
+        upscaled = sam3._upscale_masks(dec.output_upscaling, dec.conv_s0, dec.conv_s1,
+                                       seen["src"].permute(0, 2, 1).view(1, C, 4, 4), high_res)
+        decoded = dec.output_hypernetworks_mlps[best](token) @ upscaled.flatten(2)
+        assert torch.allclose(decoded.view(core["pred_masks"].shape), core["pred_masks"], atol=1e-5)
+    # Meta: the token projected, blended toward the no-object pointer when the object is absent
+    ptr = tracker.obj_ptr_proj(token)
+    is_obj = 1.0 if present else 0.0
+    assert torch.equal(ours["obj_ptr"], mux.mux(is_obj * ptr + (1 - is_obj) * tracker.no_obj_ptr_linear(ptr)))
+    assert torch.equal(ours["obj_ptr"], core["obj_ptr"]) == (best == 0)
+
+
+def encodes(log):
+    return [e for e in log if e[0] == "encode"]
+
+
+@pytest.mark.parametrize("multi", [0, 2])
+def test_memory_mask_raw_encodes_the_decoder_s_logits_and_shows_the_cleaned_mask(rig, multi):
+    """The tracker leaves a 2x2 speck in the background that the cleaning removes: with raw every
+    propagated frame's memory is encoded with it (4 pixels more; with several objects, a track
+    blanked under another one stays blank), the frames still show the cleaned mask, and the tracker
+    is asked exactly the same."""
+    detections = two_people if multi else default_detections
+    cleaned, cleaned_log, cleaned_result = rig(config(), detections=detections, multi=multi, speck=True)
+    raw, raw_log, raw_result = rig(config(memory_mask=sam3.RAW), detections=detections, multi=multi, speck=True)
+    assert encodes(cleaned_log) and all(e[2] in (0, 56, 64) for e in encodes(cleaned_log))
+    assert encodes(raw_log) == [(e[0], e[1], e[2] + 4 if e[2] else 0) for e in encodes(cleaned_log)]
+    assert [e for e in raw_log if e[0] != "encode"] == [e for e in cleaned_log if e[0] != "encode"]
+    assert torch.equal(raw, cleaned) and raw_result == cleaned_result
+    if not multi:   # the speck, in frame pixels, is not shown (the second person would cover it)
+        assert not raw[:, 28:32, 0:4].any()
+
+
+# --- the re-anchor and memory policy: ours or easy-sam3's ---------------------------------
+# Birth on frame 2 and anchors on 16 and 32 (default_detections), unless a test says otherwise.
+
+def tracked(log, frame):
+    """The ("track", ...) entry of the forward pass on `frame`."""
+    (entry,) = [e for e in log if e[0] == "track" and e[1] == frame]
+    return entry
+
+
+def test_clear_on_anchor_off_keeps_the_memory_of_the_frames_before_the_anchor(rig):
+    rig(config(memory_gap=0))
+    cleared = rig.tracker.reads
+    rig(config(memory_gap=0, clear_on_anchor=False))
+    kept = rig.tracker.reads
+    # the frame after the anchor on 16 reads frames 11-15 (16 is a conditioning frame, not memory)
+    assert cleared[17] == () and cleared[18] == (17,)
+    assert kept[17] == (15, 14, 13, 12, 11) and kept[18] == (17, 15, 14, 13, 12)
+
+
+def test_anchor_mask_propagated_keeps_the_tracker_s_mask_as_the_anchor_s_memory(rig):
+    """The anchor is conditioned with the detection as before (72 px, one row taller than the
+    track); its spatial memory is then encoded from the tracker's propagated box (64 px) as a
+    conditioning memory. Nothing else changes."""
+    masks, log, result = rig(config(anchor_mask=sam3.PROPAGATED), detections=anchor_taller)
+    before, before_log, before_result = rig(config(), detections=anchor_taller)
+    for f in (16, 32):
+        assert conditioned(log, f)[0] == 72
+        (i,) = [i for i, e in enumerate(log) if e[0] == "cond" and e[1] == f]
+        assert log[i + 1] == ("encode cond", f, 64, (True,))
+    assert [e for e in log if e[0] != "encode cond"] == before_log
+    assert not [e for e in before_log if e[0] == "encode cond"]
+    assert torch.equal(masks, before) and result == before_result
+
+
+@pytest.mark.parametrize("cfg, after_32", [({}, (2, 32)), (dict(max_conditioning_frames=4), (2, 16, 32)),
+                                           (dict(keep_birth_frame=False), (16, 32)),
+                                           (dict(max_conditioning_frames=3, keep_birth_frame=False), (2, 16, 32))])
+def test_max_conditioning_frames_and_keep_birth_frame_decide_which_anchors_stay(rig, cfg, after_32):
+    _, log, _ = rig(config(**cfg))
+    assert tracked(log, 20)[3] == (2, 16)
+    assert tracked(log, 33)[3] == after_32
+
+
+def anchor_shorter(real):
+    """As default_detections, but on the anchor frames the detection, without pinhole, is one row
+    shorter than the tracker's box (IoU 56/64): the tracker covers one row the detection misses."""
+    if real in (16, 32):
+        y, x = position(real)
+        return [(box(y, x, h=7), 0.9)]
+    return default_detections(real)
+
+
+def run_with_sink(rig, cfg, **kwargs):
+    got = {}
+    rig(cfg, **kwargs)   # installs the stand-ins
+    masks = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
+                       logits_sink=lambda logits, info: got.update(info=info))
+    return masks, got["info"]
+
+
+def test_the_anchor_log_names_every_slot_and_what_the_detection_misses(rig):
+    """At frame size (twice the tracker's 16x16) the tracker's 8-row box covers 16 rows, the
+    7-row detection 14: 2 rows of 16 px, one piece whose inscribed radius is 1 px."""
+    masks, info = run_with_sink(rig, config(), detections=anchor_shorter, ring=0)
+    fired = {"fired": True, "why": None, "det_score": 0.9, "iou": 0.875, "track_logit": 5.0, "missed_px": 32,
+             "missed_largest_px": 32, "missed_radius": 1.0}
+    assert info["anchors"] == [{"frame": 16, **fired}, {"frame": 32, **fired}]
+    plain, _, _ = rig(config(), detections=anchor_shorter, ring=0)
+    assert torch.equal(masks, plain)   # the log changes nothing
+
+
+def no_detection_on_16(real):
+    return [] if real == 16 else default_detections(real)
+
+
+def weak_detection_on_16(real):
+    return [person_detection(real, score=0.7)] if real == 16 else default_detections(real)
+
+
+@pytest.mark.parametrize("detections, cfg, scores, why", [
+    (no_detection_on_16, {}, {}, "no det"),
+    (weak_detection_on_16, {}, {}, "gate"),
+    (default_detections, dict(anchor_track_score=0.8), {16: 0.5}, "track score"),
+])
+def test_an_anchor_that_does_not_fire_says_why(rig, detections, cfg, scores, why):
+    masks, info = run_with_sink(rig, config(**cfg), detections=detections, scores=scores)
+    (slot_16,) = [a for a in info["anchors"] if a["frame"] == 16]
+    assert slot_16["fired"] is False and slot_16["why"] == why
+    assert slot_16["track_logit"] == scores.get(16, 5.0)
+    assert [a["frame"] for a in info["anchors"] if a["fired"]] == [32]
+    assert (slot_16["det_score"] is None) == (why == "no det")
+
+
+def test_anchor_track_score_blocks_an_anchor_the_tracker_is_unsure_of(rig):
+    _, log, result = rig(config(anchor_track_score=0.8), scores={16: 0.5, 32: 0.9})
+    assert result["reconditioned"] == 1
+    assert [e[1] for e in log if e[0] == "cond" and e[1] < N] == [2, 32]   # forward pass (the backward one is mirrored)
+    _, _, result = rig(config(anchor_track_score=0.5), scores={16: 0.5})   # at the threshold: blocked
+    assert result["reconditioned"] == 1
+
+
+def selection_config(**kwargs):
+    return config(clear_on_anchor=False, memory_gap=0, memory_selection=True, **kwargs)
+
+
+def test_memory_selection_ranks_the_frames_that_pass_and_skips_the_anchors(rig):
+    """Frame 20's object score is negative, so its memory score is 0 and it only counts as the
+    frame before 21, which is always read. Anchors (16) are not memory. Every slot holds the
+    frame of its rank."""
+    rig(selection_config(), tracker=PointerTracker({}, scores={20: -1.0}), core_mux=True)
+    selected = rig.tracker.reads
+    rig(config(clear_on_anchor=False, memory_gap=0), tracker=PointerTracker({}, scores={20: -1.0}), core_mux=True)
+    by_distance = rig.tracker.reads
+    assert selected[17] == by_distance[17] == (15, 14, 13, 12, 11)
+    assert selected[18] == (17, 15, 14, 13, 12, 11) and by_distance[18] == (17, 15, 14, 13, 12)
+    assert selected[21] == (20, 19, 18, 17, 15, 14) and by_distance[21] == (20, 19, 18, 17, 15)
+    assert selected[22] == (21, 19, 18, 17, 15, 14) and by_distance[22] == (21, 20, 19, 18, 17)
+
+
+def test_memory_score_is_easy_sam3_s():
+    out = {"object_score_logits": torch.tensor([[2.0]]), "iou_pred": torch.tensor([0.5])}
+    assert sam3.memory_score(out) == pytest.approx((2 * torch.sigmoid(torch.tensor(2.0)).item() - 1) * 0.5)
+    assert sam3.memory_score({"object_score_logits": torch.tensor([[-0.5]]), "iou_pred": torch.tensor([0.9])}) == 0.0
+
+
+def stored_frames(scores):
+    """{frame: output} with the given memory scores; each output's pointer and memory is its frame."""
+    return {t: {"memory_score": s, "obj_ptr": t, "maskmem_features": t} for t, s in scores.items()}
+
+
+def test_selected_frames_and_the_view_the_tracker_reads():
+    stored = stored_frames({1: 0.5, 3: 0.5, 5: 0.0, 6: 0.5, 7: 0.0, 8: 0.5})   # 2 and 4: anchors
+    assert sam3.selected_frames(stored, 9, 3) == [8, 6, 3]
+    assert sam3.selected_frames(stored, 8, 3) == [7, 6, 3, 1]   # the frame before, although it fails
+    assert sam3.selected_frames(stored, 5, 15) == [4, 3, 1]     # the frame before is an anchor
+    view = sam3.memory_view({"cond_frame_outputs": {2: "c"}, "non_cond_frame_outputs": stored}, 9, 3)
+    assert view["cond_frame_outputs"] == {2: "c"}
+    assert view["non_cond_frame_outputs"] == {8: stored[8], 7: stored[6], 6: {"memory_score": 0.5, "maskmem_features": 3}}
+    view = sam3.memory_view({"cond_frame_outputs": {}, "non_cond_frame_outputs": stored}, 5, 15)
+    assert view["non_cond_frame_outputs"] == {3: stored[3], 2: {"memory_score": 0.5, "maskmem_features": 1}}
+
+
+def test_keep_memory_keeps_what_memory_selection_still_reaches():
+    stored = stored_frames({1: 0.5, 2: 0.0, 3: 0.5, 7: 0.0, 8: 0.5, 9: 0.5, 10: 0.5})
+    kept = dict(stored)
+    sam3.keep_memory(kept, 10, 2, 3, selection=False)
+    assert sorted(kept) == [8, 9, 10]
+    kept = dict(stored)
+    sam3.keep_memory(kept, 10, 2, 4, selection=True)   # the next frame reads 10, 9, 8, 3
+    assert sorted(kept) == [3, 8, 9, 10]
+
+
+def test_the_anchor_policy_switches_are_named_unused_with_several_objects(fake_segments, caplog):
+    with caplog.at_level("INFO"):   # the earlier values, off today's defaults
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), max_objects=2,
+                   config=sam3.SAM3Config(clear_on_anchor=True, memory_selection=False))
+    line = not_used(caplog)
+    assert "sam3_config.clear_on_anchor (max_objects > 1)" in line
+    assert "sam3_config.memory_selection (max_objects > 1)" in line
+
+
+def test_record_iou_reads_core_s_best_predicted_iou():
+    tracker = CorePropagation(1, True)   # the IoU head pinned to 5 for mask 1, 0 for the others
+    feats, high_res = torch.randn(1, C_TINY, 4, 4), [torch.randn(1, C_TINY, 16, 16), torch.randn(1, C_TINY, 8, 8)]
+    mux = sam3.MultiplexState(1, 16, CPU, torch.float32)
+    core = sam3.track_frame(tracker, 5, [feats], None, None, {}, 10, high_res, mux)
+    ours = sam3.track_frame(tracker, 5, [feats], None, None, {}, 10, high_res, mux, record_iou=True)
+    assert ours["iou_pred"].tolist() == [5.0] and "mask_index" not in ours
+    assert torch.equal(ours["obj_ptr"], core["obj_ptr"]) and torch.equal(ours["pred_masks"], core["pred_masks"])
+
+
+class DefaultsTracker(RangeTracker, PointerTracker):
+    """The stand-in the defaults need: frames read back from their -1..1 values (RangeTracker) and
+    a propagation decoder for the best_iou pointer and memory selection (PointerTracker)."""
+
+
+def test_the_defaults_run_easy_sam3_s_policy(rig):
+    """At its defaults prompt mode runs the S3 set: frames in -1..1, the anchor's memory from the
+    tracker's mask, nothing cleared or held off, memory selection, up to four conditioning frames
+    with the birth frame among them until newer ones replace it, anchors gated on the tracker's
+    score."""
+    tracker = DefaultsTracker(signed=True, best={})
+    masks, log, result = rig(sam3.SAM3Config(), tracker=tracker, prep=range_prep, core_mux=True)
+    assert all(value == float(torch.tensor(real / 100) * 2 - 1) for real, value in tracker.seen)
+    assert result["reconditioned"] == 2 and result["tracked from frame"] == 2
+    for f in (16, 32):
+        (i,) = [i for i, e in enumerate(log) if e[0] == "cond" and e[1] == f]
+        assert log[i + 1][0] == "encode cond"
+    assert tracker.reads[17] == (15, 14, 13, 12, 11) and tracker.reads[18] == (17, 15, 14, 13, 12, 11)
+    assert tracked(log, 33)[3] == (2, 16, 32)

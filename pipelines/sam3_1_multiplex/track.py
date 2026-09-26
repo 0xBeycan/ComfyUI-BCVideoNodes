@@ -137,7 +137,10 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     - "propagated" (box_keypoint): bilinear to the tracker's 1008 x 1008, > threshold, bilinear
       to `size` as 0/1, > 0.5, then clean_mask
     "threshold" is the cut on "prompt" / "propagated" frames (always 0) and "mask_threshold" the
-    one on "prompted" frames. Not collected with max_objects above 1."""
+    one on "prompted" frames. In prompt mode with obj_ptr_token best_iou, "mask_index" is the mask
+    the propagation decoder selected on each frame, the one its object pointer was built from
+    (None on the birth frame and on frames without output). In prompt mode "anchors" lists every
+    re-anchor slot, fired or not, as prompt.AnchorLog records. Not collected with max_objects above 1."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, found {mode!r}")
     if not isinstance(max_objects, int) or max_objects < 1:
@@ -210,5 +213,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
                 "threshold": 0.0, "mask_threshold": config.mask_threshold}
         if "raw" in collected:
             info.update(raw=collected["raw"], fill_hole_area=config.fill_hole_area)
+        for key in ("mask_index", "anchors"):
+            if key in collected:
+                info[key] = collected[key]
         sink(collected["logits"], info)
     return mask

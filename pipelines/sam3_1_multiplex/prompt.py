@@ -14,40 +14,50 @@ there. This is Meta's own SAM 3 video policy, run over core's weight-carrying pr
   thrown away and the search for a birth starts again. That is why the output is buffered
   until the track is out of its window.
 - every `recondition_every` frames a detection that still agrees with the track re-anchors
-  it as a conditioning frame, and the non-conditioning memories around it are cleared so the
-  fresh anchor is not outvoted by the drift it is there to correct
+  it as a conditioning frame. At the defaults (easy-sam3's policy) the detection gives the
+  frame its object pointer while the frame's memory is the tracker's own mask, nothing is
+  cleared, and only an anchor the tracker itself is sure of fires. The earlier policy - the
+  detector mask as the anchor's memory, the memories around it cleared - is still selectable
+  in SAM3_1MultiplexConfig
 - the tracker only moves forwards, so once the clip is done the frames before the birth are
   filled by propagating over them in a mirrored index space (see `propagate_backwards`)
 
-With `max_objects` above 1 the same policy runs once per track and Meta's multi-object rules
+With `max_objects` above 1 the earlier single-track policy runs once per track, on the shared
+defaults (input range, pointer token, memory_gap, thresholds), and Meta's multi-object rules
 decide between the tracks (`segment_by_prompt_multi`); at 1 none of that code runs.
 """
-from typing import TypedDict
+from typing import Optional, TypedDict
 
+import numpy as np
 import torch
 
 from ...libs import log
 from ...libs.mask import count_masked_frames, to_frame_size
 from ...models.sam3_1_multiplex.adapter import (DEFAULT_SAM3_1_MULTIPLEX, backbone_frame, clear_memory,
-                                                condition_on_mask, encode_memory, encode_memory_into, encode_prompt,
+                                                condition_on_mask, encode_memory_into, encode_prompt,
                                                 forget_older, memory_lookback, multiplex_parts, new_memory, new_mux,
                                                 new_output_dict, object_score, propagation_backbone, store_output,
                                                 track_and_clean)
 from ...models.sam3_1_multiplex.postprocess import clean_logits, low_res_logits
-from .config import DETECTION, OURS, logits_record, report_counts
+from .config import BEST_IOU, CLEANED, DETECTION, OURS, PROPAGATED, SIGNED_RANGE, logits_record, report_counts
 
 
 # What the person is called to SAM. A bare noun scores higher and more evenly across clips,
 # but it also tracks whoever the detector likes best, which on these clips is as often a
 # figure in the background; the phrase names the one the generation is about. The
-# thresholds in SAM3_1MultiplexConfig were measured with this prompt.
+# defaults in SAM3_1MultiplexConfig were validated with this prompt.
 PROMPT = "main person in the foreground"
 
 
 # Conditioning frames are attended in full and forever, so a clip's worth of them would
 # grow the memory attention without bound. Two is what the policy needs: the birth frame,
 # which says which person this is, and the newest anchor, which says where they are now.
+# (segment_by_prompt reads its count from max_conditioning_frames, whose default this is.)
 MAX_CONDITIONING_FRAMES = 2
+
+# easy-sam3's memory selection (memory_selection): a propagated frame counts as memory only
+# when its memory_score is above this (its mf_threshold).
+MEMORY_SELECTION_SCORE = 0.01
 
 
 def iou(masks_a, masks_b):
@@ -87,7 +97,7 @@ def _frame_detections(tracker, backbone_fn, frames, frame_idx, device, dtype, si
     the detections on it (detect_person): (frame, vision_feats, vision_pos, feat_sizes, high_res,
     trunk_out, det_masks, det_scores)."""
     frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out = backbone_frame(
-        tracker, backbone_fn, frames, frame_idx, device, dtype, size)
+        tracker, backbone_fn, frames, frame_idx, device, dtype, size, config.input_range == SIGNED_RANGE)
     det_masks, det_scores = detect_person(detector, backbone, trunk_out, embedding, text_mask, config)
     return frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out, det_masks, det_scores
 
@@ -131,11 +141,111 @@ def counts_unmatched(matched, track_masks, config):
     return not matched and (config.unmatched_counting == OURS or bool((track_masks > 0).any()))
 
 
-def prune_conditioning(conditioned):
-    """Drop conditioning frames past MAX_CONDITIONING_FRAMES, keeping the birth frame, which says
-    which person this is, and the newest anchor, which says where they are now."""
-    while len(conditioned) > MAX_CONDITIONING_FRAMES:
-        del conditioned[sorted(conditioned)[1]]
+def prune_conditioning(conditioned, keep=MAX_CONDITIONING_FRAMES, keep_birth=True):
+    """Drop the oldest conditioning frames past `keep`: with `keep_birth` the birth frame, the
+    oldest, stays and the oldest anchor goes; without it the birth frame goes first."""
+    while len(conditioned) > keep:
+        del conditioned[sorted(conditioned)[1 if keep_birth else 0]]
+
+
+def encode_frame_memory(tracker, current, raw, vision_feats, feat_sizes, mux, device, config, into=None):
+    """Encode the spatial memory of the propagated output `current`, from the logits
+    `memory_mask` names: its cleaned ones (cleaned), or `raw`, the decoder's before the cleaning
+    (raw). It lands in `current`, or with `into` (a conditioning frame's output) in `into`, as a
+    conditioning memory."""
+    source = current if config.memory_mask == CLEANED else {"pred_masks": raw.float()}
+    encode_memory_into(tracker, source, current if into is None else into, vision_feats, feat_sizes, mux, device,
+                       conditioning=into is not None)
+
+
+def memory_score(current):
+    """easy-sam3's memory score of a propagated output (its eff_iou_score): the mean over
+    objects of the normalized object score, 2 sigmoid(s) - 1 where the logit s > 0 and 0
+    otherwise, times the decoder's highest predicted IoU."""
+    s = current["object_score_logits"].float().flatten()
+    norm = torch.where(s > 0, s.sigmoid() * 2 - 1, torch.zeros_like(s))
+    return float((norm * current["iou_pred"].float().flatten()).mean())
+
+
+def selected_frames(stored, frame_idx, count):
+    """The propagated frames memory selection reads at `frame_idx`, newest first: the frame
+    before, always, then the stored frames before `frame_idx` (frame 0 excluded, as easy-sam3's
+    scan stops at 1) whose "memory_score" passes MEMORY_SELECTION_SCORE, newest first, until
+    `count` of those. A frame that is not stored - an anchor, which is a conditioning frame - is
+    skipped, except the frame before, which stays in the list and reads as nothing. easy-sam3's
+    `frame_filter`."""
+    passed = []
+    for t in sorted((t for t in stored if 0 < t < frame_idx), reverse=True):
+        if stored[t]["memory_score"] > MEMORY_SELECTION_SCORE:
+            passed.append(t)
+            if len(passed) >= count:
+                break
+    return passed if frame_idx - 1 in passed else [frame_idx - 1] + passed
+
+
+def memory_view(output_dict, frame_idx, count):
+    """`output_dict` as the tracker reads it at `frame_idx` under memory selection: the selected
+    frames (selected_frames) re-keyed by rank, frame_idx - k holding the k-th newest, so core's
+    lookup, which reads the frames right before by distance, reads them with slot = rank - for
+    the spatial memories and the object pointers alike, as easy-sam3 does. The oldest carries no
+    object pointer: easy-sam3 reads one pointer fewer than it selects frames."""
+    stored = output_dict["non_cond_frame_outputs"]
+    chosen = selected_frames(stored, frame_idx, count)
+    view = {}
+    for k, t in enumerate(chosen, start=1):
+        if t in stored:
+            view[frame_idx - k] = stored[t] if k < len(chosen) else {
+                key: value for key, value in stored[t].items() if key != "obj_ptr"}
+    return {"cond_frame_outputs": output_dict["cond_frame_outputs"], "non_cond_frame_outputs": view}
+
+
+def keep_memory(stored, frame_idx, lookback, count, selection):
+    """Drop the stored propagated outputs no later lookup can read: those more than `lookback`
+    frames back (forget_older), except, with memory `selection`, the `count` newest ones that
+    pass its score, which it reaches for however far back they are."""
+    if not selection:
+        forget_older(stored, frame_idx, lookback)
+        return
+    keep = set(selected_frames(stored, frame_idx + 1, count))
+    for old in list(stored):
+        if old < frame_idx - lookback and old not in keep:
+            del stored[old]
+
+
+# One re-anchor slot of segment_by_prompt, for the logits dump: whether it fired and why not
+# ("no det": no detection on the frame; "gate": none scored recondition_score and overlapped
+# recondition_iou; "track score": the tracker's own logit was at or under anchor_track_score), the
+# detection it anchored with (or the one overlapping the track most), its score and IoU, the
+# tracker's object-score logit, and what the tracker's mask covers that the detection does not,
+# at frame size: px, and the px and inscribed radius of its largest piece.
+AnchorLog = TypedDict("AnchorLog", {"frame": int, "fired": bool, "why": Optional[str], "det_score": Optional[float],
+                                    "iou": Optional[float], "track_logit": float, "missed_px": Optional[int],
+                                    "missed_largest_px": Optional[int], "missed_radius": Optional[float]})
+
+
+def anchor_log(f, anchor, blocked, det_masks, det_scores, overlap, track, logit, H, W, config) -> AnchorLog:
+    """The AnchorLog of the re-anchor slot on frame `f`: `anchor` the detection choose_anchor
+    picked (None: none qualified), `blocked` whether anchor_track_score stopped it, `track` the
+    tracker's propagated output on the frame and `logit` its object-score logit."""
+    from scipy import ndimage
+    entry: AnchorLog = {"frame": f, "fired": anchor is not None and not blocked,
+                        "why": None if anchor is not None and not blocked else
+                        "no det" if overlap is None else "gate" if anchor is None else "track score",
+                        "det_score": None, "iou": None, "track_logit": round(logit, 4), "missed_px": None,
+                        "missed_largest_px": None, "missed_radius": None}
+    if overlap is None:
+        return entry
+    d = anchor if anchor is not None else int(overlap.argmax())
+    detected = to_frame_size(clean_logits(det_masks[d:d + 1], config.fill_hole_area)[None], H, W) > 0
+    missed = ((to_frame_size(track["pred_masks"], H, W) > 0) & ~detected).numpy()
+    entry.update(det_score=round(float(det_scores[d]), 4), iou=round(float(overlap[d]), 4), missed_px=int(missed.sum()))
+    if missed.any():
+        labels, n = ndimage.label(missed)
+        sizes = np.bincount(labels.ravel())[1:]
+        largest = labels == int(sizes.argmax()) + 1
+        entry.update(missed_largest_px=int(sizes.max()),
+                     missed_radius=round(float(ndimage.distance_transform_edt(largest).max()), 1))
+    return entry
 
 
 def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, config):
@@ -155,18 +265,25 @@ def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emi
     size = tracker.image_size
     output_dict, mux = new_memory(tracker, device, dtype)
 
+    signed = config.input_range == SIGNED_RANGE
     frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out = backbone_frame(
-        tracker, backbone_fn, frames, birth, device, dtype, size)
+        tracker, backbone_fn, frames, birth, device, dtype, size, signed)
     condition_on_mask(tracker, seed, mirror - birth, vision_feats, vision_pos, feat_sizes,
                       high_res, output_dict, N, mux, backbone, frame, trunk_out)
 
+    selection = config.memory_selection
+    count = min(N, tracker.max_obj_ptrs_in_encoder) - 1
     for f in range(birth - 1, -1, -1):
         frame, vision_feats, vision_pos, feat_sizes, high_res, _ = backbone_frame(
-            tracker, backbone_fn, frames, f, device, dtype, size)
-        current, raw = track_and_clean(tracker, mirror - f, vision_feats, vision_pos, feat_sizes, output_dict, N,
-                                       high_res, mux, config.fill_hole_area)
-        encode_memory(tracker, current, vision_feats, feat_sizes, mux, device)
-        store_output(output_dict, mirror - f, current, memory_lookback(tracker))
+            tracker, backbone_fn, frames, f, device, dtype, size, signed)
+        current, raw = track_and_clean(tracker, mirror - f, vision_feats, vision_pos, feat_sizes,
+                                       memory_view(output_dict, mirror - f, count) if selection else output_dict, N,
+                                       high_res, mux, config.fill_hole_area, config.obj_ptr_token == BEST_IOU, selection)
+        if selection:
+            current["memory_score"] = memory_score(current)
+        encode_frame_memory(tracker, current, raw, vision_feats, feat_sizes, mux, device, config)
+        output_dict["non_cond_frame_outputs"][mirror - f] = current
+        keep_memory(output_dict["non_cond_frame_outputs"], mirror - f, memory_lookback(tracker), count, selection)
         emit(f, current, raw)
 
 
@@ -208,13 +325,25 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     The [prompt] A/B switches of `config` pick ours or Meta's side of a policy step (A6, A7); at
     their defaults this is the policy described in the module docstring. `anchor_output` picks
     what a re-anchor frame shows (the detection, or the mask the tracker propagated onto it); the
-    tracking is the same either way."""
+    tracking is the same either way. `input_range`, `obj_ptr_token` and `memory_mask` pick our
+    side or Meta's of how SAM 3.1 Multiplex is run; with obj_ptr_token best_iou the logits record
+    also gets "mask_index", the mask the decoder selected on each output frame it propagated (None
+    on the birth frame and on frames without output). `clear_on_anchor`, `anchor_mask`,
+    `max_conditioning_frames`, `keep_birth_frame`, `anchor_track_score` and `memory_selection`
+    pick ours or easy-sam3's side of the re-anchor and memory policy. The logits record also gets
+    "anchors", one AnchorLog per re-anchor slot."""
     from comfy.utils import ProgressBar
     (c, N, H, W, device, dtype, frames, detector, tracker, backbone, embedding, text_mask,
      size, backbone_fn, lookback) = _prompt_setup(model, clip, images, prompt, config)
+    best_iou = c.obj_ptr_token == BEST_IOU
+    selection = c.memory_selection
+    count = min(N, tracker.max_obj_ptrs_in_encoder) - 1   # the frames memory selection gathers
     record = logits_record(logits, N)
     if record is not None:
         record["raw"] = [False] * N
+        record["anchors"] = []
+        if best_iou:
+            record["mask_index"] = [None] * N
 
     masks = torch.zeros(N, H, W)
     output_dict = new_output_dict()
@@ -222,21 +351,26 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     birth = -1            # the frame the live track was born on, -1 while there is none
     unmatched = 0         # frames of the probation window the track went unmatched
     quiet_until = -1      # no non-conditioning memory is kept up to here, after an anchor
-    pending = []          # (frame, mask, logits, raw, how) produced by a track still on probation
+    pending = []          # (frame, mask, logits, raw, how, index) produced by a track still on probation
+    picked = []           # with best_iou, the mask index the decoder selected on each output frame
     counts: PromptCounts = {"false starts": 0, "reconditioned": 0}
     pbar = ProgressBar(N)
 
-    def put(f, mask, low, raw, how="prompt"):
+    def put(f, mask, low, raw, how="prompt", index=None):
         masks[f] = mask
+        if index is not None:
+            picked.append(index)
         if record is not None:
             record["logits"][f], record["cut"][f], record["raw"][f] = low, how, raw
+            if best_iou:
+                record["mask_index"][f] = index
 
     with torch.inference_mode():
         for f in range(N):
             (frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out, det_masks,
              det_scores) = _frame_detections(tracker, backbone_fn, frames, f, device, dtype, size, detector, backbone,
                                              embedding, text_mask, c)
-            how = "prompt"
+            how, index = "prompt", None
 
             if birth < 0:
                 if det_scores.numel() == 0 or det_scores[0] < c.birth_threshold:
@@ -252,9 +386,14 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                 # the conditioning mask itself
                 shown, dumped = current["pred_masks"], None
             else:
-                current, raw = track_and_clean(tracker, f, vision_feats, vision_pos, feat_sizes, output_dict, N,
-                                               high_res, mux, c.fill_hole_area)
+                current, raw = track_and_clean(tracker, f, vision_feats, vision_pos, feat_sizes,
+                                               memory_view(output_dict, f, count) if selection else output_dict, N,
+                                               high_res, mux, c.fill_hole_area, best_iou, selection)
                 shown, dumped = current["pred_masks"], raw
+                if best_iou:
+                    index = int(current["mask_index"][0])
+                if selection:
+                    current["memory_score"] = memory_score(current)
 
                 overlap = iou(det_masks, current["pred_masks"][:, 0])[:, 0] if det_masks.shape[0] else None
                 matched = overlap is not None and float(overlap.max()) >= c.match_iou
@@ -267,36 +406,54 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                         log.info(f"the track born on frame {birth} went unmatched on {unmatched} of its "
                                  f"first {f - birth + 1} frames, so it was not the person; dropped")
                         counts["false starts"] += 1
+                        if record is not None:   # the dropped track's slots
+                            record["anchors"] = [a for a in record["anchors"] if a["frame"] < birth]
                         output_dict = new_output_dict()
                         mux, birth, pending = None, -1, []
                         pbar.update(1)
                         continue
 
                 anchor = None
-                if f % c.recondition_every == 0 and overlap is not None:
+                slot = f % c.recondition_every == 0
+                if slot and overlap is not None:
                     anchor = choose_anchor(det_scores, overlap, c)
+                if slot and (record is not None or c.anchor_track_score > 0):
+                    logit = float(current["object_score_logits"].float().flatten()[0])
+                    blocked = anchor is not None and c.anchor_track_score > 0 and logit <= c.anchor_track_score
+                    if record is not None:
+                        record["anchors"].append(anchor_log(f, anchor, blocked, det_masks, det_scores, overlap,
+                                                            current, logit, H, W, c))
+                    if blocked:
+                        anchor = None
                 if anchor is None:
                     if f > quiet_until:
-                        encode_memory(tracker, current, vision_feats, feat_sizes, mux, device)
+                        encode_frame_memory(tracker, current, raw, vision_feats, feat_sizes, mux, device, c)
                     output_dict["non_cond_frame_outputs"][f] = current
-                    forget_older(output_dict["non_cond_frame_outputs"], f, lookback)
+                    keep_memory(output_dict["non_cond_frame_outputs"], f, lookback, count, selection)
                 else:
-                    # An anchor only anchors if it is alone: drop the spatial memory of the
-                    # frames around it, the ones carrying the drift. Everything still in the
-                    # dict is within reach of the lookup, and the frames after it are held off
-                    # by quiet_until. The object pointers stay - it is the memory that is
+                    # Our anchor only anchors if it is alone: drop the spatial memory of the
+                    # frames around it, the ones carrying the drift (clear_on_anchor). Everything
+                    # still in the dict is within reach of the lookup, and the frames after it are
+                    # held off by quiet_until. The object pointers stay - it is the memory that is
                     # cleared, not the frame.
-                    clear_memory(output_dict["non_cond_frame_outputs"])
+                    if c.clear_on_anchor:
+                        clear_memory(output_dict["non_cond_frame_outputs"])
                     quiet_until = f + c.memory_gap
+                    propagated, propagated_raw = current, raw
                     current = condition_on_mask(
                         tracker, clean_logits(det_masks[anchor:anchor + 1], c.fill_hole_area), f, vision_feats,
                         vision_pos, feat_sizes, high_res, output_dict, N, mux, backbone, frame, trunk_out)
+                    if c.anchor_mask == PROPAGATED:
+                        # the frame's spatial memory from the tracker's own mask, as a conditioning
+                        # memory; the object pointer stays the detection's
+                        encode_frame_memory(tracker, propagated, propagated_raw, vision_feats, feat_sizes, mux,
+                                            device, c, into=current)
                     if c.anchor_output == DETECTION:
                         shown, dumped = current["pred_masks"], None
                     # else the frame keeps showing the mask the tracker propagated onto it
                     how = "anchor"
                     counts["reconditioned"] += 1
-                    prune_conditioning(output_dict["cond_frame_outputs"])
+                    prune_conditioning(output_dict["cond_frame_outputs"], c.max_conditioning_frames, c.keep_birth_frame)
 
             mask = to_frame_size(shown, H, W)
             low = low_res_logits(shown if dumped is None else dumped) if record is not None else None
@@ -304,9 +461,9 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                 for held in pending:
                     put(*held)
                 pending = []
-                put(f, mask, low, dumped is not None, how)
+                put(f, mask, low, dumped is not None, how, index)
             else:
-                pending.append((f, mask, low, dumped is not None, how))
+                pending.append((f, mask, low, dumped is not None, how, index))
             pbar.update(1)
 
         for held in pending:
@@ -315,7 +472,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
             log.info(f"the track starts on frame {birth}; tracking backwards to fill frames 0-{birth - 1}")
             def emit(f, current, raw):
                 put(f, to_frame_size(current["pred_masks"], H, W), low_res_logits(raw) if record is not None else None,
-                    True)
+                    True, index=int(current["mask_index"][0]) if best_iou else None)
             propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, c)
             counts["tracked backwards"] = birth
 
@@ -325,6 +482,9 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     else:
         log.info(f"segmented {segmented} of {N} frame(s) from '{prompt}', tracked from frame {birth}"
                  + (f", reconditioned {counts['reconditioned']} time(s)" if counts["reconditioned"] else ""))
+    if best_iou:
+        log.info(f"obj_ptr_token best_iou: the decoder selected a mask other than token 0 on "
+                 f"{sum(i != 0 for i in picked)} of {len(picked)} propagated frame(s)")
     counts["frames segmented"] = segmented
     counts["tracked from frame"] = birth if segmented else 0
     report_counts(result, counts)
@@ -430,9 +590,9 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
             D = det_masks.shape[0]
 
             for t in live:
-                current, _ = track_and_clean(tracker, f, vision_feats, vision_pos, feat_sizes, t["output"], N,
-                                             high_res, t["mux"], c.fill_hole_area)
-                t["current"] = current
+                current, raw = track_and_clean(tracker, f, vision_feats, vision_pos, feat_sizes, t["output"], N,
+                                               high_res, t["mux"], c.fill_hole_area, c.obj_ptr_token == BEST_IOU)
+                t["current"], t["raw"] = current, raw
                 t["score"] = object_score(current)
             K = len(live)
             overlap = (iou(det_masks, torch.cat([t["current"]["pred_masks"][:, 0] for t in live]))
@@ -490,7 +650,11 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
                         live[k]["current"]["pred_masks"][:] = -10.0
                         stacked[j] = -10.0
                         counts["suppressed"] += 1
-                memory = suppress_shrunk(stacked, c.shrink_keep)
+                if c.memory_mask == CLEANED:
+                    memory = suppress_shrunk(stacked, c.shrink_keep)
+                else:   # the decoder's logits, the suppressed tracks blanked as above
+                    raw_stacked = torch.cat([live[k]["raw"][:, 0].float() for k in kept])
+                    memory = suppress_shrunk(torch.where(suppressed[:, None, None], -10.0, raw_stacked), c.shrink_keep)
             for j, k in enumerate(kept):
                 t = live[k]
                 output = t["output"]

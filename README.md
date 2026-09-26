@@ -83,13 +83,47 @@ connected, so the behaviour can be switched without rewiring:
 Optional; generated from `SAM3_1MultiplexConfig` in `pipelines/sam3_1_multiplex/config.py`. Each tooltip
 starts with the mode it affects.
 
-The `[prompt]` fields `anchor_matching` and `unmatched_counting` switch one
-step of the tracking policy between this pack's (`ours`, the default) and
-Meta's (`meta`), for the multi-person A/B. `anchor_output` (last field, read
-at `max_objects` 1) picks what a re-anchor frame shows: the mask the tracker
-propagated onto that frame (`propagated`, the default) or the detection the
-track is re-anchored with (`detection`); the tracking is the same either
-way. Prompt mode cuts every frame's
+The `[prompt]` defaults are easy-sam3's set on SAM 3.1, validated on the test
+clips against the earlier defaults; every earlier value can be set back here.
+What changed, and why:
+
+- `input_range` `-1..1` (was `0..1`): the range SAM 3.1 was trained on. On
+  `0..1` black reads as mid-grey and contrast is halved, so dark, blurred limbs
+  dropped out.
+- `obj_ptr_token` `best_iou` (was `token_0`): a propagated frame's object
+  pointer, which the next frames read, is built from the mask the frame
+  shows, as Meta's SAM 3.1 and easy-sam3 do.
+- `anchor_mask` `propagated` (was `detection`): a re-anchor frame keeps the
+  tracker's own mask as its memory; the detection only gives it its object
+  pointer. A detector mask missing a limb no longer blacks it out for the
+  frames that follow.
+- `clear_on_anchor` off (was on) and `memory_gap` `0` (was `7`): a re-anchor no
+  longer drops the memory of the frames before it or holds the frames after it
+  out of memory, so those frames keep tracking from their own history.
+- `max_conditioning_frames` `4` (was `2`) and `keep_birth_frame` off (was on):
+  the tracker attends the newest four conditioning frames, as easy-sam3 does,
+  instead of the birth frame and the newest anchor.
+- `anchor_track_score` `0.8` (was `0`, off): a re-anchor fires only where the
+  tracker itself is sure of the person, easy-sam3's gate.
+- `memory_selection` on (was off): frames where the tracker lost the person do
+  not become memory; the lookup ranks the frames that pass, anchors skipped.
+- `detection_threshold` `0.50` (was `0.30`) and `birth_threshold` `0.70` (was
+  `0.50`): easy-sam3's values.
+- `memory_mask` stays `cleaned` (easy-sam3's side; `raw` is Meta's).
+
+The six re-anchor and memory fields (`clear_on_anchor` to `memory_selection`)
+are read at `max_objects` 1 only. With `max_objects` above 1 the shared
+defaults apply (input range, pointer token, `memory_gap`, the thresholds) with
+that path's own anchor policy, which is not yet measured.
+
+`anchor_matching` and `unmatched_counting` switch one step of the tracking
+policy between this pack's (`ours`, the default) and Meta's (`meta`), for the
+multi-person A/B. `anchor_output` (read at `max_objects` 1) picks what a
+re-anchor frame shows: the mask the tracker propagated onto that frame
+(`propagated`, the default) or the detection the track is re-anchored with
+(`detection`); the tracking is the same either way. `memory_mask` picks the
+logits a propagated frame's memory is encoded from (`cleaned` or `raw`, the
+decoder's). Prompt mode cuts every frame's
 mask logits at 0; box_keypoint cuts its prompted frames at `mask_threshold`
 and its propagated ones at 0.
 
@@ -624,7 +658,9 @@ loop without the widget.
   out of the result, and the SCAIL-2 authors report it works better at 704p.
   Core's `SAM3DBody_Render` has a "scail" style as a lighter alternative;
   its parity with the NLF render is unverified.
-- **Multi-person** (all nodes): a later phase.
+- **Multi-person** (all nodes): multi-person pose and mask are on the roadmap, to be
+  implemented and tested later. Today everything is optimised for one person; future
+  multi-person changes will take effect in multi-person mode only.
 
 ## Install
 
