@@ -8,27 +8,6 @@ from .common import WARNINGS, GuardFailed, MaskRow, PoseRow, PreprocessRow, Scai
 from .timeline import timeline_image
 
 
-def _span(start, end):
-    """One run of `_ranges`: '1-3', or '7' when it is one frame."""
-    return f"{start}-{end}" if end > start else str(start)
-
-
-def _ranges(frames):
-    """[1, 2, 3, 7, 9, 10] -> '1-3, 7, 9-10'"""
-    out, start, prev = [], None, None
-    for f in frames:
-        if start is None:
-            start = prev = f
-        elif f == prev + 1:
-            prev = f
-        else:
-            out.append(_span(start, prev))
-            start = prev = f
-    if start is not None:
-        out.append(_span(start, prev))
-    return ", ".join(out)
-
-
 def longest_run(frames):
     """The longest run of consecutive frame numbers in a sorted list."""
     longest = run = 0
@@ -57,7 +36,7 @@ def write_report(title, rows: Union[list[PoseRow], list[MaskRow], list[Preproces
     lines = [f"{title}: {'FAILED' if failed else 'passed'} - "
              f"{len(failed)} check(s) failed on {len({i for name in failed for i in flags[name]})}/{n} frames"]
     for name, frames in flags.items():
-        line = f"- {name} ({_kind(name, enabled)}): {len(frames)} frame(s), longest run {longest_run(frames)}: {_ranges(frames)}"
+        line = f"- {name} ({_kind(name, enabled)}): {len(frames)} frame(s), longest run {longest_run(frames)}: {log.frame_ranges(frames)}"
         key = REPORT_NAMES.get(name)
         if key:
             missed = {}

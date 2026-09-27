@@ -1,5 +1,5 @@
-"""Pose fakes shared by the pose and node tests, and the `pose`, `loader` and `wrappers` Names
-the test bodies read pack names through (tests/names.py).
+"""Pose fakes shared by the pose and node tests, and the `pose`, `loader`, `rules` and `wrappers`
+Names the test bodies read pack names through (tests/names.py).
 
 FakePose, FakeDetector and frames stand in for the models and the clip. No ComfyUI and no real
 model.
@@ -34,6 +34,8 @@ pose = Names("pose", {
     **refs("pipelines.pose", "KEY_FRAME_BODY_POINTS", "PoseConfig", "asdict", "detect", "draw",
            "key_frame_body_points", "pose_detection"),
     **seams("pipelines.pose", "_to_device"),
+    **refs("libs.pose_utils.pose2d_utils", "AAPoseMeta"),
+    **refs("libs.pose_utils.human_visualization", "draw_aapose_by_meta_new"),
 })
 loader = Names("loader", {
     # the pose model's and the detector's file literals: the node test compares with these, not
@@ -43,6 +45,9 @@ loader = Names("loader", {
     "Yolo": Ref("models.yolo.wrapper", "Yolo"),
     **seams("models.common.loader", "_load", "load_pose_models"),
     **seams("models.common.loader", "_loaded", "detection_model_path"),
+})
+rules = Names("rules", {
+    **refs("libs.draw_rules", "RULES", "hidden_parts", "overlong_forearms"),
 })
 wrappers = Names("wrappers", {
     **refs("models.vitpose.wrapper", "ViTPose"),

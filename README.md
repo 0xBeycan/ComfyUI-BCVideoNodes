@@ -50,9 +50,16 @@ keypoints on every frame, and the pose images are drawn.
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
-`box_window`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
+`box_window`, `forearm_limit`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
+
+`forearm_limit` is a draw rule (`libs/draw_rules.py`), 0 (off) by default.
+ViTPose puts a wrist it cannot see on something else, the leg or the frame
+edge, and the forearm ending there is drawn far too long. Above 0, a drawn
+forearm longer than `forearm_limit` times its median drawn length over the clip
+(2.0: over twice it) has its wrist and hand left out of the pose images;
+`pose_data` keeps every keypoint.
 
 ### SAM 3.1 Multiplex Video Track
 

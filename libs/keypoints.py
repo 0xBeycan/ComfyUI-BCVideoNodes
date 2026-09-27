@@ -12,6 +12,7 @@ LIMBS = [(1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9), (9, 10)
          (11, 12), (12, 13), (1, 0), (0, 14), (14, 16), (0, 15), (15, 17), (13, 18), (10, 19)]
 HEAD_LIMBS = {(1, 0), (0, 14), (14, 16), (0, 15), (15, 17)}
 NECK, R_SHOULDER, L_SHOULDER, R_HIP, L_HIP = 1, 2, 5, 8, 11
+R_ELBOW, L_ELBOW = 3, 6
 R_WRIST, L_WRIST = 4, 7
 # The body layout carries one foot point per side, the midpoint of that side's two toe
 # keypoints; pose2d_utils.split_kp2ds_for_aa averages wholebody 17/18 into the left one and

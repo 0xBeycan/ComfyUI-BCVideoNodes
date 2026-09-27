@@ -1,7 +1,8 @@
 """Console logging for the preprocess: one line when a step starts, one when it ends with
 its duration and what it produced, all under ComfyUI's own logging (so they show up in
-the ComfyUI console and log file with the usual [INFO] prefix). The long-video sampler's
-lines beside its progress bar (active_bar, log_beside_bar) are here too."""
+the ComfyUI console and log file with the usual [INFO] prefix), and the frame ranges these
+lines and the guard reports name frames by. The long-video sampler's lines beside its
+progress bar (active_bar, log_beside_bar) are here too."""
 import logging
 import time
 from contextlib import contextmanager
@@ -16,6 +17,27 @@ def info(message):
 
 def warning(message):
     _log.warning(f"{PREFIX} {message}")
+
+
+def _span(start, end):
+    """One run of `frame_ranges`: '1-3', or '7' when it is one frame."""
+    return f"{start}-{end}" if end > start else str(start)
+
+
+def frame_ranges(frames):
+    """[1, 2, 3, 7, 9, 10] -> '1-3, 7, 9-10'"""
+    out, start, prev = [], None, None
+    for f in frames:
+        if start is None:
+            start = prev = f
+        elif f == prev + 1:
+            prev = f
+        else:
+            out.append(_span(start, prev))
+            start = prev = f
+    if start is not None:
+        out.append(_span(start, prev))
+    return ", ".join(out)
 
 
 @contextmanager

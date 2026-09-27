@@ -64,6 +64,7 @@ CHECK3_MODULES = [
     "libs.log",
     "libs.bbox",
     "libs.keypoints",
+    "libs.draw_rules",
     "libs.mask",
     "libs.chunking",
     "libs.sigmas",
@@ -137,7 +138,7 @@ ALLOWED = {
 }
 # check 4: the modules that import without ComfyUI. scripts/ needs the first six,
 # test-scripts the guard and the three SAM 3.1 Multiplex helpers, scripts/convert_models.py
-# libs.bbox.
+# libs.bbox, the offline draw-rule evaluation the draw rule.
 CHECK4_MODULES = [
     "models",
     "models.common.registry",
@@ -151,6 +152,7 @@ CHECK4_MODULES = [
     "libs.mask",
     "libs.chunking",
     "libs.bbox",
+    "libs.draw_rules",
 ]
 COMFYUI = ("comfy", "folder_paths", "nodes")
 
