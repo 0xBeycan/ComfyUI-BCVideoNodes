@@ -1,14 +1,19 @@
-"""The draw rule: parts of a frame's pose left out of the pose image, never out of the pose data.
+"""The draw rules: parts of a frame's pose left out of the pose image, never out of the pose data.
 
-ViTPose places a wrist it cannot see on a visible part that looks like one: the leg, the frame
-edge. The forearm ending in that wrist is drawn far longer than the arm is. The rule below
-recognises this from the keypoints alone and names the parts not to draw. It is a Pose Config
-value, 0 (off) by default; with it off nothing is left out.
+ViTPose places a hand or a wrist it cannot see on a visible part that looks like it: the hidden
+hand on the other hand, an out-of-shot wrist on the leg or the frame edge. Each rule below
+recognises one of these from the keypoints alone and names the parts not to draw. They are Pose
+Config values, off by default; with every rule off nothing is left out.
 
-The rule reads the model's keypoints (pose_data's `pose_metas_original`, in the AAPose layout of
-libs/keypoints.py) at the draw threshold. The keypoints themselves are never changed, so the
-guards, SAM 3.1 Multiplex and the face crop see what the model gave.
+The rules read the model's keypoints (pose_data's `pose_metas_original`, in the AAPose layout of
+libs/keypoints.py) at the draw threshold, independently of each other: a part any enabled rule
+names is not drawn. The keypoints themselves are never changed, so the guards, SAM 3.1 Multiplex
+and the face crop see what the model gave.
 
+- hand_dedup (PoseConfig.hand_dedup): two drawn hands whose matching keypoints nearly coincide are
+  one hand drawn twice. When exactly one arm is intact (its elbow and wrist both drawn), the hand
+  of the broken arm is the copy and is left out, if that arm is broken on the frame before or the
+  frame after as well: a one-frame dip of an otherwise intact arm is no hidden arm.
 - forearm_rule: a forearm is never drawn longer than its full length, and the median of its drawn
   length over the clip is at most that. A drawn forearm longer than the limit
   (PoseConfig.forearm_limit) times that median ends in a wrist put on something else (the leg,
@@ -22,14 +27,20 @@ import numpy as np
 
 from .keypoints import L_ELBOW, L_WRIST, R_ELBOW, R_WRIST
 
-RULES = ("forearm_rule",)
+RULES = ("hand_dedup", "forearm_rule")
 # Each side's elbow and wrist keypoint.
 SIDES = {"right": (R_ELBOW, R_WRIST), "left": (L_ELBOW, L_WRIST)}
+# hand_dedup: the two hands are one when the median distance between their matching keypoints,
+# over the DUP_MIN_SHARED or more drawn in both, is under DUP_RATIO of the larger drawn hand's
+# diagonal. Real hands held together sit 0.14-0.50 apart, duplicates 0.07-0.20; the arm test,
+# not the ratio, tells them apart.
+DUP_RATIO = 0.6
+DUP_MIN_SHARED = 3
 # What a hidden keypoint's confidence is set to for drawing: below any draw threshold, 0 included.
 HIDDEN = -np.inf
 
 
-class Hidden(TypedDict):          # one frame: what the enabled rule leaves out of its pose image
+class Hidden(TypedDict):          # one frame: what the enabled rules leave out of its pose image
     body: list[int]                   # body keypoints (AAPose layout), ascending
     hands: list[str]                  # "left" / "right", ascending
     rules: dict[str, list[str]]       # rule -> the sides it fired on, in RULES order
@@ -47,6 +58,42 @@ def _pixels(meta, key):
 
 def _distance(points, a, b):
     return float(np.hypot(*(points[a, :2] - points[b, :2])))
+
+
+def _drawn_diagonal(hand, threshold):
+    """The diagonal of the box around the hand's drawn keypoints (at least one of them)."""
+    drawn = hand[hand[:, 2] >= threshold, :2]
+    return float(np.hypot(*(drawn.max(0) - drawn.min(0))))
+
+
+def _hands_coincide(meta, threshold):
+    """hand_dedup's hand test on one frame: whether its two drawn hands are one hand drawn twice."""
+    left, right = _pixels(meta, "keypoints_left_hand"), _pixels(meta, "keypoints_right_hand")
+    shared = (left[:, 2] >= threshold) & (right[:, 2] >= threshold)
+    if shared.sum() < DUP_MIN_SHARED:
+        return False
+    diagonal = max(_drawn_diagonal(left, threshold), _drawn_diagonal(right, threshold), 1.0)
+    return np.median(np.hypot(*(left[shared, :2] - right[shared, :2]).T)) / diagonal < DUP_RATIO
+
+
+def duplicate_hands(pose_metas, threshold) -> dict[str, list[int]]:
+    """hand_dedup over the clip: the sides (in SIDES order) whose hand is the other hand drawn again
+    on some frame of `pose_metas`, with those frames, ascending. On such a frame the two hands
+    coincide, the other arm is intact (its elbow and wrist drawn) and this side's arm is not, and
+    this side's arm is not intact on the frame before or the frame after either (of those that
+    exist, so a one-frame clip has none)."""
+    intact = []
+    for meta in pose_metas:
+        drawn = _pixels(meta, "keypoints_body")[:, 2] >= threshold
+        intact.append({side: bool(drawn[elbow] and drawn[wrist]) for side, (elbow, wrist) in SIDES.items()})
+    frames = {side: [] for side in SIDES}
+    for i, (meta, arms) in enumerate(zip(pose_metas, intact)):
+        if arms["left"] == arms["right"]:
+            continue
+        copy = "left" if arms["right"] else "right"
+        if any(not intact[j][copy] for j in (i - 1, i + 1) if 0 <= j < len(intact)) and _hands_coincide(meta, threshold):
+            frames[copy].append(i)
+    return {side: fired for side, fired in frames.items() if fired}
 
 
 def overlong_forearms(pose_metas, threshold, limit) -> dict[str, Overlong]:
@@ -70,13 +117,16 @@ def overlong_forearms(pose_metas, threshold, limit) -> dict[str, Overlong]:
     return out
 
 
-def hidden_parts(frame_count, overlong: dict[str, Overlong]) -> list[Hidden]:
-    """Per frame of a clip of `frame_count` frames, what the enabled rule leaves out of its pose
-    image: the wrist and hand of each side `overlong` (overlong_forearms) names on it. Nothing on
-    any frame when `overlong` is empty."""
+def hidden_parts(frame_count, duplicates: dict[str, list[int]], overlong: dict[str, Overlong]) -> list[Hidden]:
+    """Per frame of a clip of `frame_count` frames, what the enabled rules leave out of its pose
+    image: the hand of each side `duplicates` (duplicate_hands) names on it, and the wrist and hand
+    of each side `overlong` (overlong_forearms) names on it. Nothing on any frame when both are
+    empty."""
     out = []
     for i in range(frame_count):
-        sides = [side for side, over in overlong.items() if i in over["ratios"]]
-        fired = {"forearm_rule": sides} if sides else {}
-        out.append({"body": sorted(SIDES[side][1] for side in sides), "hands": sorted(sides), "rules": fired})
+        named = {"hand_dedup": [side for side, frames in duplicates.items() if i in frames],
+                 "forearm_rule": [side for side, over in overlong.items() if i in over["ratios"]]}
+        fired = {rule: named[rule] for rule in RULES if named[rule]}
+        out.append({"body": sorted(SIDES[side][1] for side in named["forearm_rule"]),
+                    "hands": sorted({side for sides in fired.values() for side in sides}), "rules": fired})
     return out

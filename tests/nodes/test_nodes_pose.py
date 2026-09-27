@@ -1,5 +1,5 @@
 """The Pose Detection node: supplied boxes that never build the detector; the Pose Config node: the
-forearm_limit widget, off. Fake models, synthetic frames. The node loads models/common/download.py,
+forearm_limit and hand_dedup widgets, off. Fake models, synthetic frames. The node loads models/common/download.py,
 which imports folder_paths at its top, so this runs where ComfyUI is importable (with the ComfyUI
 root on PYTHONPATH) and is skipped elsewhere:
 
@@ -43,3 +43,11 @@ def test_pose_config_shows_the_forearm_limit_off():
     assert (kind, {k: options[k] for k in ("default", "min", "max", "step")}) == (
         "FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.1})
     assert "0 is off" in options["tooltip"]
+
+
+def test_pose_config_shows_the_hand_dedup_off():
+    from names import spec
+
+    kind, options = spec("BCVPoseConfig")["required"]["hand_dedup"]
+    assert (kind, options["default"], set(options)) == ("BOOLEAN", False, {"default", "tooltip"})
+    assert "one hand drawn twice" in options["tooltip"] and "pose_data keeps the keypoints" in options["tooltip"]
