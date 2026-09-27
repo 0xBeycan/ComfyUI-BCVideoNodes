@@ -47,7 +47,8 @@ loader = Names("loader", {
     **seams("models.common.loader", "_loaded", "detection_model_path"),
 })
 rules = Names("rules", {
-    **refs("libs.draw_rules", "RULES", "duplicate_hands", "hidden_parts", "mirrored_arms", "overlong_forearms"),
+    **refs("libs.draw_rules", "RULES", "back_view_faces", "duplicate_hands", "hidden_parts", "mirrored_arms",
+           "overlong_forearms"),
 })
 wrappers = Names("wrappers", {
     **refs("models.vitpose.wrapper", "ViTPose"),

@@ -14,6 +14,7 @@ HEAD_LIMBS = {(1, 0), (0, 14), (14, 16), (0, 15), (15, 17)}
 NOSE, NECK, R_SHOULDER, L_SHOULDER, R_HIP, L_HIP = 0, 1, 2, 5, 8, 11
 R_ELBOW, L_ELBOW = 3, 6
 R_WRIST, L_WRIST = 4, 7
+R_EYE, L_EYE = 14, 15
 # The body layout carries one foot point per side, the midpoint of that side's two toe
 # keypoints; pose2d_utils.split_kp2ds_for_aa averages wholebody 17/18 into the left one and
 # 20/21 into the right one, and drops the heels, so these are the only feet there are.

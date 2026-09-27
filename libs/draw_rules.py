@@ -2,8 +2,9 @@
 
 ViTPose places a hand, an arm or a wrist it cannot see on a visible part that looks like it: the
 hidden hand on the other hand, the hidden arm along the other arm, an out-of-shot wrist on the leg
-or the frame edge. The rules below recognise these from the keypoints alone and name the parts not
-to draw. They are Pose Config values, off by default; with every rule off nothing is left out.
+or the frame edge. It also invents a nose and eyes on the back of the head. The rules below
+recognise these from the keypoints alone and name the parts not to draw. They are Pose Config
+values, off by default; with every rule off nothing is left out.
 
 The rules, and limb_dedup's two tests, read the model's keypoints (pose_data's
 `pose_metas_original`, in the AAPose layout of libs/keypoints.py) at the draw threshold,
@@ -22,6 +23,11 @@ are never changed, so the guards, SAM 3.1 Multiplex and the face crop see what t
   length over the clip is at most that. A drawn forearm longer than the limit
   (PoseConfig.forearm_limit) times that median ends in a wrist put on something else (the leg,
   the frame edge): its wrist and hand are left out.
+- back_view_face (PoseConfig.back_view_face): a face drawn on the back of the head. On a frame
+  whose body is seen from behind (the model's left shoulder on the image left of its right one)
+  and whose face is not seen (its jaw line's mean confidence under JAW_CUT), the nose and both eyes
+  are left out: the model invents them there, up to 0.99 confident, and the profile drawn from
+  them flips side. The ears stay and keep the head's place. Each frame is read alone.
 
 Numpy only: the offline analysis reads it without ComfyUI or cv2.
 """
@@ -29,9 +35,10 @@ from typing import TypedDict
 
 import numpy as np
 
-from .keypoints import L_ELBOW, L_HIP, L_SHOULDER, L_WRIST, NECK, NOSE, R_ELBOW, R_HIP, R_SHOULDER, R_WRIST
+from .keypoints import (L_ELBOW, L_EYE, L_HIP, L_SHOULDER, L_WRIST, NECK, NOSE, R_ELBOW, R_EYE, R_HIP, R_SHOULDER,
+                        R_WRIST)
 
-RULES = ("limb_dedup", "forearm_rule")
+RULES = ("limb_dedup", "forearm_rule", "back_view_face")
 # Each side's elbow and wrist keypoint.
 SIDES = {"right": (R_ELBOW, R_WRIST), "left": (L_ELBOW, L_WRIST)}
 # limb_dedup's hand test: the two hands are one when the median distance between their matching
@@ -44,6 +51,15 @@ DUP_MIN_SHARED = 3
 # widest of the shoulders, the hips and 1.5 x neck-to-nose, the model's positions whether drawn or
 # not).
 MIRROR_DISTANCE = 0.2
+# back_view_face: the face is not seen when its jaw line's mean confidence is under this. Behind the
+# head the skull hides the jaw line, and the model invents it less than the nose and eyes. Measured
+# on bodies seen from behind: the backs of heads at most 0.808, the faces over the shoulder from 0.865.
+JAW_CUT = 0.835
+# The jaw line in keypoints_face: rows 1-17, COCO-WholeBody 23-39 (the 68-point face's 0-16).
+# Row 0 is COCO-WholeBody 22, the right heel (pose2d_utils.split_kp2ds_for_aa takes 22-90).
+JAW = slice(1, 18)
+# What back_view_face leaves out: the nose and both eyes.
+FACE = (NOSE, R_EYE, L_EYE)
 # What a hidden keypoint's confidence is set to for drawing: below any draw threshold, 0 included.
 HIDDEN = -np.inf
 
@@ -51,7 +67,7 @@ HIDDEN = -np.inf
 class Hidden(TypedDict):          # one frame: what the enabled rules leave out of its pose image
     body: list[int]                   # body keypoints (AAPose layout), ascending
     hands: list[str]                  # "left" / "right", ascending
-    rules: dict[str, list[str]]       # rule -> the sides it fired on, in RULES order
+    rules: dict[str, list[str]]       # rule -> where it fired, in RULES order: the sides, "head" for back_view_face
 
 
 class Overlong(TypedDict):        # one side forearm_rule fired on, over the clip
@@ -150,21 +166,39 @@ def overlong_forearms(pose_metas, threshold, limit) -> dict[str, Overlong]:
     return out
 
 
+def back_view_faces(pose_metas, threshold) -> list[int]:
+    """back_view_face over the clip: the frames of `pose_metas`, ascending, whose nose or an eye is
+    drawn on a body seen from behind with its face not seen. Seen from behind: the model's left
+    shoulder lies on the image left of its right shoulder (their positions whether drawn or not).
+    Face not seen: the mean confidence of the jaw line (JAW) is under JAW_CUT. Each frame is read
+    alone; a frame whose nose and eyes are not drawn has nothing to leave out."""
+    frames = []
+    for i, meta in enumerate(pose_metas):
+        body = _pixels(meta, "keypoints_body")
+        if (body[L_SHOULDER, 0] < body[R_SHOULDER, 0] and _pixels(meta, "keypoints_face")[JAW, 2].mean() < JAW_CUT
+                and (body[list(FACE), 2] >= threshold).any()):
+            frames.append(i)
+    return frames
+
+
 def hidden_parts(frame_count, duplicates: dict[str, list[int]], mirrored: dict[str, list[int]],
-                 overlong: dict[str, Overlong]) -> list[Hidden]:
+                 overlong: dict[str, Overlong], back_view: list[int]) -> list[Hidden]:
     """Per frame of a clip of `frame_count` frames, what the enabled rules leave out of its pose
     image: limb_dedup's hand of each side `duplicates` (duplicate_hands) names on it and elbow,
-    wrist and hand of each side `mirrored` (mirrored_arms) names on it, and forearm_rule's wrist and
-    hand of each side `overlong` (overlong_forearms) names on it. Nothing on any frame when all
-    three are empty."""
+    wrist and hand of each side `mirrored` (mirrored_arms) names on it, forearm_rule's wrist and
+    hand of each side `overlong` (overlong_forearms) names on it, and back_view_face's nose and eyes
+    when `back_view` (back_view_faces) holds it. Nothing on any frame when all four are empty."""
     out = []
     for i in range(frame_count):
         arms = [side for side, frames in mirrored.items() if i in frames]
+        head = i in back_view
         named = {"limb_dedup": [side for side in SIDES if side in arms or i in duplicates.get(side, ())],
-                 "forearm_rule": [side for side, over in overlong.items() if i in over["ratios"]]}
+                 "forearm_rule": [side for side, over in overlong.items() if i in over["ratios"]],
+                 "back_view_face": ["head"] if head else []}
         fired = {rule: named[rule] for rule in RULES if named[rule]}
         body = {SIDES[side][1] for side in named["forearm_rule"]}
         body |= {keypoint for side in arms for keypoint in SIDES[side]}
-        out.append({"body": sorted(body), "hands": sorted({side for sides in fired.values() for side in sides}),
+        body |= set(FACE) if head else set()
+        out.append({"body": sorted(body), "hands": sorted({*named["limb_dedup"], *named["forearm_rule"]}),
                     "rules": fired})
     return out

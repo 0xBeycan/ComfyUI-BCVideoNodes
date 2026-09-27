@@ -1,6 +1,7 @@
 """The draw rules (libs/draw_rules.py) on hand-built keypoints: which frames limb_dedup's hand
 and arm tests fire on and which side they name, which frames forearm_rule fires on at which
-forearm_limit, and what each leaves out, with the geometry written out in pixels:
+forearm_limit, which frames back_view_face fires on, and what each leaves out, with the geometry
+written out in pixels:
 
     python -m pytest tests/libs/test_draw_rules.py
 """
@@ -44,7 +45,7 @@ def forearm_clip(lengths, wrist_conf=0.9, arms=(RIGHT,)):
 
 
 def hidden(clip, limit):
-    return rules.hidden_parts(len(clip), {}, {}, rules.overlong_forearms(clip, 0.5, limit))
+    return rules.hidden_parts(len(clip), {}, {}, rules.overlong_forearms(clip, 0.5, limit), [])
 
 
 # -- limb_dedup: a hand on the other hand ----------------------------------------------------------
@@ -133,7 +134,7 @@ def test_the_first_and_the_last_frame_have_one_neighbour():
 def test_the_hand_test_names_the_copys_hand_only():
     clip = [frame({**RIGHT_INTACT, **LEFT_INTACT}), frame({**RIGHT_INTACT, **LEFT_BROKEN}),
             frame({**RIGHT_INTACT, **LEFT_BROKEN})]
-    assert rules.hidden_parts(3, rules.duplicate_hands(clip, 0.5), {}, {}) == [
+    assert rules.hidden_parts(3, rules.duplicate_hands(clip, 0.5), {}, {}, []) == [
         {"body": [], "hands": [], "rules": {}},
         {"body": [], "hands": ["left"], "rules": {"limb_dedup": ["left"]}},
         {"body": [], "hands": ["left"], "rules": {"limb_dedup": ["left"]}}]
@@ -226,7 +227,7 @@ def test_the_arm_test_reads_each_frame_alone():
 def test_the_arm_test_names_the_copys_elbow_wrist_and_hand():
     # the right elbow and wrist are 3 and 4, the left 6 and 7
     clip = [arms(), arms(elbow_gap=20.0, wrist_gap=20.0), arms(right=(0.6, 0.6), left=(0.9, 0.9))]
-    assert rules.hidden_parts(3, {}, rules.mirrored_arms(clip, 0.5), {}) == [
+    assert rules.hidden_parts(3, {}, rules.mirrored_arms(clip, 0.5), {}, []) == [
         {"body": [6, 7], "hands": ["left"], "rules": {"limb_dedup": ["left"]}},
         {"body": [], "hands": [], "rules": {}},
         {"body": [3, 4], "hands": ["right"], "rules": {"limb_dedup": ["right"]}}]
@@ -290,19 +291,99 @@ def test_the_rule_leaves_the_keypoints_alone():
     assert all(np.array_equal(frame[k], v) for frame, kept in zip(clip, before) for k, v in kept.items())
 
 
+# -- back_view_face -------------------------------------------------------------------------------
+
+def head(seen="back", jaw=0.6, face=(0.9, 0.9, 0.9), shoulders=0.9, heel=0.0, inner=0.0):
+    """One frame: the body seen from the "back" (the left shoulder, 5, at x 80 on the image left of the
+    right one, 2, at x 120) or the "front" (the other way round), the shoulders `shoulders` confident;
+    the nose (0), the right eye (14) and the left eye (15) `face` confident, the ears (16, 17) 0.9.
+    keypoints_face: the jaw line (rows 1-17) `jaw` confident, row 0 (COCO-WholeBody 22, the right
+    heel) `heel`, the inner face (rows 18-68) `inner`; float64 rows, so 17 x 0.835 averages to
+    exactly 0.835."""
+    right, left = (120.0, 80.0) if seen == "back" else (80.0, 120.0)
+    frame = meta({1: (100.0, 100.0, 0.9), 2: (right, 100.0, shoulders), 5: (left, 100.0, shoulders),
+                  0: (100.0, 80.0, face[0]), 14: (95.0, 75.0, face[1]), 15: (105.0, 75.0, face[2]),
+                  16: (90.0, 78.0, 0.9), 17: (110.0, 78.0, 0.9)})
+    rows = np.zeros((69, 3))
+    rows[0, 2], rows[1:18, 2], rows[18:, 2] = heel, jaw, inner
+    frame["keypoints_face"] = rows
+    return frame
+
+
+NOTHING = {"body": [], "hands": [], "rules": {}}
+NOSE_AND_EYES = {"body": [0, 14, 15], "hands": [], "rules": {"back_view_face": ["head"]}}
+
+
+def test_a_face_on_a_body_seen_from_behind_is_left_out_the_ears_kept():
+    # one frame: the left shoulder on the image left of the right one, the jaw line 0.6
+    assert rules.back_view_faces([head()], 0.5) == [0]
+    # the nose and both eyes; the ears (16, 17) are not named
+    assert rules.hidden_parts(1, {}, {}, {}, rules.back_view_faces([head()], 0.5)) == [NOSE_AND_EYES]
+
+
+def test_a_body_seen_from_the_front_keeps_its_face():
+    assert rules.back_view_faces([head(seen="front")], 0.5) == []
+    # both shoulders at one x: not seen from behind
+    level = head()
+    level["keypoints_body"][5, 0] = level["keypoints_body"][2, 0]
+    assert rules.back_view_faces([level], 0.5) == []
+
+
+@pytest.mark.parametrize("jaw, fired", [(0.6, [0]), (0.83, [0]), (0.835, []), (0.84, []), (0.95, [])])
+def test_a_jaw_line_at_or_over_0_835_is_a_face_seen(jaw, fired):
+    assert rules.back_view_faces([head(jaw=jaw)], 0.5) == fired
+
+
+def test_the_jaw_line_is_face_rows_1_to_17():
+    # the heel (row 0) at 1.0 and the inner face (rows 18-68) at 0.99 do not count: the jaw line at 0.83
+    # is under the cut, although rows 0-16 average (1.0 + 16 x 0.83) / 17 = 0.84 and all 68 face points
+    # (17 x 0.83 + 51 x 0.99) / 68 = 0.95
+    assert rules.back_view_faces([head(jaw=0.83, heel=1.0, inner=0.99)], 0.5) == [0]
+    # the jaw line at 0.84 is over it, although rows 0-16 average 16 x 0.84 / 17 = 0.79
+    assert rules.back_view_faces([head(jaw=0.84)], 0.5) == []
+
+
+def test_the_shoulders_count_whether_drawn_or_not():
+    assert rules.back_view_faces([head(shoulders=0.1)], 0.5) == [0]
+    assert rules.back_view_faces([head(seen="front", shoulders=0.1)], 0.5) == []
+
+
+def test_a_frame_without_a_drawn_nose_or_eye_has_nothing_to_leave_out():
+    assert rules.back_view_faces([head(face=(0.4, 0.4, 0.4))], 0.5) == []
+    # the nose alone, or one eye alone, drawn: it fires
+    assert rules.back_view_faces([head(face=(0.9, 0.4, 0.4))], 0.5) == [0]
+    assert rules.back_view_faces([head(face=(0.4, 0.4, 0.6))], 0.5) == [0]
+    # the rule reads what is drawn: at a threshold above the nose's and the eyes' 0.9 nothing is
+    assert rules.back_view_faces([head()], 0.95) == []
+
+
+def test_back_view_face_reads_each_frame_alone():
+    clip = [head(), head(seen="front"), head(jaw=0.9), head(), head(face=(0.3, 0.3, 0.3))]
+    assert rules.back_view_faces(clip, 0.5) == [0, 3]
+    assert rules.hidden_parts(5, {}, {}, {}, rules.back_view_faces(clip, 0.5)) == [
+        NOSE_AND_EYES, NOTHING, NOTHING, NOSE_AND_EYES, NOTHING]
+
+
+def test_back_view_face_leaves_the_keypoints_alone():
+    clip = [head(), head(seen="front"), head(jaw=0.9)]
+    before = [{k: np.array(v, copy=True) for k, v in f.items() if isinstance(v, np.ndarray)} for f in clip]
+    assert rules.back_view_faces(clip, 0.5) == [0]
+    assert all(np.array_equal(f[k], v) for f, kept in zip(clip, before) for k, v in kept.items())
+
+
 # -- all rules ------------------------------------------------------------------------------------
 
 def test_limb_dedup_leaves_out_what_either_test_names():
     # the hand test: the left hand on frames 1 and 2; the arm test: the left elbow, wrist and hand on
     # frames 2 and 4, the right ones on frame 3
-    assert rules.hidden_parts(5, {"left": [1, 2]}, {"right": [3], "left": [2, 4]}, {}) == [
+    assert rules.hidden_parts(5, {"left": [1, 2]}, {"right": [3], "left": [2, 4]}, {}, []) == [
         {"body": [], "hands": [], "rules": {}},
         {"body": [], "hands": ["left"], "rules": {"limb_dedup": ["left"]}},
         {"body": [6, 7], "hands": ["left"], "rules": {"limb_dedup": ["left"]}},
         {"body": [3, 4], "hands": ["right"], "rules": {"limb_dedup": ["right"]}},
         {"body": [6, 7], "hands": ["left"], "rules": {"limb_dedup": ["left"]}}]
     # a hand on one side and an arm on the other on one frame: both, the sides in SIDES order
-    assert rules.hidden_parts(1, {"left": [0]}, {"right": [0]}, {}) == [
+    assert rules.hidden_parts(1, {"left": [0]}, {"right": [0]}, {}, []) == [
         {"body": [3, 4], "hands": ["left", "right"], "rules": {"limb_dedup": ["right", "left"]}}]
 
 
@@ -310,25 +391,37 @@ def test_a_part_any_rule_names_is_left_out():
     # limb_dedup: the left hand on frames 1 and 2, the left elbow, wrist and hand on frames 2 and 4;
     # forearm_rule: the right wrist and hand on frames 2 and 3
     overlong = {"right": {"median": 50.0, "ratios": {2: 2.4, 3: 2.2}}}
-    assert rules.hidden_parts(5, {"left": [1, 2]}, {"left": [2, 4]}, overlong) == [
+    assert rules.hidden_parts(5, {"left": [1, 2]}, {"left": [2, 4]}, overlong, []) == [
         {"body": [], "hands": [], "rules": {}},
         {"body": [], "hands": ["left"], "rules": {"limb_dedup": ["left"]}},
         {"body": [4, 6, 7], "hands": ["left", "right"], "rules": {"limb_dedup": ["left"], "forearm_rule": ["right"]}},
         {"body": [4], "hands": ["right"], "rules": {"forearm_rule": ["right"]}},
         {"body": [6, 7], "hands": ["left"], "rules": {"limb_dedup": ["left"]}}]
     # rules and tests naming one part leave it out once
-    assert rules.hidden_parts(1, {"right": [0]}, {}, {"right": {"median": 50.0, "ratios": {0: 2.4}}}) == [
+    assert rules.hidden_parts(1, {"right": [0]}, {}, {"right": {"median": 50.0, "ratios": {0: 2.4}}}, []) == [
         {"body": [4], "hands": ["right"], "rules": {"limb_dedup": ["right"], "forearm_rule": ["right"]}}]
-    assert rules.hidden_parts(1, {"right": [0]}, {"right": [0]}, {"right": {"median": 50.0, "ratios": {0: 2.4}}}) == [
+    assert rules.hidden_parts(1, {"right": [0]}, {"right": [0]}, {"right": {"median": 50.0, "ratios": {0: 2.4}}},
+                              []) == [
         {"body": [3, 4], "hands": ["right"], "rules": {"limb_dedup": ["right"], "forearm_rule": ["right"]}}]
+
+
+def test_back_view_face_joins_the_other_rules():
+    # back_view_face on frames 0 and 1; limb_dedup's left arm on frame 1 and left hand on frame 2;
+    # forearm_rule's right wrist and hand on frame 1
+    overlong = {"right": {"median": 50.0, "ratios": {1: 2.4}}}
+    assert rules.hidden_parts(3, {"left": [2]}, {"left": [1]}, overlong, [0, 1]) == [
+        NOSE_AND_EYES,
+        {"body": [0, 4, 6, 7, 14, 15], "hands": ["left", "right"],
+         "rules": {"limb_dedup": ["left"], "forearm_rule": ["right"], "back_view_face": ["head"]}},
+        {"body": [], "hands": ["left"], "rules": {"limb_dedup": ["left"]}}]
 
 
 def test_the_rules_are_pose_config_values_off_by_default():
     from pose_fakes import pose
 
     config = pose.PoseConfig()
-    assert rules.RULES == ("limb_dedup", "forearm_rule")
-    assert config.limb_dedup is False and config.forearm_limit == 0.0
+    assert rules.RULES == ("limb_dedup", "forearm_rule", "back_view_face")
+    assert config.limb_dedup is False and config.forearm_limit == 0.0 and config.back_view_face is False
     for outside in (-0.1, 10.5):
         with pytest.raises(ValueError, match="forearm_limit"):
             pose.PoseConfig(forearm_limit=outside)

@@ -1,5 +1,5 @@
 """The Pose Detection node: supplied boxes that never build the detector; the Pose Config node: the
-forearm_limit and limb_dedup widgets, off. Fake models, synthetic frames. The node loads
+forearm_limit, limb_dedup and back_view_face widgets, off. Fake models, synthetic frames. The node loads
 models/common/download.py, which imports folder_paths at its top, so this runs where ComfyUI is
 importable (with the ComfyUI root on PYTHONPATH) and is skipped elsewhere:
 
@@ -56,3 +56,18 @@ def test_pose_config_shows_the_limb_dedup_off():
                                             "the other arm", "pose_data keeps the keypoints"))
     # the one switch: the separate hand and arm switches are gone
     assert "hand_dedup" not in inputs and "mirror_rule" not in inputs
+
+
+def test_pose_config_shows_the_back_view_face_off():
+    from names import spec
+
+    inputs = spec("BCVPoseConfig")["required"]
+    assert list(inputs)[-1] == "back_view_face"
+    kind, options = inputs["back_view_face"]
+    assert (kind, options["default"], set(options)) == ("BOOLEAN", False, {"default", "tooltip"})
+    tooltip = options["tooltip"]
+    assert all(part in tooltip for part in (
+        "Leave the nose and both eyes out of the pose images", "seen from behind",
+        "the mean confidence of the 17 jaw-line face keypoints under 0.835",
+        "ViTPose invents a nose and eyes on the back of the head, up to 0.99 confident",
+        "flips side", "The ears keep the head's place", "pose_data keeps the keypoints"))

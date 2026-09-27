@@ -15,7 +15,8 @@ import torch
 
 from ..libs import log
 from ..libs.bbox import BOX_WINDOW, box_corners, point_in_frame, supplied_boxes, whole_frame_box, widen_over_time
-from ..libs.draw_rules import HIDDEN, RULES, Hidden, duplicate_hands, hidden_parts, mirrored_arms, overlong_forearms
+from ..libs.draw_rules import (HIDDEN, RULES, Hidden, back_view_faces, duplicate_hands, hidden_parts, mirrored_arms,
+                                overlong_forearms)
 from ..libs.pose_data import PoseData
 from ..libs.video import as_numpy
 from ..models.common.pose_input import pose_crop
@@ -56,6 +57,8 @@ class PoseConfig:
         "doc": "Leave out of the pose images a wrist and its hand whose forearm is drawn longer than this many times its median drawn length in the clip (2.0: over twice it). 0 is off. pose_data keeps the keypoints"})
     limb_dedup: bool = field(default=False, metadata={
         "doc": "Leave out of the pose images a hand or an arm the model drew on its visible twin: a hand on the other hand when its own arm is broken (elbow or wrist not drawn) there and on a neighbouring frame, or a whole arm (elbow, wrist and hand) along the other arm, the less confident of the two. pose_data keeps the keypoints"})
+    back_view_face: bool = field(default=False, metadata={
+        "doc": "Leave the nose and both eyes out of the pose images on a frame whose body is seen from behind (the left shoulder on the image left of the right one) and whose face is not seen (the mean confidence of the 17 jaw-line face keypoints under 0.835): ViTPose invents a nose and eyes on the back of the head, up to 0.99 confident, and the profile drawn from them flips side. The ears keep the head's place. pose_data keeps the keypoints"})
 
     def __post_init__(self):
         for f in fields(self):
@@ -212,19 +215,20 @@ def _frames(frames):
 
 
 def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5,
-         forearm_limit=0.0, limb_dedup=False):
+         forearm_limit=0.0, limb_dedup=False, back_view_face=False):
     """The pose images [B, H, W, 3] drawn from pose_data at the size of the frames the pose
     was found on, so they line up with the frames and the mask. A stick width of 0 leaves
     that part out; a limb is drawn when both its ends reach `draw_threshold`. A draw rule that is
-    on (libs/draw_rules.py; limb_dedup, forearm_limit above 0) leaves the parts it names out of the
-    images, one console warning per side and part it fired on; pose_data keeps them."""
+    on (libs/draw_rules.py; limb_dedup, forearm_limit above 0, back_view_face) leaves the parts it
+    names out of the images, one console warning per side and part it fired on; pose_data keeps
+    them."""
     from comfy.utils import ProgressBar
     from tqdm import tqdm
 
     from ..libs.pose_utils.human_visualization import draw_aapose_by_meta_new
     pose_metas = pose_data["pose_metas"]
     pbar = ProgressBar(len(pose_metas))
-    enabled = {"limb_dedup": limb_dedup, "forearm_rule": forearm_limit > 0}
+    enabled = {"limb_dedup": limb_dedup, "forearm_rule": forearm_limit > 0, "back_view_face": back_view_face}
     pose_images = []
     result = {}
     with log.step(f"drawing {len(pose_metas)} pose images", result):
@@ -232,7 +236,8 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
         duplicates = duplicate_hands(originals, draw_threshold) if limb_dedup else {}
         mirrored = mirrored_arms(originals, draw_threshold) if limb_dedup else {}
         overlong = overlong_forearms(originals, draw_threshold, forearm_limit)
-        hidden = hidden_parts(len(pose_metas), duplicates, mirrored, overlong)
+        back_view = back_view_faces(originals, draw_threshold) if back_view_face else []
+        hidden = hidden_parts(len(pose_metas), duplicates, mirrored, overlong, back_view)
         for i, (meta, parts) in enumerate(tqdm(zip(pose_metas, hidden), total=len(pose_metas),
                                                desc="Drawing pose images")):
             canvas = np.zeros((meta.height, meta.width, 3), dtype=np.uint8)
@@ -255,6 +260,9 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
         log.warning(f"forearm_limit {forearm_limit}: {side} wrist and hand left out of the pose images on "
                     f"{_frames(sorted(over['ratios']))}: forearm {span}x its clip median of {over['median']:.0f} px; "
                     f"pose_data keeps the keypoints")
+    if back_view:
+        log.warning(f"back_view_face: nose and eyes left out of the pose images on {_frames(back_view)}: seen from "
+                    f"behind; pose_data keeps the keypoints")
     return torch.from_numpy(np.stack(pose_images, 0)).float() / 255.0
 
 
@@ -284,5 +292,6 @@ def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
     pose_data["draw_threshold"] = draw_threshold
     pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold,
-                       forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup)
+                       forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup,
+                       back_view_face=config.back_view_face)
     return pose_images, pose_data, boxes, key_frame_body_points(pose_data, draw_threshold)

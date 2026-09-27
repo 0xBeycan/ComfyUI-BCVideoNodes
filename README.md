@@ -50,14 +50,14 @@ keypoints on every frame, and the pose images are drawn.
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
-`box_window`, `forearm_limit`, `limb_dedup`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
+`box_window`, `forearm_limit`, `limb_dedup`, `back_view_face`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
 
-`forearm_limit` and `limb_dedup` are draw rules (`libs/draw_rules.py`), both
-off by default. A part any rule names is left out of the pose images, with one
-console warning per side and part a rule fired on naming the frames;
-`pose_data` keeps every keypoint.
+`forearm_limit`, `limb_dedup` and `back_view_face` are draw rules
+(`libs/draw_rules.py`), all off by default. A part any rule names is left out
+of the pose images, with one console warning per side and part a rule fired on
+naming the frames; `pose_data` keeps every keypoint.
 
 `forearm_limit` (0, off): ViTPose puts a wrist it cannot see on something
 else, the leg or the frame edge, and the forearm ending there is drawn far too
@@ -77,6 +77,16 @@ an arm it cannot see along the other arm. On, both are left out:
   arm's forearm drawn and something of the other arm drawn, are one arm drawn
   twice: the arm whose elbow and wrist are less confident is the copy, and its
   elbow, wrist and hand are left out.
+
+`back_view_face` (off): ViTPose invents a nose and eyes on the back of the
+head, up to 0.99 confident, and the profile drawn from them flips side from
+frame to frame. On, a frame whose body is seen from behind (the model's left
+shoulder on the image left of its right shoulder) and whose face is not seen
+(the mean confidence of the 17 jaw-line face keypoints under 0.835) has its
+nose and both eyes left out; everything else is drawn as before. The ears keep
+the head's place. The jaw line tells a back of the head from a face turned
+over the shoulder: the skull hides it from behind, and the model invents it
+less than the nose and eyes. Each frame is read alone.
 
 ### SAM 3.1 Multiplex Video Track
 
