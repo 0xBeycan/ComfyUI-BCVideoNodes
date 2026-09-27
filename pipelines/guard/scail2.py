@@ -23,7 +23,8 @@ and the rest are warnings:
                         off a side of the frame she runs off - is told from another object; with
                         one, a piece holding her own drawn keypoints is her)
   mask_loss             a region the driving mask drops for a run of up to 8 frames between two
-                        frames that hold it, not a limb that moved away (see the Mask Guard)
+                        frames that hold it, not a limb that moved away (see the Mask Guard),
+                        where the latent grid SCAIL-2 reads the mask on drops it too
   reference_fragmented  the same on the reference mask
   reference_misaligned  replacement mode only: the character on the reference, cropped and
                         resized as core does, overlaps the person on the first driving frame by
@@ -32,9 +33,17 @@ and the rest are warnings:
 
 With pose_data, the driving mask also gets mask_empty and mask_leak (these two stop, as in the
 Mask Guard), mask_attached_leak, mask_missing_keypoints, mask_missed_limb, body_not_drawn and
-mask_unstable (warnings), measured and judged as the Mask Guard does.
+mask_unstable (warnings), measured and judged as the Mask Guard does, except that a drawn keypoint
+the latent grid reads as the person is inside the mask.
 
-Measured as data, never judged: the mask area, the share of the mask the latent cut keeps
+SCAIL-2 reads the driving mask coarsely and grows nothing (common.LATENT_READ): core area-resizes
+it to half size and cuts it at 225/255, then area-pools that to the latent grid, one cell per
+16 x 16 px of the generation. A hole or a sliver inside a cell, or a keypoint just outside the
+person in a cell she fills half of, never reaches the model, so the checks that read the mask's
+own pixels - mask_loss and the keypoint tests - count a defect only where that reading has it too
+(`latent_reading`).
+
+Measured as data, never judged: the mask area, the share of the mask the half-size cut keeps
 (`latent_kept`: core reads the driving mask at half size, area-resized, cut at 225/255, so a
 thin limb can vanish), the mask IoU with the previous frame, the share of the reference character
 core's center crop cuts off (`cropped`), and the reference's IoU and scale against the first
@@ -49,8 +58,8 @@ import torch.nn.functional as F
 
 from ...libs import log
 from ...models.scail2.adapter import ON, REPLACEMENT, mask_convention
-from .common import (FRAGMENT_FRACTION, MASK_CHECKS, POSE_FREE_MASK_CHECKS, SCAIL2_CHECKS, SCAIL2_DRIVING_CHECKS,
-                     SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
+from .common import (FRAGMENT_FRACTION, LATENT_READ, MASK_CHECKS, POSE_FREE_MASK_CHECKS, SCAIL2_CHECKS,
+                     SCAIL2_DRIVING_CHECKS, SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
 from .config import MaskGuardConfig, SCAIL2GuardConfig, _config
 from .mask import _iou, mask_flags, mask_frame_metrics, mask_regions, pose_of
 from .report import _kind, _stop, write_report
@@ -82,37 +91,66 @@ def center_crop(width, height, new_width, new_height):
     return x, y
 
 
-def _latent_kept(frame, person, area):
-    """The share of the person's `area` pixels on `frame` [H, W, 3] that core's driving-mask
-    path keeps: the frame area-resized to half size, then cut at 225/255. None on an empty frame."""
+def _half(frame):
+    """The person on `frame` [H, W, 3] as core's WanSCAILToVideo takes the driving mask in: the
+    frame area-resized to half size (its center crop cuts nothing at the generation size), then
+    each colour channel cut at 225/255 (`_person`), [H // 2, W // 2] booleans."""
+    H, W = frame.shape[:2]
+    return _person(F.interpolate(frame.movedim(-1, 0)[None], size=(H // 2, W // 2), mode="area")[0].movedim(0, -1))
+
+
+def _latent_kept(half, person, area):
+    """The share of the person's `area` pixels (`person`, [H, W]) that the half-size cut `half`
+    keeps. None on an empty frame."""
     if not area:
         return None
-    H, W = person.shape
-    half = F.interpolate(frame.movedim(-1, 0)[None], size=(H // 2, W // 2), mode="area")[0].movedim(0, -1)
-    kept = F.interpolate(_person(half)[None, None].float(), size=(H, W), mode="nearest")[0, 0] > 0.5
+    kept = F.interpolate(half[None, None].float(), size=person.shape, mode="nearest")[0, 0] > 0.5
     return float((kept & person).sum()) / area
 
 
+def _latent_cells(half):
+    """The cells of the latent grid that read as the person, from the half-size cut `half`: core's
+    _extract_mask_to_28ch area-pools it 8x (each side halved three times, rounding up), and a
+    cell reads as her when she fills at least LATENT_READ of it."""
+    h, w = half.shape
+    for _ in range(3):
+        h, w = (h + 1) // 2, (w + 1) // 2
+    return F.interpolate(half[None, None].float(), size=(h, w), mode="area")[0, 0] >= LATENT_READ
+
+
 def driving_person(pose_video_mask):
-    """The person on every driving frame as [T, H, W] booleans, and the share of her each frame
-    keeps through the latent cut (`_latent_kept`)."""
+    """The person on every driving frame as [T, H, W] booleans, the share of her each frame
+    keeps through the half-size cut (`_latent_kept`), and the cells of the latent grid each frame
+    reads as her ([T, h, w] booleans, `_latent_cells`)."""
     T, H, W = pose_video_mask.shape[:3]
     masks = np.zeros((T, H, W), dtype=bool)
-    kept = []
+    kept, cells = [], []
     for i in range(T):
         frame = pose_video_mask[i, ..., :3].float().cpu()
-        person = _person(frame)
+        person, half = _person(frame), _half(frame)
         masks[i] = person.numpy()
-        kept.append(_latent_kept(frame, person, int(masks[i].sum())))
-    return masks, kept
+        kept.append(_latent_kept(half, person, int(masks[i].sum())))
+        cells.append(_latent_cells(half).numpy())
+    return masks, kept, np.array(cells, dtype=bool) if T else np.zeros((0, 0, 0), bool)
 
 
-def scail2_frame_metrics(masks, kept, max_mask_loss, pose_metas=None, detections=None,
+def latent_reading(cells, shape):
+    """What SCAIL-2 reads of each driving frame, as `reading(f)`: the cells of frame f's latent
+    grid that read as the person (`cells`, `driving_person`), at the frame size `shape` (H, W)."""
+    def reading(f):
+        up = F.interpolate(torch.from_numpy(cells[f])[None, None].float(), size=shape, mode="nearest")
+        return up[0, 0].numpy() > 0.5
+    return reading
+
+
+def scail2_frame_metrics(masks, kept, cells, max_mask_loss, pose_metas=None, detections=None,
                          draw_threshold=None) -> list[Scail2Row]:
     """One dict of raw measurements per driving frame (keys SCAIL2_ROW): the Mask Guard's
-    measurements of the person (`mask_frame_metrics`, the pose-based ones None without a pose)
-    and the share the latent cut keeps."""
-    rows = mask_frame_metrics(masks, pose_metas, detections, draw_threshold, max_mask_loss)
+    measurements of the person (`mask_frame_metrics`, the pose-based ones None without a pose),
+    mask_loss and the keypoint tests judged by what the latent grid reads of her
+    (`latent_reading`), and the share the half-size cut keeps."""
+    rows = mask_frame_metrics(masks, pose_metas, detections, draw_threshold, max_mask_loss,
+                              reading=latent_reading(cells, masks.shape[1:]), read_keypoints=True)
     return [{key: kept[m["frame"]] if key == "latent_kept" else m[key] for key in SCAIL2_ROW} for m in rows]
 
 
@@ -229,10 +267,10 @@ def check_scail2(pose_video_mask, reference_image_mask, config=None, enabled=Tru
     checks = set(SCAIL2_CHECKS if enabled else ())
     T, H, W = pose_video_mask.shape[:3]
     with log.step(f"SCAIL-2 guard: checking {T} frames ({'on' if enabled else 'off'})"):
-        masks, kept = driving_person(pose_video_mask)
+        masks, kept, cells = driving_person(pose_video_mask)
         pose_metas, detections = pose_of(masks, pose_data, "run Pose Detection on the driving frames at the "
                                                            "generation size, the frames SCAIL-2 Preprocess got")
-        rows = scail2_frame_metrics(masks, kept, mask_config.max_mask_loss, pose_metas, detections,
+        rows = scail2_frame_metrics(masks, kept, cells, mask_config.max_mask_loss, pose_metas, detections,
                                     thresholds["draw_threshold"])
         flags = scail2_flags(rows, thresholds)
         reference = reference_record(reference_image_mask, W, H, masks[0] if T else None, thresholds)

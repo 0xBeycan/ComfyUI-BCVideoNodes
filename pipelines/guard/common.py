@@ -112,6 +112,16 @@ LOSS_ON_BODY = 0.5
 FINAL_GROW, FINAL_BLOCK = 10, 32
 FINAL_PAD = FINAL_GROW + FINAL_BLOCK // 2
 FINAL_ON_BODY = 1.0
+# The driving mask as SCAIL-2 reads it. Core's WanSCAILToVideo area-resizes the colored mask to
+# half the generation size and cuts each colour channel at 225/255, then _extract_mask_to_28ch
+# area-pools that 8x to the latent grid, one cell per 16 x 16 px of the generation, and stacks 4
+# frames per latent frame; nothing grows it and no noise mask follows. The model gets each cell as
+# the share of it the person fills, and a cell reads as her when she fills at least LATENT_READ of
+# it. A hole or a sliver inside a cell, or a keypoint just outside her in a cell she fills half
+# of, never reaches the model; a dropped hand empties cells. So the SCAIL-2 guard counts a dropped
+# region (mask_loss) only where the mask and that reading both drop it, and a drawn keypoint the
+# reading holds is inside the mask (mask_missing_keypoints, mask_missed_limb).
+LATENT_READ = 0.5
 # The person faces the camera when her right shoulder is left of her left one on the image by at
 # least this share of her torso (neck to the middle of the hips): turned to profile the shoulders
 # close up (a quarter turn short of profile they are still about half the torso apart), with her

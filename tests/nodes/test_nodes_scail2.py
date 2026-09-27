@@ -110,6 +110,12 @@ def test_the_guard_node_widgets():
                               *widget_defaults(scail2.MaskGuardConfig)]
     assert required["scail2_guard"][1]["default"] is True
     assert "Uncalibrated" in required["min_reference_iou"][1]["tooltip"]
+    # mask_loss is judged on the sampler's latent grid, and its tooltip says so; the widget is the Mask
+    # Guard's (type, range) with a hand-sized default: on the latent grid motion empties whole cells
+    ours, mask_guard = required["max_mask_loss"], nodes._config_inputs(scail2.MaskGuardConfig)["max_mask_loss"]
+    assert ours[0] == mask_guard[0] and "latent grid" in ours[1]["tooltip"]
+    assert ours[1]["default"] == 0.05 and mask_guard[1]["default"] == 0.0185
+    assert {**ours[1], "tooltip": None, "default": None} == {**mask_guard[1], "tooltip": None, "default": None}
     assert list(spec["optional"]) == ["pose_data"] and spec["optional"]["pose_data"][0] == "POSEDATA"
     assert "Optional, but it gives the best result" in spec["optional"]["pose_data"][1]["tooltip"]
 

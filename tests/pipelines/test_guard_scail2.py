@@ -12,7 +12,7 @@ import json
 import pytest
 import torch
 
-from guard_fakes import MASK, H, N, W, clip, drop_keypoints, origin
+from guard_fakes import MASK, H, N, W, clip, drop_keypoints, origin, place_keypoints
 from scail2_fakes import scail2
 
 
@@ -185,13 +185,62 @@ def test_without_pose_data_the_report_names_what_it_did_not_check():
     assert record["frames"][5]["keypoint_recall"] is None and record["frames"][5]["missed_limbs"] == []
 
 
-def test_a_region_the_driving_mask_drops_for_one_frame_is_mask_loss():
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_a_region_the_driving_mask_drops_for_one_frame_is_mask_loss_where_the_latent_grid_drops_it(replacement_mode):
+    # a 30 x 30 hole on frame 20 (rows 190-219, columns 120-149). SCAIL-2 reads the mask on 16 x 16
+    # px cells, a cell on where the person fills half of it: the hole empties the cell at rows
+    # 192-207, columns 128-143 and leaves a quarter of the one below it; the cells beside it stay
+    # over half full. What the mask and that grid both drop is 28 x 16 px, a disc of radius 8
     masks = clip()[0]
     x1, y1 = origin(20)
     masks[20, y1 + 150:y1 + 180, x1 + 40:x1 + 70] = 0
-    passed, flags, _, report, record = guard_run(*rendered(False, driving=masks))
+    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks))
     assert passed and flags == {"mask_loss": [20]}, report
-    assert record["frames"][20]["mask_loss"] == pytest.approx(15 / 240)
+    assert record["frames"][20]["mask_loss"] == pytest.approx(8 / 240)
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_a_hole_the_latent_grid_reads_over_is_not_mask_loss(replacement_mode):
+    # a 20 x 20 hole on frame 20 centred on a corner of the latent grid (row 208, column 128):
+    # each of its four cells loses 100 of its 256 px and still reads as the person, so the model
+    # never gets the hole, though at the mask's own pixels it holds a disc of radius 10 (over
+    # max_mask_loss)
+    masks = clip()[0]
+    masks[20, 198:218, 118:138] = 0
+    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks))
+    assert passed and flags == {}, report
+    assert record["frames"][20]["mask_loss"] == 0.0
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_a_part_the_latent_grid_never_reads_is_not_mask_loss_when_it_drops(replacement_mode):
+    # a still person whose outline runs along the grid (columns 64-175), with a 12 x 20 px bump on
+    # her right side (rows 134-153, columns 176-187) that frame 2 drops. The bump fills 120 px of
+    # each of the two cells it lies in, under half, so the model never had it; at the mask's own
+    # pixels its drop holds a disc of radius 6 (over max_mask_loss)
+    masks = torch.zeros(5, H, W)
+    masks[:, 48:272, 64:176] = 1.0
+    masks[[0, 1, 3, 4], 134:154, 176:188] = 1.0
+    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks))
+    assert passed and flags == {}, report
+    assert record["frames"][2]["mask_loss"] == 0.0
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_a_keypoint_in_a_cell_the_latent_grid_reads_as_her_is_inside_the_mask(replacement_mode):
+    # frames 8-12 draw the right wrist 4 px left of her side, in the cell at columns 64-79 that
+    # her side fills 12 of 16 columns of (her left edge is at column 68-72). At the mask's own
+    # pixels it is a limb end the mask lost - the Mask Guard says so - but SCAIL-2 reads that cell
+    # as her
+    masks, pose_data = clip()
+    for i in range(8, 13):
+        x1, y1 = origin(i)
+        place_keypoints(pose_data, [i], 4, x1 - 4, y1 + 112)
+    raw = json.loads(scail2.check_mask(masks, pose_data, MASK, stop_on_fail=False)[2])["flags"]
+    assert raw == {"mask_missed_limb": [8, 9, 10, 11, 12]}, raw
+    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks), pose_data=pose_data)
+    assert passed and flags == {}, report
+    assert all(record["frames"][i]["missed_limbs"] == [] for i in range(8, 13))
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
@@ -257,6 +306,29 @@ def test_a_reference_without_a_frame_is_an_error():
     driving, reference = rendered(False)
     with pytest.raises(ValueError, match="reference_image_mask has no frame"):
         scail2.check_scail2(driving, reference[:0])
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_the_latent_cells_are_the_person_core_s_28_channel_extraction_reads(replacement_mode):
+    # WanSCAILToVideo: the colored driving mask area-resized to half size, then
+    # _extract_mask_to_28ch: blue (identity 0) is channel 3 of each frame's 7, 4 frames per latent
+    # frame, frame 0 four times. A cell of ours is on where core's value is at least a half
+    cli_args = pytest.importorskip("comfy.cli_args")
+    cli_args.args.disable_xformers = True
+    import comfy.utils
+    from comfy_extras.nodes_scail import _extract_mask_to_28ch
+
+    masks = clip()[0][:9]
+    masks[3, 101:104, :] = 1.0                 # a 3 px limb across the frame
+    masks[5, 151:162, 97:121] = 0              # an odd-sized hole off the grid
+    masks[7, 40:280, 60:67] = 0                # her side cut back by 7 px
+    driving, _ = rendered(replacement_mode, driving=masks)
+    half = comfy.utils.common_upscale(driving.movedim(-1, 1), W // 2, H // 2, "area", "center").movedim(1, -1)
+    core = _extract_mask_to_28ch(half)[0]
+    cells = scail2.driving_person(driving)[2]
+    for f in range(9):
+        blue = core[(f + 3) // 4, 7 * ((f + 3) % 4) + 3]
+        assert cells[f].shape == tuple(blue.shape) and (cells[f] == (blue >= 0.5).numpy()).all(), f
 
 
 @pytest.mark.parametrize("size, target", [((320, 240), (240, 320)), ((240, 320), (320, 240)), ((333, 200), (96, 160)),

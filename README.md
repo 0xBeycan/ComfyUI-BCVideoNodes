@@ -299,12 +299,29 @@ on a driving frame or on the reference (`driving_fragmented`,
 character overlaps the first driving frame's person by an IoU below
 `min_reference_iou` (0.4) after the center crop the core node cuts the
 reference to (`reference_misaligned`). The threshold is a first value, not
-calibrated yet. Measured as data: the mask area, the share of the mask the
-sampler's half-size latent cut keeps (`latent_kept`: a thin limb can vanish
-there), the mask IoU with the previous frame, the share of the reference
-character that crop cuts off (`cropped`: the core node crops the reference
-to the generation's aspect ratio either way), and the reference's IoU and
-scale against the first driving frame.
+calibrated yet.
+
+The driving mask is judged the way SCAIL-2 reads it. The core node
+area-resizes it to half size and cuts each colour at 225/255, then
+area-pools that to the latent grid, one cell per 16 x 16 px of the
+generation; it grows nothing and uses no noise mask. A cell reads as the
+person when she fills at least half of it. A hole or a sliver inside a
+cell, or a keypoint just outside her in a cell she fills half of, never
+reaches the model, while a dropped hand empties cells. So `mask_loss`
+counts a dropped region only where the mask and that reading both drop it
+(its thickness is measured on what both drop), and with `pose_data` a
+drawn keypoint the reading holds is inside the mask
+(`mask_missing_keypoints`, `mask_missed_limb`). On that grid fast motion
+(a limb that moved, an arm-body gap opening for a frame) empties whole
+cells on a correct mask too, so the node's `max_mask_loss` defaults to
+0.05, higher than the Mask Guard's 0.0185: a hand-sized loss counts,
+motion does not (measured on the test clips). Measured as data: the mask
+area, the share of the mask the sampler's half-size latent cut keeps
+(`latent_kept`: a thin limb can vanish there), the mask IoU with the
+previous frame, the share of the reference character that crop cuts off
+(`cropped`: the core node crops the reference to the generation's aspect
+ratio either way), and the reference's IoU and scale against the first
+driving frame.
 
 - in: `pose_video_mask`, `reference_image_mask` (IMAGE), optional
   `pose_data`; widgets `scail2_guard` (on), the reference threshold

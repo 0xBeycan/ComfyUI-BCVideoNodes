@@ -77,6 +77,12 @@ class BCVSCAIL2Preprocess:
 
 SCAIL2_GUARD_TOOLTIP = "Stop the workflow when a SCAIL-2 check fails (no driving frame has the person, the reference mask has no character; with pose_data also an empty or leaking driving mask). Warnings never stop. Off still measures and reports every check."
 POSE_DATA_TOOLTIP = "Pose Detection on the driving frames, at the generation size (the frames SCAIL-2 Preprocess got). Optional, but it gives the best result: with it the driving mask also gets the Mask Guard's pose-based checks; without it the guard cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece is the person."
+# SCAIL-2 reads the driving mask on a 16 x 16 px latent grid with 4 frames stacked per latent frame, so
+# motion (a limb that moved, an arm-body gap opening for a frame) empties whole cells on correct masks;
+# only a hand-sized loss separates from that (measured on the test clips: motion 13-25 px on a single
+# frame and 28-35 px on runs, a dropped hand 53 px, on a 704 px short side).
+SCAIL2_MAX_MASK_LOSS = 0.05
+MASK_LOSS_TOOLTIP = "mask_loss (warning): the driving mask drops a region for 1 to 8 frames while holding it on the frames before and after, and no limb moved away to account for it; flagged over the whole run when the region is thicker than this on a single frame or twice this over a longer run, from half this where the drawn skeleton crosses it (with pose_data). The sampler reads the mask on its latent grid (16 x 16 px cells of the generation, a cell on where the person fills at least half of it, nothing grown), so only the part that grid drops too counts: a hole or a sliver inside a cell never reaches the model. Thickness is the radius of the largest disc the region holds, as a fraction of the frame's shorter side. The default (0.05, higher than the Mask Guard's) counts a hand-sized loss only: on the latent grid, motion empties whole cells on a correct mask too. Set on the test clips."
 
 
 class BCVSCAIL2PreprocessGuard:
@@ -84,12 +90,15 @@ class BCVSCAIL2PreprocessGuard:
     def INPUT_TYPES(cls):
         from ..pipelines import guard
 
+        mask = config_inputs(guard.MaskGuardConfig)
+        kind, options = mask["max_mask_loss"]
+        mask["max_mask_loss"] = (kind, {**options, "default": SCAIL2_MAX_MASK_LOSS, "tooltip": MASK_LOSS_TOOLTIP})
         return {
             "required": {
                 "pose_video_mask": ("IMAGE", {"tooltip": "The colored driving mask (SCAIL-2 Preprocess or SCAIL-2 Colored Mask), at the generation size."}),
                 "reference_image_mask": ("IMAGE", {"tooltip": "The colored reference mask. The mode is read from its border, as the sampler reads it."}),
                 **_guard_inputs(guard.SCAIL2GuardConfig, "scail2_guard", SCAIL2_GUARD_TOOLTIP),
-                **config_inputs(guard.MaskGuardConfig),
+                **mask,
             },
             "optional": {"pose_data": ("POSEDATA", {"tooltip": POSE_DATA_TOOLTIP})},
         }
@@ -98,7 +107,7 @@ class BCVSCAIL2PreprocessGuard:
     RETURN_NAMES = ("pose_video_mask", "reference_image_mask", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = SCAIL
-    DESCRIPTION = "Checks the colored masks of SCAIL-2 Preprocess before the sampler, on the person as the sampler reads it (blue above 225/255); end-to-end SCAIL-2 draws no pose, so pose_data is optional. Stops the workflow when scail2_guard is on and no driving frame has the person or the reference mask has no character (with pose_data also on an empty or leaking driving mask). Warnings, which never stop: blank or split-up driving frames (normal when the person leaves the shot or is occluded), a region the driving mask drops for one frame, a split-up reference mask, in replacement mode a reference not placed like the first driving frame, and with pose_data the Mask Guard's pose-based warnings. 'metrics' has every measurement and 'timeline' plots the driving frames. Both masks pass through."
+    DESCRIPTION = "Checks the colored masks of SCAIL-2 Preprocess before the sampler, on the person as the sampler reads it (blue above 225/255); end-to-end SCAIL-2 draws no pose, so pose_data is optional. Stops the workflow when scail2_guard is on and no driving frame has the person or the reference mask has no character (with pose_data also on an empty or leaking driving mask). Warnings, which never stop: blank or split-up driving frames (normal when the person leaves the shot or is occluded), a region the driving mask drops for one frame, a split-up reference mask, in replacement mode a reference not placed like the first driving frame, and with pose_data the Mask Guard's pose-based warnings. The driving mask is judged the way the sampler reads it, on its latent grid of 16 x 16 px cells with nothing grown: a dropped region, and a drawn keypoint outside the mask, count only where that grid has them too, so a hole or a sliver inside a cell, or a keypoint in a cell the grid reads as the person, never warns. 'metrics' has every measurement and 'timeline' plots the driving frames. Both masks pass through."
 
     def check(self, pose_video_mask, reference_image_mask, scail2_guard, pose_data=None, **thresholds):
         from ..pipelines import guard

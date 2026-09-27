@@ -8,8 +8,8 @@ scail2 = Names("scail2", {
     **refs("libs.mask", "render_identity"),
     **refs("models.scail2.adapter", "ANIMATION", "REPLACEMENT", "character_on_black", "mask_convention"),
     **refs("nodes.sampler", "BCVSCAIL2LongVideoSampler"),
-    **refs("pipelines.guard.scail2", "check_scail2", "center_crop"),
+    **refs("pipelines.guard.scail2", "check_scail2", "center_crop", "driving_person"),
     **refs("pipelines.guard", "SCAIL2GuardConfig", "MaskGuardConfig", "SCAIL2_CHECKS", "SCAIL2_ROW", "WARNINGS",
-           "GuardFailed", "combine_guards"),
+           "GuardFailed", "combine_guards", "check_mask"),
     **refs("pipelines.guard.common", "SCAIL2_REFERENCE"),
 })
