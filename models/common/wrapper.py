@@ -32,7 +32,8 @@ class NativeModel:
         # reads the crop resolution from
         self.input_size = tuple(self.config["input_size"])
         self.input_shape = [1, 3, *self.input_size]
-        # the module runs in its weights' precision; float frames are cast to it
+        # the module runs in its weights' precision; float frames are cast to it (ViTPose-H: fp16,
+        # where Wan and Kijai run fp32 - see models/vitpose/__init__.py)
         self.input_dtype = next(self.net.parameters()).dtype
         self.patcher = ModelPatcher(self.net, load_device=mm.get_torch_device(), offload_device=mm.unet_offload_device())
 

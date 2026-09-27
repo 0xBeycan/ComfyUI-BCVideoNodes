@@ -32,8 +32,9 @@ boxes come out at the size of the frames that went in.
 ### Pose Detection
 
 YOLOv10x finds the person, each frame's box is widened to the boxes of the
-frames around it (`box_window`), ViTPose-H gives the 133 COCO-WholeBody
-keypoints on every frame, and the pose images are drawn.
+frames around it (`box_window`) and extended to a frame edge it nearly touches
+(`edge_snap`), ViTPose-H gives the 133 COCO-WholeBody keypoints on every frame,
+and the pose images are drawn.
 
 - in: `images`; optional `bboxes` (BBOX, one `(x1, y1, x2, y2)` per frame or
   one for all: the detector is then skipped), `pose_config` (POSE_CONFIG)
@@ -50,9 +51,17 @@ keypoints on every frame, and the pose images are drawn.
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
-`box_window`, `forearm_limit`, `limb_dedup`, `back_view_face`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
-`box_keypoint` mode; the guards count what is drawn, at Pose Detection's
+`box_window`, `forearm_limit`, `limb_dedup`, `back_view_face`, `edge_snap`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
+`box_keypoint` mode; the guards count the keypoints that reach Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
+
+`edge_snap` (on): a box edge that stops within 15% of the box's own size from
+a frame edge is extended to that edge. It was made for SAM 3.1 Multiplex's box
+prompt in `box_keypoint` mode, so clothing at the frame edge is not cut off the
+mask. The same box also cuts the pose crop and goes to the guards, and on
+typical clips it moves an edge on nearly every frame. Off, the boxes are used
+as detected or supplied, widened by `box_window`; supplied `bboxes` are
+snapped too when it is on. Its on/off comparison is planned.
 
 `forearm_limit`, `limb_dedup` and `back_view_face` are draw rules
 (`libs/draw_rules.py`), all off by default. A part any rule names is left out
@@ -195,9 +204,11 @@ and its propagated ones at 0.
 Frame-by-frame checks of the drawn pose (incomplete skeleton, torso jump,
 limb spike, subject switch) and of the mask against that pose (empty, leaking
 outside the box, fragmented, keypoints outside the mask, body the pose does
-not draw, unstable). The guards count what the pose images draw, at
-`draw_threshold`. The detector is not judged: its box count and missed frames
-are in the metrics as data. Every measurement is always reported and plotted;
+not draw, unstable). The guards count the model's keypoints at
+`draw_threshold`; a part a draw rule, `draw_head` off or a 0 stick width
+leaves out of the pose images still counts. The detector is not judged: its
+box count and missed frames are in the metrics as data. Every measurement is
+always reported and plotted;
 with the switch (`pose_guard` / `mask_guard`) on, a failed check stops the
 workflow with the report. Only damage diffusion cannot absorb stops: a torso
 jump (`pose_jump`), a subject switch (`subject_switch`), an empty, leaking or

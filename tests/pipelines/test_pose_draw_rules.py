@@ -27,7 +27,7 @@ def test_the_draw_rules_are_off_by_default_and_follow_the_measured_tunables():
     assert config.forearm_limit == 0.0 and config.limb_dedup is False and config.back_view_face is False
     # they travel in pose_data with the rest
     assert list(pose.asdict(config)) == ["min_keypoint_conf", "detection_threshold", "box_window", "forearm_limit",
-                                         "limb_dedup", "back_view_face"]
+                                         "limb_dedup", "back_view_face", "edge_snap"]
     # limb_dedup is the one switch: the separate hand and arm switches are gone
     for gone in ("hand_dedup", "mirror_rule"):
         with pytest.raises(TypeError, match=gone):

@@ -9,13 +9,17 @@ from typing import TypedDict
 import numpy as np
 
 
+# The keypoints are the model's, never clamped or dropped (as in Wan and Kijai): x/W and y/H lie
+# outside 0..1 for a keypoint placed off the frame, and the confidence is the raw heatmap peak,
+# which can exceed 1 (up to 1.08 on the base run) or fall to 0 and below.
 class PoseMeta(TypedDict):          # one frame of pose_metas_original, keys in the order
     width: int                      # load_pose_metas_from_kp2ds_seq writes them
     height: int
     keypoints_body: np.ndarray          # [20, 3] x/W, y/H, conf; float32
     keypoints_left_hand: np.ndarray     # [21, 3]
     keypoints_right_hand: np.ndarray    # [21, 3]
-    keypoints_face: np.ndarray          # [69, 3], row 0 = COCO-WholeBody keypoint 22
+    keypoints_face: np.ndarray          # [69, 3], row 0 = COCO-WholeBody keypoint 22, the right heel
+                                        # (the slice starts one early, as in Wan); rows 1-68 the face
 
 
 class Detection(TypedDict):         # one frame's person box as everything downstream sees it

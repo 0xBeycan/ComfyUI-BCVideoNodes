@@ -14,6 +14,8 @@ KJ_KEYS = ("startX", "startY", "endX", "endY")
 # person comes close, and around the blur when they move fast - and both the pose crop and
 # the mask prompt then miss the legs or the feet. The box of each frame is widened to the
 # boxes of its neighbours within this many frames, which the person cannot leave that fast.
+# Ours only: Wan and Kijai crop the raw box. The owner kept the widening after the pose-parity
+# measurement, where the raw box was no net gain.
 BOX_WINDOW = 4
 
 
@@ -86,7 +88,10 @@ def whole_frame_box(W, H):
 def widen_over_time(bboxes, box_window=BOX_WINDOW):
     """Each detected (x1, y1, x2, y2, score) box widened to the union of the detected boxes
     within `box_window` frames either side, keeping its score. Undetected frames (score -1) are
-    left alone: they are the whole frame already."""
+    left alone, not filled from their neighbours: widening only merges boxes the detector found
+    and makes none up for a frame it found nobody on, so such a frame keeps the whole frame,
+    marked undetected for the guard, as Wan and Kijai (which do not widen) crop it. It is rare:
+    2 of 3,073 frames on the base run."""
     out = []
     for i, bbox in enumerate(bboxes):
         if bbox[4] <= 0:

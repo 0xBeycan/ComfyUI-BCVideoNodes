@@ -48,14 +48,16 @@ enough for it to pay:
 | ViTPose-H | 2.43 GB | 1.22 GB | 1.2 GB |
 | YOLOv10x | 113 MB | 57 MB | 56 MB |
 
-What it costs, measured on 60 real frames over every keypoint the model draws, against the
-same model in fp32 on identical crops: ViTPose-H, 5230 keypoints compared, 20 moved, largest
-move **1 heatmap cell**. Worth paying for 1.2 GB.
+What it costs, measured on 3,073 real crops against the fp32 ONNX model under onnxruntime (what
+the official Wan preprocess runs): 27 draw decisions flip, 4 body and 23 hand keypoints, each
+sitting at the draw threshold. The same native module in fp32 flips none (largest move 0.065 px),
+so the flips are fp16's. Running fp32 end to end was no net gain on the pose; fp16 stays and
+saves 1.2 GB.
 
-Keypoints the model does not draw are excluded from those figures, and that matters: on
+Keypoints the model does not draw are left out of such comparisons, and that matters: on
 those the score distribution is flat, so the argmax is noise in either precision, and fp16
-appears to move them by up to 215 px. That number is what a flat distribution does, not what
-fp16 does.
+appears to move them by up to 215 px (an earlier 60-frame check). That number is what a flat
+distribution does, not what fp16 does.
 
 ## Conversion
 

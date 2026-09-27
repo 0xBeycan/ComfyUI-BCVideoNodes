@@ -30,6 +30,7 @@ SIZE_SIGMA = 2.0
 
 def get_face_bboxes(kp2ds, scale, image_shape):
     h, w = image_shape
+    # [1:]: row 0 of keypoints_face is the right heel (COCO-WholeBody 22), not a face point
     kp2ds_face = kp2ds.copy()[1:] * (w, h)
 
     # Drop NaN/inf keypoints (undetected face); fall back to image center if none remain.

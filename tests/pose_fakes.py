@@ -36,6 +36,7 @@ pose = Names("pose", {
     **seams("pipelines.pose", "_to_device"),
     **refs("libs.pose_utils.pose2d_utils", "AAPoseMeta"),
     **refs("libs.pose_utils.human_visualization", "draw_aapose_by_meta_new"),
+    **refs("libs.bbox", "widen_over_time"),
 })
 loader = Names("loader", {
     # the pose model's and the detector's file literals: the node test compares with these, not

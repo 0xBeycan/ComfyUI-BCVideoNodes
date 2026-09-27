@@ -1,13 +1,34 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Vendored from Wan2.2 wan/modules/animate/preprocess/human_visualization.py (Apache-2.0, see
+# LICENSE here) as of 2677bea, the directory's last change. Changed here, imports and whitespace
+# aside:
+# - only the three functions the pose images are drawn with are kept: draw_handpose_new,
+#   draw_aapose_by_meta_new and draw_aapose_new;
+# - the stick widths are parameters, body_stick_width and hand_stick_width, as in
+#   kijai/ComfyUI-WanAnimatePreprocess (0e0b6a2); -1 is Wan's 'v2' width from the canvas size, and
+#   stickwidth_type is no longer read;
+# - draw_body (in neither Wan nor Kijai): False leaves the whole body out, as draw_head False leaves
+#   the head;
+# - draw_head and draw_body hide by confidence -inf (draw_rules.HIDDEN) where Wan sets 0, so they
+#   hide at draw threshold 0 too; at any threshold above 0 the images are Wan's;
+# - the hand colours come from colorsys instead of matplotlib, the same colours;
+# - the defaults are dead (the 0.6 thresholds, hand_stick_width 4, stickwidth_type): see the note
+#   above draw_handpose_new.
+# Unchanged: the limbs, the colours, the 0.6 limb shade, the point radius (the stick width) and the
+# eps rule - the pose encoding Wan Animate reads.
 import colorsys
 import math
 
 import cv2
 import numpy as np
 
+from ..draw_rules import HIDDEN
 from .pose2d_utils import AAPoseMeta
 
 
+# Every default of the three functions below is dead: pipelines/pose.draw passes the draw threshold,
+# both stick widths and every switch, and stickwidth_type is not read. The 0.6 thresholds (Wan's)
+# and hand_stick_width 4 (Kijai's) never apply.
 def draw_handpose_new(canvas, keypoints, stickwidth_type='v2', hand_score_th=0.6, hand_stick_width=4):
     """
     Draw keypoints and connections representing hand pose on a given canvas.
@@ -70,6 +91,9 @@ def draw_handpose_new(canvas, keypoints, stickwidth_type='v2', hand_score_th=0.6
         y1 = int(k1[1])
         x2 = int(k2[0])
         y2 = int(k2[1])
+        # The eps rule (Wan's and Kijai's): an edge or point with x or y under 1 px, left of or above
+        # the frame, is not drawn, while one past the right or bottom edge is drawn up to the border.
+        # A finger leaving the frame left or top disappears; right or bottom it runs to the edge.
         if x1 > eps and y1 > eps and x2 > eps and y2 > eps:
             cv2.line(
                 canvas,
@@ -158,10 +182,11 @@ def draw_aapose_new(
     # kp2ds_body = (kp2ds.copy()[[0, 6, 6, 8, 10, 5, 7, 9, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3, 17, 20]] + \
     #              kp2ds.copy()[[0, 5, 6, 8, 10, 5, 7, 9, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3, 18, 21]]) / 2
     kp2ds = kp2ds.copy()
+    # hidden below any threshold, 0 included (Wan's 0 is drawn at threshold 0)
     if not draw_body:
-        kp2ds[:, 2] = 0
+        kp2ds[:, 2] = HIDDEN
     if not draw_head:
-        kp2ds[[0,14,15,16,17], 2] = 0
+        kp2ds[[0,14,15,16,17], 2] = HIDDEN
     kp2ds_body = kp2ds
 
     # kp2ds_lhand = kp2ds.copy()[91:112]

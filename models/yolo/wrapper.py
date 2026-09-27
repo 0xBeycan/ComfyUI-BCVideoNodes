@@ -8,6 +8,8 @@ from ..common.wrapper import NativeModel
 
 # The detector's score threshold: boxes below it are dropped before NMS and person selection.
 DEFAULT_DETECTION_THRESHOLD = 0.05
+# The other constructor defaults are Wan's pose2d.py Yolo's, and Kijai's: NMS at IoU 0.5, the 0.4
+# long-side ratio of the person selection (process_results), threshold_multi_persons 0.1.
 
 
 class Yolo(NativeModel):
@@ -131,6 +133,15 @@ class Yolo(NativeModel):
 
 
     def process_results(self, results, shape_raw, cat_id=[1], single_person=True):
+        """The person of one frame, by Wan's rule (Kijai's is the same): of the boxes scoring above
+        threshold_conf, those whose long side is at least threshold_bbox_shape_ratio (0.4) of the
+        longest compete, and the largest area wins (select_type 'max'). A bigger box beats a more
+        confident one - a mirror image, a poster or a second person at a low score included - and
+        each frame chooses alone, so the chosen person can change from frame to frame.
+        threshold_multi_persons only counts the others for multi-person output, which the pack
+        does not use (single_person is always True), so it changes nothing. person_count is ours:
+        the boxes scoring at least 0.3, read by the detection step's log line, pose_data's
+        detections[].persons and the pose guard's metrics (as data, not judged)."""
         if isinstance(results, tuple):
             det_results = results[0]
         else:

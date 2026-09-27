@@ -11,6 +11,10 @@ BODY_NAMES = ["nose", "neck", "r_shoulder", "r_elbow", "r_wrist", "l_shoulder", 
 LIMBS = [(1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9), (9, 10), (1, 11),
          (11, 12), (12, 13), (1, 0), (0, 14), (14, 16), (0, 15), (15, 17), (13, 18), (10, 19)]
 HEAD_LIMBS = {(1, 0), (0, 14), (14, 16), (0, 15), (15, 17)}
+# The neck is no model keypoint: pose2d_utils.split_kp2ds_for_aa makes it the mean of the two
+# shoulders (wholebody 5 and 6) in x, y and confidence, as Wan and Kijai do. It sits at their
+# midpoint, so a misplaced hidden shoulder moves it, and it is drawn when their mean confidence
+# reaches the draw threshold.
 NOSE, NECK, R_SHOULDER, L_SHOULDER, R_HIP, L_HIP = 0, 1, 2, 5, 8, 11
 R_ELBOW, L_ELBOW = 3, 6
 R_WRIST, L_WRIST = 4, 7

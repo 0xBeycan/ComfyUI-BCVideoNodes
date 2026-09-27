@@ -7,7 +7,9 @@ import numpy as np
 
 def decode_heatmaps(heatmaps, center, scale):
     """ViTPose: DARK-refined heatmap maxima mapped back through the crop. The maxima are
-    the confidences as they are."""
+    the confidences as they are. A maximum at or below 0 puts its keypoint at heatmap cell -1,
+    just off the crop's top-left, with that confidence (pose2d_utils._get_max_preds), as in Wan
+    and Kijai; it is drawn only at draw threshold 0 and a confidence of exactly 0."""
     from ...libs.pose_utils.pose2d_utils import keypoints_from_heatmaps
     points, prob = keypoints_from_heatmaps(heatmaps=heatmaps,
                                         center=center,

@@ -1,4 +1,16 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Vendored from Wan2.2 wan/modules/animate/preprocess/pose2d_utils.py (Apache-2.0, see LICENSE here)
+# as of 2677bea, the directory's last change. Changed here, whitespace aside:
+# - what the pack does not call is removed: read_img and its PIL import, the accuracy metrics
+#   (_calc_distances, _distance_acc, pose_pck_accuracy, keypoint_pck_accuracy, keypoint_auc,
+#   keypoint_nme, keypoint_epe, multilabel_classification_accuracy), _get_max_preds_3d,
+#   keypoints_from_regression, keypoints_from_heatmaps3d and load_pose_metas_from_kp2ds_seq_list.
+#   AAPoseMeta.draw_aapose still imports draw_aapose_by_meta, which the vendored
+#   human_visualization.py does not carry; nothing calls it;
+# - crop: Wan's unused `pad` line is removed;
+# - load_pose_metas_from_kp2ds_seq: Wan's `last_kp2ds_body` fallback is removed. Wan gives a frame
+#   whose every body keypoint lies left of or above the frame the previous frame's body (and fails on
+#   frame 0); here every frame keeps the model's keypoints. Kijai's port keeps the fallback.
 import warnings
 import cv2
 import numpy as np
@@ -718,6 +730,8 @@ def crop(img, center, scale, res):
     # Range to sample from original image
     old_x = max(0, ul[0]), min(len(img[0]), br[0])
     old_y = max(0, ul[1]), min(len(img), br[1])
+    # A box wholly off the frame fails the copy: the error is printed and the crop stays black, a
+    # pose of nothing (Wan's behaviour, kept). Only a supplied box can lie off the frame.
     try:
         new_img[new_y[0]:new_y[1], new_x[0]:new_x[1]] = img[old_y[0]:old_y[1], old_x[0]:old_x[1]]
     except Exception as e:

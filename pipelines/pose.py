@@ -22,12 +22,21 @@ from ..libs.video import as_numpy
 from ..models.common.pose_input import pose_crop
 from ..models.common.wrapper import load_models as _to_device
 
+# The detector's input: every frame resized to 640x640, stretched rather than letterboxed, RGB
+# in 0..1; the box comes back scaled per axis. The reference input (Wan's pose2d.py
+# Yolo.preprocess, Kijai's nodes.py).
 DETECTOR_INPUT_SIZE = (640, 640)
-# A detector box smaller than this on either side is no detection.
+# A detector box smaller than this on either side is no detection: the frame is cropped whole and
+# marked undetected. The reference value (Wan's pose2d.py ViTPose.preprocess, Kijai's nodes.py),
+# given there without a reason; a box that small holds no person a 256x192 crop could resolve.
 MIN_BOX_SIDE = 10
-# A detector box that stops within this fraction of its own size from a frame edge belongs
-# to a person the frame cuts off; it is extended to that edge before it prompts the mask,
-# otherwise the decoder stops at the box and the clothing below it stays unmasked.
+# A box that stops within this fraction of its own size from a frame edge belongs to a person the
+# frame cuts off; it is extended to that edge (PoseConfig.edge_snap). Made for SAM 3.1 Multiplex's
+# box prompt in box_keypoint mode: the decoder stops at the box, and the clothing between it and
+# the frame edge would stay unmasked. The same box also cuts the pose crop and goes to the guard,
+# and on typical clips it moves an edge on nearly every frame (3,044 of 3,073 on the base run, by
+# up to 166 px, some boxes to the whole frame). Ours only: Wan and Kijai crop the raw box.
+# edge_snap False leaves every box as it is; the on/off comparison is planned.
 EDGE_SNAP = 0.15
 # key_frame_body_points: the frame it is taken from (easy-sam3 prompts frame_index 0 by
 # default) and the body keypoints it exports, in the AAPose body layout - nose, neck, the
@@ -59,6 +68,8 @@ class PoseConfig:
         "doc": "Leave out of the pose images a hand or an arm the model drew on its visible twin: a hand on the other hand when its own arm is broken (elbow or wrist not drawn) there and on a neighbouring frame, or a whole arm (elbow, wrist and hand) along the other arm, the less confident of the two. pose_data keeps the keypoints"})
     back_view_face: bool = field(default=False, metadata={
         "doc": "Leave the nose and both eyes out of the pose images on a frame whose body is seen from behind (the left shoulder on the image left of the right one) and whose face is not seen (the mean confidence of the 17 jaw-line face keypoints under 0.835): ViTPose invents a nose and eyes on the back of the head, up to 0.99 confident, and the profile drawn from them flips side. The ears keep the head's place. pose_data keeps the keypoints"})
+    edge_snap: bool = field(default=True, metadata={
+        "doc": "Extend a person box edge that stops within 15% of the box's size from a frame edge to that edge. Made for SAM 3.1 Multiplex's box prompt (box_keypoint mode, the keypoint mask), so clothing at the frame edge is not cut off the mask. The same box also cuts the pose crop and goes to the guards, and on typical clips it moves an edge on nearly every frame. Off: the boxes are used as detected or supplied, widened by box_window. Supplied bboxes are snapped too. An on/off comparison is planned"})
 
     def __post_init__(self):
         for f in fields(self):
@@ -116,7 +127,8 @@ def _detected_boxes(detector, images_np, W, H, threshold, pbar):
             bbox, count = detection["bbox"], detection.get("person_count", 0)
             if bbox[-1] <= 0 or (bbox[2] - bbox[0]) < MIN_BOX_SIDE or (bbox[3] - bbox[1]) < MIN_BOX_SIDE:
                 # nothing usable detected: the pose, the mask prompt and the guard all see the
-                # whole frame as the box, marked undetected
+                # whole frame as the box, marked undetected, as in Wan and Kijai. The pose is then
+                # cut from the whole frame, far coarser than from a person crop
                 bbox, count = whole_frame_box(W, H), 0
             bboxes.append(bbox)
             person_counts.append(count)
@@ -126,7 +138,9 @@ def _detected_boxes(detector, images_np, W, H, threshold, pbar):
 
 def _supplied_boxes(bboxes, frames):
     """The caller's boxes, (x1, y1, x2, y2) per frame or a single one for every frame, as the
-    detector would have handed them over: score 1 and one person each."""
+    detector would have handed them over: score 1 and one person each. They then go through the
+    same box logic as detections (widened by box_window, snapped unless edge_snap is off), with no
+    MIN_BOX_SIDE check: a box under it is cropped all the same."""
     return supplied_boxes(bboxes, frames), [1] * frames
 
 
@@ -140,10 +154,11 @@ def detect(detector, pose_model, images, bboxes=None, config=None
     Returns (pose_data, boxes). pose_data carries the per-frame pose metas (`pose_metas` as
     AAPoseMeta for drawing, `pose_metas_original` as dicts with the normalised keypoints),
     `detections` (the person box as everything downstream sees it: widened to the neighbouring
-    frames' boxes and extended to frame edges it nearly touches, the whole frame where nothing
-    was detected; its score, -1 when nothing was detected; and the number of people the detector
-    was fairly sure of) and `pose_config`, the config the pose was made with. boxes are the same
-    boxes as (x1, y1, x2, y2) tuples, one per frame.
+    frames' boxes (config.box_window) and extended to frame edges it nearly touches
+    (config.edge_snap), the whole frame where nothing was detected; its score, -1 when nothing
+    was detected; and the number of people the detector was fairly sure of) and `pose_config`,
+    the config the pose was made with. boxes are the same boxes as (x1, y1, x2, y2) tuples, one
+    per frame.
     """
     from comfy.utils import ProgressBar
     from tqdm import tqdm
@@ -172,7 +187,9 @@ def detect(detector, pose_model, images, bboxes=None, config=None
             result["frames without a person"] = sum(1 for b in raw if b[-1] <= 0)
             result["frames with several people"] = sum(1 for n in person_counts if n > 1)
     # one set of boxes for everything downstream: the pose crop, the mask prompt and the guard
-    boxes = [snap_to_frame(b, W, H) for b in widen_over_time(raw, config.box_window)]
+    boxes = widen_over_time(raw, config.box_window)
+    if config.edge_snap:
+        boxes = [snap_to_frame(b, W, H) for b in boxes]
 
     kp2ds = []
     with log.step(f"extracting keypoints on {B} frames"):
@@ -286,8 +303,8 @@ def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_
     """The Pose Detection node: `images` [B, H, W, 3] in, and out
     (pose_images [B, H, W, 3], pose_data, bboxes, key_frame_body_points) - see `detect`,
     `draw` and `key_frame_body_points`. pose_data also carries `draw_threshold`: the guards
-    count the keypoints and limbs the pose images draw. The draw rules of `config` act on the
-    pose images only."""
+    count the model's keypoints and limbs at it, including those the draw rules of `config`,
+    draw_head off or a 0 stick width leave out of the pose images."""
     config = config or PoseConfig()
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
     pose_data["draw_threshold"] = draw_threshold

@@ -6,7 +6,7 @@ from .common import PREPROCESS, _ConfigNode
 class BCVPoseConfig(_ConfigNode):
     RETURN_TYPES = ("POSE_CONFIG",)
     RETURN_NAMES = ("pose_config",)
-    DESCRIPTION = "Overrides the Pose Detection tunables. Without it Pose Detection runs with the measured defaults, which are the values shown here. min_keypoint_conf is carried in pose_data and is the keypoint threshold SAM 3.1 Multiplex box_keypoint mode uses; the guards count what Pose Detection draws (draw_threshold)."
+    DESCRIPTION = "Overrides the Pose Detection tunables. Without it Pose Detection runs with the measured defaults, which are the values shown here. min_keypoint_conf is carried in pose_data and is the keypoint threshold SAM 3.1 Multiplex box_keypoint mode uses; the guards count the keypoints that reach Pose Detection's draw_threshold."
 
     @classmethod
     def _config_class(cls):
@@ -21,13 +21,13 @@ class BCVPoseDetection:
         return {
             "required": {
                 "images": ("IMAGE",),
-                "body_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the body sticks in the pose images; 0 leaves the body out, -1 picks it from the frame size"}),
-                "hand_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the hand sticks in the pose images; 0 leaves the hands out, -1 picks it from the frame size"}),
+                "body_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the body sticks in the pose images; 0 leaves the body out, -1 picks it from the input frame size: max(int(min(H, W) / 200) - 1, 1), the official Wan width (2 at 720p)"}),
+                "hand_stick_width": ("INT", {"default": -1, "min": -1, "max": 20, "step": 1, "tooltip": "Width of the hand sticks in the pose images; 0 leaves the hands out, -1 picks it from the input frame size: half the body's -1 width, at least 1 (1 at 720p)"}),
                 "draw_head": ("BOOLEAN", {"default": True, "tooltip": "Whether to draw head keypoints"}),
-                "draw_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "A limb is drawn when both its ends reach this confidence; key_frame_body_points uses the same threshold. Carried in pose_data: the guards count what is drawn. SAM 3.1 Multiplex box_keypoint mode reads pose_config.min_keypoint_conf instead"}),
+                "draw_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "A limb is drawn when both its ends reach this confidence; key_frame_body_points uses the same threshold. Carried in pose_data: the guards count the keypoints that reach it. SAM 3.1 Multiplex box_keypoint mode reads pose_config.min_keypoint_conf instead"}),
             },
             "optional": {
-                "bboxes": ("BBOX", {"tooltip": "Person boxes (x1, y1, x2, y2), one per frame or one for all. When connected the detector does not run and pose_config.detection_threshold is ignored; box_window and the edge snap still apply."}),
+                "bboxes": ("BBOX", {"tooltip": "Person boxes (x1, y1, x2, y2), one per frame or one for all. When connected the detector does not run and pose_config.detection_threshold is ignored; the boxes are still widened (box_window) and snapped to a frame edge they nearly touch, unless pose_config.edge_snap is off."}),
                 "pose_config": ("POSE_CONFIG", {"tooltip": "Overrides from Pose Config; the measured defaults without it. Its min_keypoint_conf travels in pose_data to SAM 3.1 Multiplex."}),
             },
         }

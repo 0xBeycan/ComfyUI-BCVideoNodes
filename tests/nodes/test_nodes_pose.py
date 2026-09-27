@@ -1,7 +1,8 @@
 """The Pose Detection node: supplied boxes that never build the detector; the Pose Config node: the
-forearm_limit, limb_dedup and back_view_face widgets, off. Fake models, synthetic frames. The node loads
-models/common/download.py, which imports folder_paths at its top, so this runs where ComfyUI is
-importable (with the ComfyUI root on PYTHONPATH) and is skipped elsewhere:
+forearm_limit, limb_dedup and back_view_face widgets, off, and the edge_snap widget, on. Fake models,
+synthetic frames. The node loads models/common/download.py, which imports folder_paths at its top,
+so this runs where ComfyUI is importable (with the ComfyUI root on PYTHONPATH) and is skipped
+elsewhere:
 
     PYTHONPATH=/path/to/ComfyUI python -m pytest tests/nodes/test_nodes_pose.py
 """
@@ -62,7 +63,7 @@ def test_pose_config_shows_the_back_view_face_off():
     from names import spec
 
     inputs = spec("BCVPoseConfig")["required"]
-    assert list(inputs)[-1] == "back_view_face"
+    assert list(inputs)[-2] == "back_view_face"
     kind, options = inputs["back_view_face"]
     assert (kind, options["default"], set(options)) == ("BOOLEAN", False, {"default", "tooltip"})
     tooltip = options["tooltip"]
@@ -71,3 +72,17 @@ def test_pose_config_shows_the_back_view_face_off():
         "the mean confidence of the 17 jaw-line face keypoints under 0.835",
         "ViTPose invents a nose and eyes on the back of the head, up to 0.99 confident",
         "flips side", "The ears keep the head's place", "pose_data keeps the keypoints"))
+
+
+def test_pose_config_shows_the_edge_snap_on():
+    from names import spec
+
+    inputs = spec("BCVPoseConfig")["required"]
+    assert list(inputs)[-1] == "edge_snap"
+    kind, options = inputs["edge_snap"]
+    assert (kind, options["default"], set(options)) == ("BOOLEAN", True, {"default", "tooltip"})
+    tooltip = options["tooltip"]
+    assert all(part in tooltip for part in (
+        "within 15% of the box's size from a frame edge", "SAM 3.1 Multiplex's box prompt",
+        "clothing at the frame edge", "The same box also cuts the pose crop", "nearly every frame",
+        "Supplied bboxes are snapped too", "An on/off comparison is planned"))

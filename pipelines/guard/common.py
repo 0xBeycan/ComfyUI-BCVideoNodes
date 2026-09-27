@@ -285,8 +285,9 @@ def _pose_inputs(pose_data: PoseData) -> tuple[list[PoseMeta], list[Detection]]:
 
 
 def _draw_threshold(pose_data: PoseData) -> float:
-    """The keypoint confidence the pose images were drawn with: the guards judge the skeleton
-    the diffusion model sees, so they count the keypoints and limbs that are drawn."""
+    """The keypoint confidence the pose images were drawn with. The guards count the model's
+    keypoints and limbs that reach it (a closed decision), not what the images show: a part a
+    draw rule, draw_head off or a 0 stick width leaves out of the images still counts."""
     threshold = pose_data.get("draw_threshold") if isinstance(pose_data, dict) else None
     if threshold is None:
         raise ValueError("pose_data has no draw_threshold; it must come from Pose Detection or WanAnimate Preprocess")

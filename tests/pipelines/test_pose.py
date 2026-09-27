@@ -1,5 +1,6 @@
 """The pose module on synthetic frames with fake models: the supplied-box path that skips the
-detector, the key_frame_body_points string, the config. No ComfyUI and no real model:
+detector, the key_frame_body_points string, the config, edge_snap on the detected and the supplied
+boxes, and draw_head off and 0 stick widths at draw threshold 0. No ComfyUI and no real model:
 
     python -m pytest tests/pipelines/test_pose.py
 """
@@ -11,7 +12,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("cv2")
 
-from pose_fakes import B, H, W, FakeDetector, FakePose, frames, no_device, pose  # noqa: E402,F401
+from pose_fakes import (B, DETECTOR_ROWS, H, W, FakeDetector, FakePose, RecordingPose,  # noqa: E402,F401
+                        ScriptedDetector, frames, no_device, pose)
 
 
 class NoDetector:
@@ -133,8 +135,16 @@ def test_draw_threshold_decides_what_is_drawn():
     assert pose.draw(pose_data, draw_threshold=0.7, draw_head=False).sum() == 0
 
 
+def test_at_draw_threshold_0_draw_head_off_and_0_stick_widths_still_leave_their_parts_out():
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.6), frames())
+    assert pose.draw(pose_data, draw_threshold=0.0).sum() > 0
+    assert pose.draw(pose_data, draw_threshold=0.0, body_stick_width=0, hand_stick_width=0).sum() == 0
+    assert not torch.equal(pose.draw(pose_data, draw_threshold=0.0, draw_head=False),
+                           pose.draw(pose_data, draw_threshold=0.0))
+
+
 def test_the_draw_threshold_travels_in_pose_data():
-    # the guards count what the pose images draw, so they need the threshold they were drawn at
+    # the guards count the keypoints at the threshold the pose images were drawn at
     _, pose_data, _, _ = pose.pose_detection(frames(), FakeDetector(), FakePose(0.6), draw_threshold=0.65)
     assert pose_data["draw_threshold"] == 0.65
 
@@ -161,3 +171,80 @@ def test_the_default_config_ignores_nothing(caplog):
         pose.detect(NoDetector(), FakePose(), frames(), bboxes=[(30.0, 20.0, 90.0, 140.0)])
         pose.detect(FakeDetector(), FakePose(), frames(), config=pose.PoseConfig(detection_threshold=0.2))
     assert not_used_lines(caplog) == []
+
+
+# --- edge_snap ------------------------------------------------------------------------------
+
+def seeded_frames():
+    return torch.from_numpy(np.random.default_rng(0).random((B, H, W, 3), dtype=np.float32))
+
+
+def raw_boxes():
+    """DETECTOR_ROWS as the detector hands them over, (x1, y1, x2, y2, score): a row that is None,
+    or under 10 px on a side (row 5, 6 px wide), is the whole frame, score -1."""
+    return [np.array([0.0, 0.0, W, H, -1.0]) if row is None or row[2] - row[0] < 10 else np.array(row[:5])
+            for row in DETECTOR_ROWS]
+
+
+def corners(boxes):
+    return [tuple(float(v) for v in box[:4]) for box in boxes]
+
+
+def snapped(box):
+    """`box` with each edge that stops within 0.15 of the box's width or height from the frame edge
+    moved onto that edge."""
+    x1, y1, x2, y2 = (float(v) for v in box[:4])
+    bw, bh = x2 - x1, y2 - y1
+    return (0.0 if x1 < 0.15 * bw else x1, 0.0 if y1 < 0.15 * bh else y1,
+            float(W) if W - x2 < 0.15 * bw else x2, float(H) if H - y2 < 0.15 * bh else y2)
+
+
+def centres(model):
+    """The crop centre of each of `model`'s calls."""
+    return [tuple(call[1][0].tolist()) for call in model.calls]
+
+
+def test_edge_snap_is_on_by_default_and_moves_only_an_edge_near_the_frame():
+    assert pose.PoseConfig().edge_snap is True
+    model = RecordingPose()
+    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames(), config=pose.PoseConfig(box_window=0))
+    expected = corners(raw_boxes())
+    expected[7] = (0.0, 21.0, 65.0, 128.0)  # its left edge 5 px from the frame, under 0.15 of its 60 px width
+    assert boxes == expected == [snapped(box) for box in raw_boxes()]
+    assert [tuple(d["bbox"]) for d in pose_data["detections"]] == boxes
+    # the pose is cropped from the snapped box
+    assert centres(model) == [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in boxes]
+
+
+def test_edge_snap_on_snaps_the_widened_boxes():
+    model = RecordingPose()
+    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames())
+    assert boxes == [snapped(box) for box in pose.widen_over_time(raw_boxes(), 4)]
+    assert [tuple(d["bbox"]) for d in pose_data["detections"]] == boxes
+    assert centres(model) == [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in boxes]
+
+
+def test_edge_snap_off_uses_the_widened_boxes_as_they_are():
+    model = RecordingPose()
+    config = pose.PoseConfig(edge_snap=False)
+    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames(), config=config)
+    widened = corners(pose.widen_over_time(raw_boxes(), 4))
+    assert boxes == widened
+    assert [tuple(d["bbox"]) for d in pose_data["detections"]] == widened
+    assert pose_data["pose_config"]["edge_snap"] is False
+    assert centres(model) == [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in widened]
+    # on, the snap moves the left edge of every box frame 7's 5 px reaches through the widening
+    _, on = pose.detect(ScriptedDetector(), RecordingPose(), seeded_frames())
+    assert [i for i in range(B) if on[i] != widened[i]] == [4, 6, 7, 8, 9, 10, 11]
+    # without widening either, the pose is cropped from the detected box
+    _, boxes = pose.detect(ScriptedDetector(), RecordingPose(), seeded_frames(),
+                           config=pose.PoseConfig(box_window=0, edge_snap=False))
+    assert boxes == corners(raw_boxes())
+
+
+def test_edge_snap_acts_on_supplied_boxes():
+    box = [(5.0, 20.0, 65.0, 140.0)]  # 5 px from the left edge, under 0.15 of its 60 px width
+    _, on = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box)
+    _, off = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box, config=pose.PoseConfig(edge_snap=False))
+    assert on == [(0.0, 20.0, 65.0, 140.0)] * B
+    assert off == [(5.0, 20.0, 65.0, 140.0)] * B
