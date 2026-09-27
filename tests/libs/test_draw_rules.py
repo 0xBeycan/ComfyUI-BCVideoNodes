@@ -1,6 +1,6 @@
-"""The draw rules (libs/draw_rules.py) on hand-built keypoints: which frames hand_dedup fires on and
-which side it names, which frames forearm_rule fires on at which forearm_limit, and what each leaves
-out, with the geometry written out in pixels:
+"""The draw rules (libs/draw_rules.py) on hand-built keypoints: which frames hand_dedup and
+mirror_rule fire on and which side they name, which frames forearm_rule fires on at which
+forearm_limit, and what each leaves out, with the geometry written out in pixels:
 
     python -m pytest tests/libs/test_draw_rules.py
 """
@@ -44,7 +44,7 @@ def forearm_clip(lengths, wrist_conf=0.9, arms=(RIGHT,)):
 
 
 def hidden(clip, limit):
-    return rules.hidden_parts(len(clip), {}, rules.overlong_forearms(clip, 0.5, limit))
+    return rules.hidden_parts(len(clip), {}, {}, rules.overlong_forearms(clip, 0.5, limit))
 
 
 # -- hand_dedup -----------------------------------------------------------------------------------
@@ -133,7 +133,7 @@ def test_the_first_and_the_last_frame_have_one_neighbour():
 def test_hand_dedup_names_the_copys_hand_only():
     clip = [frame({**RIGHT_INTACT, **LEFT_INTACT}), frame({**RIGHT_INTACT, **LEFT_BROKEN}),
             frame({**RIGHT_INTACT, **LEFT_BROKEN})]
-    assert rules.hidden_parts(3, rules.duplicate_hands(clip, 0.5), {}) == [
+    assert rules.hidden_parts(3, rules.duplicate_hands(clip, 0.5), {}, {}) == [
         {"body": [], "hands": [], "rules": {}},
         {"body": [], "hands": ["left"], "rules": {"hand_dedup": ["left"]}},
         {"body": [], "hands": ["left"], "rules": {"hand_dedup": ["left"]}}]
@@ -143,6 +143,99 @@ def test_hand_dedup_leaves_the_keypoints_alone():
     clip = [frame({**RIGHT_INTACT, **LEFT_BROKEN}) for _ in range(3)]
     before = [{k: np.array(v, copy=True) for k, v in f.items() if isinstance(v, np.ndarray)} for f in clip]
     assert rules.duplicate_hands(clip, 0.5) == {"left": [0, 1, 2]}
+    assert all(np.array_equal(f[k], v) for f, kept in zip(clip, before) for k, v in kept.items())
+
+
+# -- mirror_rule ----------------------------------------------------------------------------------
+
+# The torso: the shoulders 40 px apart, the hips 30 px, the nose 20 px above the neck (1.5 x 20 =
+# 30 px): the body scale is the shoulders' 40 px, the reach 0.2 x 40 = 8 px.
+TORSO = {0: (100.0, 80.0, 0.9), 1: (100.0, 100.0, 0.9), 2: (80.0, 100.0, 0.9), 5: (120.0, 100.0, 0.9),
+         8: (85.0, 200.0, 0.9), 11: (115.0, 200.0, 0.9)}
+
+
+def arms(right=(0.9, 0.9), left=(0.6, 0.6), elbow_gap=5.0, wrist_gap=5.0, torso=TORSO):
+    """One frame on `torso`: the right elbow at (100, 150) and the right wrist at (100, 190), the left
+    elbow `elbow_gap` px and the left wrist `wrist_gap` px right of them; `right` and `left` are the
+    (elbow, wrist) confidences."""
+    return meta({**torso, 3: (100.0, 150.0, right[0]), 4: (100.0, 190.0, right[1]),
+                 6: (100.0 + elbow_gap, 150.0, left[0]), 7: (100.0 + wrist_gap, 190.0, left[1])})
+
+
+def test_an_arm_drawn_on_the_other_arm_is_the_less_confident_one():
+    # 5 px apart, under the 8 px reach: the left arm (0.6 + 0.6) is less confident than the right
+    # (0.9 + 0.9)
+    assert rules.mirrored_arms([arms()], 0.5) == {"left": [0]}
+    assert rules.mirrored_arms([arms(right=(0.6, 0.7), left=(0.9, 0.8))], 0.5) == {"right": [0]}
+    # the confidence names the copy, not what is drawn: the right forearm is drawn (0.55 + 0.55 =
+    # 1.10), of the left arm only the elbow (0.95 + 0.3 = 1.25)
+    assert rules.mirrored_arms([arms(right=(0.55, 0.55), left=(0.95, 0.3))], 0.5) == {"right": [0]}
+
+
+def test_arms_apart_at_the_elbows_or_at_the_wrists_are_two_arms():
+    # 10 px is over the 8 px reach
+    assert rules.mirrored_arms([arms(elbow_gap=5.0, wrist_gap=10.0)], 0.5) == {}
+    assert rules.mirrored_arms([arms(elbow_gap=10.0, wrist_gap=5.0)], 0.5) == {}
+    assert rules.mirrored_arms([arms(elbow_gap=7.5, wrist_gap=7.5)], 0.5) == {"left": [0]}
+    assert rules.mirrored_arms([arms(elbow_gap=8.5, wrist_gap=8.5)], 0.5) == {}
+
+
+def test_equally_confident_arms_have_no_copy():
+    assert rules.mirrored_arms([arms(right=(0.8, 0.7), left=(0.8, 0.7))], 0.5) == {}
+    assert rules.mirrored_arms([arms(right=(0.8, 0.7), left=(0.7, 0.8))], 0.5) == {}
+
+
+def test_one_forearm_drawn_and_something_of_the_other_arm():
+    # the right forearm drawn, of the left arm the elbow only, or the wrist only: it fires
+    assert rules.mirrored_arms([arms(left=(0.6, 0.3))], 0.5) == {"left": [0]}
+    assert rules.mirrored_arms([arms(left=(0.3, 0.6))], 0.5) == {"left": [0]}
+    # nothing of the left arm drawn: nothing to leave out
+    assert rules.mirrored_arms([arms(left=(0.3, 0.3))], 0.5) == {}
+    # no forearm drawn on either side: the right elbow and the left wrist only
+    assert rules.mirrored_arms([arms(right=(0.9, 0.3), left=(0.3, 0.8))], 0.5) == {}
+    # the rule reads what is drawn: at a threshold above every arm keypoint nothing is
+    assert rules.mirrored_arms([arms()], 0.95) == {}
+
+
+@pytest.mark.parametrize("torso, reach", [
+    # the hips 60 px apart, over the 20 px shoulders and 1.5 x the 20 px neck-to-nose
+    ({1: (100.0, 100.0, 0.9), 0: (100.0, 80.0, 0.9), 2: (90.0, 100.0, 0.9), 5: (110.0, 100.0, 0.9),
+      8: (70.0, 200.0, 0.9), 11: (130.0, 200.0, 0.9)}, 12.0),
+    # 1.5 x the 50 px neck-to-nose, over the 20 px shoulders and hips
+    ({1: (100.0, 100.0, 0.9), 0: (100.0, 50.0, 0.9), 2: (90.0, 100.0, 0.9), 5: (110.0, 100.0, 0.9),
+      8: (90.0, 200.0, 0.9), 11: (110.0, 200.0, 0.9)}, 15.0),
+    # the positions count whether drawn or not: TORSO at confidence 0.1 still has the 40 px shoulders
+    ({j: (x, y, 0.1) for j, (x, y, _) in TORSO.items()}, 8.0),
+    # no torso at all (every point at (0, 0)): the 1 px floor
+    ({}, 0.2),
+])
+def test_the_reach_is_0_2_of_the_widest_body_scale_term(torso, reach):
+    assert rules.mirrored_arms([arms(elbow_gap=0.9 * reach, wrist_gap=0.9 * reach, torso=torso)], 0.5) == {"left": [0]}
+    assert rules.mirrored_arms([arms(elbow_gap=1.1 * reach, wrist_gap=1.1 * reach, torso=torso)], 0.5) == {}
+
+
+def test_mirror_rule_reads_each_frame_alone():
+    # no neighbour condition: a copy on one frame between two arms apart fires
+    apart = arms(elbow_gap=20.0, wrist_gap=20.0)
+    clip = [arms(), apart, arms(right=(0.6, 0.6), left=(0.9, 0.9)), apart, arms()]
+    mirrored = rules.mirrored_arms(clip, 0.5)
+    assert mirrored == {"right": [2], "left": [0, 4]} and list(mirrored) == ["right", "left"]
+    assert rules.mirrored_arms([arms()], 0.5) == {"left": [0]}
+
+
+def test_mirror_rule_names_the_copys_elbow_wrist_and_hand():
+    # the right elbow and wrist are 3 and 4, the left 6 and 7
+    clip = [arms(), arms(elbow_gap=20.0, wrist_gap=20.0), arms(right=(0.6, 0.6), left=(0.9, 0.9))]
+    assert rules.hidden_parts(3, {}, rules.mirrored_arms(clip, 0.5), {}) == [
+        {"body": [6, 7], "hands": ["left"], "rules": {"mirror_rule": ["left"]}},
+        {"body": [], "hands": [], "rules": {}},
+        {"body": [3, 4], "hands": ["right"], "rules": {"mirror_rule": ["right"]}}]
+
+
+def test_mirror_rule_leaves_the_keypoints_alone():
+    clip = [arms(), arms(right=(0.6, 0.6), left=(0.9, 0.9))]
+    before = [{k: np.array(v, copy=True) for k, v in f.items() if isinstance(v, np.ndarray)} for f in clip]
+    assert rules.mirrored_arms(clip, 0.5) == {"right": [1], "left": [0]}
     assert all(np.array_equal(f[k], v) for f, kept in zip(clip, before) for k, v in kept.items())
 
 
@@ -197,28 +290,33 @@ def test_the_rule_leaves_the_keypoints_alone():
     assert all(np.array_equal(frame[k], v) for frame, kept in zip(clip, before) for k, v in kept.items())
 
 
-# -- both rules -----------------------------------------------------------------------------------
+# -- all rules ------------------------------------------------------------------------------------
 
-def test_a_part_either_rule_names_is_left_out():
-    # hand_dedup: the left hand on frames 1 and 2; forearm_rule: the right wrist and hand on frames
-    # 2 and 3
+def test_a_part_any_rule_names_is_left_out():
+    # hand_dedup: the left hand on frames 1 and 2; mirror_rule: the left elbow, wrist and hand on
+    # frames 2 and 4; forearm_rule: the right wrist and hand on frames 2 and 3
     overlong = {"right": {"median": 50.0, "ratios": {2: 2.4, 3: 2.2}}}
-    assert rules.hidden_parts(4, {"left": [1, 2]}, overlong) == [
+    assert rules.hidden_parts(5, {"left": [1, 2]}, {"left": [2, 4]}, overlong) == [
         {"body": [], "hands": [], "rules": {}},
         {"body": [], "hands": ["left"], "rules": {"hand_dedup": ["left"]}},
-        {"body": [4], "hands": ["left", "right"], "rules": {"hand_dedup": ["left"], "forearm_rule": ["right"]}},
-        {"body": [4], "hands": ["right"], "rules": {"forearm_rule": ["right"]}}]
-    # both naming one hand leave it out once
-    assert rules.hidden_parts(1, {"right": [0]}, {"right": {"median": 50.0, "ratios": {0: 2.4}}}) == [
+        {"body": [4, 6, 7], "hands": ["left", "right"],
+         "rules": {"hand_dedup": ["left"], "mirror_rule": ["left"], "forearm_rule": ["right"]}},
+        {"body": [4], "hands": ["right"], "rules": {"forearm_rule": ["right"]}},
+        {"body": [6, 7], "hands": ["left"], "rules": {"mirror_rule": ["left"]}}]
+    # rules naming one part leave it out once
+    assert rules.hidden_parts(1, {"right": [0]}, {}, {"right": {"median": 50.0, "ratios": {0: 2.4}}}) == [
         {"body": [4], "hands": ["right"], "rules": {"hand_dedup": ["right"], "forearm_rule": ["right"]}}]
+    assert rules.hidden_parts(1, {"right": [0]}, {"right": [0]}, {"right": {"median": 50.0, "ratios": {0: 2.4}}}) == [
+        {"body": [3, 4], "hands": ["right"],
+         "rules": {"hand_dedup": ["right"], "mirror_rule": ["right"], "forearm_rule": ["right"]}}]
 
 
 def test_the_rules_are_pose_config_values_off_by_default():
     from pose_fakes import pose
 
     config = pose.PoseConfig()
-    assert rules.RULES == ("hand_dedup", "forearm_rule")
-    assert config.hand_dedup is False and config.forearm_limit == 0.0
+    assert rules.RULES == ("hand_dedup", "mirror_rule", "forearm_rule")
+    assert config.hand_dedup is False and config.mirror_rule is False and config.forearm_limit == 0.0
     for outside in (-0.1, 10.5):
         with pytest.raises(ValueError, match="forearm_limit"):
             pose.PoseConfig(forearm_limit=outside)

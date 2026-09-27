@@ -50,14 +50,14 @@ keypoints on every frame, and the pose images are drawn.
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
-`box_window`, `forearm_limit`, `hand_dedup`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
+`box_window`, `forearm_limit`, `hand_dedup`, `mirror_rule`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count what is drawn, at Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
 
-`forearm_limit` and `hand_dedup` are draw rules (`libs/draw_rules.py`), both
-off by default. A part either rule names is left out of the pose images, with
-one console warning per side a rule fired on naming the frames; `pose_data`
-keeps every keypoint.
+`forearm_limit`, `hand_dedup` and `mirror_rule` are draw rules
+(`libs/draw_rules.py`), all off by default. A part any rule names is left out
+of the pose images, with one console warning per side a rule fired on naming
+the frames; `pose_data` keeps every keypoint.
 
 `forearm_limit` (0, off): ViTPose puts a wrist it cannot see on something
 else, the leg or the frame edge, and the forearm ending there is drawn far too
@@ -70,6 +70,13 @@ twice: when exactly one arm is intact (its elbow and wrist drawn), the broken
 arm's hand is the copy and is left out, if that arm is broken on the frame
 before or after as well (a one-frame dip of an otherwise intact arm is no
 hidden arm).
+
+`mirror_rule` (off): ViTPose draws an arm it cannot see along the other arm.
+On, both elbows and both wrists within 0.2 body scales of each other (the
+widest of the shoulders, the hips and 1.5 x neck-to-nose), with one arm's
+forearm drawn and something of the other arm drawn, are one arm drawn twice:
+the arm whose elbow and wrist are less confident is the copy, and its elbow,
+wrist and hand are left out.
 
 ### SAM 3.1 Multiplex Video Track
 

@@ -11,7 +11,7 @@ BODY_NAMES = ["nose", "neck", "r_shoulder", "r_elbow", "r_wrist", "l_shoulder", 
 LIMBS = [(1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9), (9, 10), (1, 11),
          (11, 12), (12, 13), (1, 0), (0, 14), (14, 16), (0, 15), (15, 17), (13, 18), (10, 19)]
 HEAD_LIMBS = {(1, 0), (0, 14), (14, 16), (0, 15), (15, 17)}
-NECK, R_SHOULDER, L_SHOULDER, R_HIP, L_HIP = 1, 2, 5, 8, 11
+NOSE, NECK, R_SHOULDER, L_SHOULDER, R_HIP, L_HIP = 0, 1, 2, 5, 8, 11
 R_ELBOW, L_ELBOW = 3, 6
 R_WRIST, L_WRIST = 4, 7
 # The body layout carries one foot point per side, the midpoint of that side's two toe

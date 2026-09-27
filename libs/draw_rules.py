@@ -1,9 +1,10 @@
 """The draw rules: parts of a frame's pose left out of the pose image, never out of the pose data.
 
-ViTPose places a hand or a wrist it cannot see on a visible part that looks like it: the hidden
-hand on the other hand, an out-of-shot wrist on the leg or the frame edge. Each rule below
-recognises one of these from the keypoints alone and names the parts not to draw. They are Pose
-Config values, off by default; with every rule off nothing is left out.
+ViTPose places a hand, an arm or a wrist it cannot see on a visible part that looks like it: the
+hidden hand on the other hand, the hidden arm along the other arm, an out-of-shot wrist on the leg
+or the frame edge. Each rule below recognises one of these from the keypoints alone and names the
+parts not to draw. They are Pose Config values, off by default; with every rule off nothing is left
+out.
 
 The rules read the model's keypoints (pose_data's `pose_metas_original`, in the AAPose layout of
 libs/keypoints.py) at the draw threshold, independently of each other: a part any enabled rule
@@ -14,6 +15,10 @@ and the face crop see what the model gave.
   one hand drawn twice. When exactly one arm is intact (its elbow and wrist both drawn), the hand
   of the broken arm is the copy and is left out, if that arm is broken on the frame before or the
   frame after as well: a one-frame dip of an otherwise intact arm is no hidden arm.
+- mirror_rule (PoseConfig.mirror_rule): both elbows and both wrists within MIRROR_DISTANCE body
+  scales of each other, with one arm's forearm drawn and something of the other arm drawn, are one
+  arm drawn twice. The arm whose elbow and wrist are less confident is the copy: its elbow, wrist
+  and hand are left out.
 - forearm_rule: a forearm is never drawn longer than its full length, and the median of its drawn
   length over the clip is at most that. A drawn forearm longer than the limit
   (PoseConfig.forearm_limit) times that median ends in a wrist put on something else (the leg,
@@ -25,9 +30,9 @@ from typing import TypedDict
 
 import numpy as np
 
-from .keypoints import L_ELBOW, L_WRIST, R_ELBOW, R_WRIST
+from .keypoints import L_ELBOW, L_HIP, L_SHOULDER, L_WRIST, NECK, NOSE, R_ELBOW, R_HIP, R_SHOULDER, R_WRIST
 
-RULES = ("hand_dedup", "forearm_rule")
+RULES = ("hand_dedup", "mirror_rule", "forearm_rule")
 # Each side's elbow and wrist keypoint.
 SIDES = {"right": (R_ELBOW, R_WRIST), "left": (L_ELBOW, L_WRIST)}
 # hand_dedup: the two hands are one when the median distance between their matching keypoints,
@@ -36,6 +41,9 @@ SIDES = {"right": (R_ELBOW, R_WRIST), "left": (L_ELBOW, L_WRIST)}
 # not the ratio, tells them apart.
 DUP_RATIO = 0.6
 DUP_MIN_SHARED = 3
+# mirror_rule: the elbows and the wrists each closer than this many body scales (the widest of the
+# shoulders, the hips and 1.5 x neck-to-nose, the model's positions whether drawn or not).
+MIRROR_DISTANCE = 0.2
 # What a hidden keypoint's confidence is set to for drawing: below any draw threshold, 0 included.
 HIDDEN = -np.inf
 
@@ -96,6 +104,31 @@ def duplicate_hands(pose_metas, threshold) -> dict[str, list[int]]:
     return {side: fired for side, fired in frames.items() if fired}
 
 
+def mirrored_arms(pose_metas, threshold) -> dict[str, list[int]]:
+    """mirror_rule over the clip: the sides (in SIDES order) whose arm is the other arm drawn again
+    on some frame of `pose_metas`, with those frames, ascending. On such a frame both elbows and both
+    wrists are closer than MIRROR_DISTANCE body scales, one arm's forearm (its elbow and wrist) is
+    drawn and something of the other arm is, and this side's elbow and wrist are less confident
+    together than the other side's (on equal confidence neither is the copy)."""
+    frames = {side: [] for side in SIDES}
+    for i, meta in enumerate(pose_metas):
+        body = _pixels(meta, "keypoints_body")
+        scale = max(_distance(body, R_SHOULDER, L_SHOULDER), _distance(body, R_HIP, L_HIP),
+                    1.5 * _distance(body, NECK, NOSE), 1.0)
+        reach = MIRROR_DISTANCE * scale
+        if _distance(body, R_ELBOW, L_ELBOW) >= reach or _distance(body, R_WRIST, L_WRIST) >= reach:
+            continue
+        drawn = body[:, 2] >= threshold
+        forearm = {side: drawn[elbow] and drawn[wrist] for side, (elbow, wrist) in SIDES.items()}
+        some = {side: drawn[elbow] or drawn[wrist] for side, (elbow, wrist) in SIDES.items()}
+        if not (forearm["right"] and some["left"] or forearm["left"] and some["right"]):
+            continue
+        conf = {side: body[elbow, 2] + body[wrist, 2] for side, (elbow, wrist) in SIDES.items()}
+        if conf["right"] != conf["left"]:
+            frames["right" if conf["right"] < conf["left"] else "left"].append(i)
+    return {side: fired for side, fired in frames.items() if fired}
+
+
 def overlong_forearms(pose_metas, threshold, limit) -> dict[str, Overlong]:
     """forearm_rule over the clip: the sides (in SIDES order) whose drawn forearm is longer than
     `limit` times that forearm's median drawn length over all of `pose_metas` on some frame, with
@@ -117,16 +150,20 @@ def overlong_forearms(pose_metas, threshold, limit) -> dict[str, Overlong]:
     return out
 
 
-def hidden_parts(frame_count, duplicates: dict[str, list[int]], overlong: dict[str, Overlong]) -> list[Hidden]:
+def hidden_parts(frame_count, duplicates: dict[str, list[int]], mirrored: dict[str, list[int]],
+                 overlong: dict[str, Overlong]) -> list[Hidden]:
     """Per frame of a clip of `frame_count` frames, what the enabled rules leave out of its pose
-    image: the hand of each side `duplicates` (duplicate_hands) names on it, and the wrist and hand
-    of each side `overlong` (overlong_forearms) names on it. Nothing on any frame when both are
-    empty."""
+    image: the hand of each side `duplicates` (duplicate_hands) names on it, the elbow, wrist and
+    hand of each side `mirrored` (mirrored_arms) names on it, and the wrist and hand of each side
+    `overlong` (overlong_forearms) names on it. Nothing on any frame when all three are empty."""
     out = []
     for i in range(frame_count):
         named = {"hand_dedup": [side for side, frames in duplicates.items() if i in frames],
+                 "mirror_rule": [side for side, frames in mirrored.items() if i in frames],
                  "forearm_rule": [side for side, over in overlong.items() if i in over["ratios"]]}
         fired = {rule: named[rule] for rule in RULES if named[rule]}
-        out.append({"body": sorted(SIDES[side][1] for side in named["forearm_rule"]),
-                    "hands": sorted({side for sides in fired.values() for side in sides}), "rules": fired})
+        body = {SIDES[side][1] for side in named["forearm_rule"]}
+        body |= {keypoint for side in named["mirror_rule"] for keypoint in SIDES[side]}
+        out.append({"body": sorted(body), "hands": sorted({side for sides in fired.values() for side in sides}),
+                    "rules": fired})
     return out
