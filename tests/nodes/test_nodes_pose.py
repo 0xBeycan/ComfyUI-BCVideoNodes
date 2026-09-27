@@ -1,5 +1,5 @@
 """The Pose Detection node: supplied boxes that never build the detector; the Pose Config node: the
-forearm_limit, hand_dedup and mirror_rule widgets, off. Fake models, synthetic frames. The node loads
+forearm_limit and limb_dedup widgets, off. Fake models, synthetic frames. The node loads
 models/common/download.py, which imports folder_paths at its top, so this runs where ComfyUI is
 importable (with the ComfyUI root on PYTHONPATH) and is skipped elsewhere:
 
@@ -45,17 +45,14 @@ def test_pose_config_shows_the_forearm_limit_off():
     assert "0 is off" in options["tooltip"]
 
 
-def test_pose_config_shows_the_hand_dedup_off():
+def test_pose_config_shows_the_limb_dedup_off():
     from names import spec
 
-    kind, options = spec("BCVPoseConfig")["required"]["hand_dedup"]
+    inputs = spec("BCVPoseConfig")["required"]
+    kind, options = inputs["limb_dedup"]
     assert (kind, options["default"], set(options)) == ("BOOLEAN", False, {"default", "tooltip"})
-    assert "one hand drawn twice" in options["tooltip"] and "pose_data keeps the keypoints" in options["tooltip"]
-
-
-def test_pose_config_shows_the_mirror_rule_off():
-    from names import spec
-
-    kind, options = spec("BCVPoseConfig")["required"]["mirror_rule"]
-    assert (kind, options["default"], set(options)) == ("BOOLEAN", False, {"default", "tooltip"})
-    assert "one arm drawn twice" in options["tooltip"] and "pose_data keeps the keypoints" in options["tooltip"]
+    tooltip = options["tooltip"]
+    assert all(part in tooltip for part in ("a hand on the other hand", "a whole arm (elbow, wrist and hand) along "
+                                            "the other arm", "pose_data keeps the keypoints"))
+    # the one switch: the separate hand and arm switches are gone
+    assert "hand_dedup" not in inputs and "mirror_rule" not in inputs

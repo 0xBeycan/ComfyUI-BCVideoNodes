@@ -54,10 +54,8 @@ class PoseConfig:
     forearm_limit: float = field(default=0.0, metadata={
         "min": 0.0, "max": 10.0, "step": 0.1,
         "doc": "Leave out of the pose images a wrist and its hand whose forearm is drawn longer than this many times its median drawn length in the clip (2.0: over twice it). 0 is off. pose_data keeps the keypoints"})
-    hand_dedup: bool = field(default=False, metadata={
-        "doc": "Two drawn hands whose matching keypoints nearly coincide are one hand drawn twice: when exactly one arm is intact (elbow and wrist drawn), the broken arm's hand is the copy and is left out of the pose images, if that arm is broken on the frame before or after too. pose_data keeps the keypoints"})
-    mirror_rule: bool = field(default=False, metadata={
-        "doc": "An arm drawn on the other arm (both elbows and both wrists within 0.2 body scales, one arm's forearm drawn and something of the other arm drawn) is one arm drawn twice: the arm whose elbow and wrist are less confident is the copy, and its elbow, wrist and hand are left out of the pose images. pose_data keeps the keypoints"})
+    limb_dedup: bool = field(default=False, metadata={
+        "doc": "Leave out of the pose images a hand or an arm the model drew on its visible twin: a hand on the other hand when its own arm is broken (elbow or wrist not drawn) there and on a neighbouring frame, or a whole arm (elbow, wrist and hand) along the other arm, the less confident of the two. pose_data keeps the keypoints"})
 
     def __post_init__(self):
         for f in fields(self):
@@ -214,25 +212,25 @@ def _frames(frames):
 
 
 def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5,
-         forearm_limit=0.0, hand_dedup=False, mirror_rule=False):
+         forearm_limit=0.0, limb_dedup=False):
     """The pose images [B, H, W, 3] drawn from pose_data at the size of the frames the pose
     was found on, so they line up with the frames and the mask. A stick width of 0 leaves
     that part out; a limb is drawn when both its ends reach `draw_threshold`. A draw rule that is
-    on (libs/draw_rules.py; hand_dedup, mirror_rule, forearm_limit above 0) leaves the parts it
-    names out of the images, one console warning per side it fired on; pose_data keeps them."""
+    on (libs/draw_rules.py; limb_dedup, forearm_limit above 0) leaves the parts it names out of the
+    images, one console warning per side and part it fired on; pose_data keeps them."""
     from comfy.utils import ProgressBar
     from tqdm import tqdm
 
     from ..libs.pose_utils.human_visualization import draw_aapose_by_meta_new
     pose_metas = pose_data["pose_metas"]
     pbar = ProgressBar(len(pose_metas))
-    enabled = {"hand_dedup": hand_dedup, "mirror_rule": mirror_rule, "forearm_rule": forearm_limit > 0}
+    enabled = {"limb_dedup": limb_dedup, "forearm_rule": forearm_limit > 0}
     pose_images = []
     result = {}
     with log.step(f"drawing {len(pose_metas)} pose images", result):
         originals = pose_data["pose_metas_original"]
-        duplicates = duplicate_hands(originals, draw_threshold) if hand_dedup else {}
-        mirrored = mirrored_arms(originals, draw_threshold) if mirror_rule else {}
+        duplicates = duplicate_hands(originals, draw_threshold) if limb_dedup else {}
+        mirrored = mirrored_arms(originals, draw_threshold) if limb_dedup else {}
         overlong = overlong_forearms(originals, draw_threshold, forearm_limit)
         hidden = hidden_parts(len(pose_metas), duplicates, mirrored, overlong)
         for i, (meta, parts) in enumerate(tqdm(zip(pose_metas, hidden), total=len(pose_metas),
@@ -247,12 +245,10 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
         for rule in RULES:
             if enabled[rule]:
                 result[f"{rule} frames"] = sum(1 for parts in hidden if rule in parts["rules"])
-    for side, frames in duplicates.items():
-        log.warning(f"hand_dedup: {side} hand left out of the pose images on {_frames(frames)}: "
-                    f"drawn on the other hand; pose_data keeps the keypoints")
-    for side, frames in mirrored.items():
-        log.warning(f"mirror_rule: {side} elbow, wrist and hand left out of the pose images on {_frames(frames)}: "
-                    f"drawn on the other arm; pose_data keeps the keypoints")
+    for fired, part, twin in ((duplicates, "hand", "hand"), (mirrored, "elbow, wrist and hand", "arm")):
+        for side, frames in fired.items():
+            log.warning(f"limb_dedup: {side} {part} left out of the pose images on {_frames(frames)}: "
+                        f"drawn on the other {twin}; pose_data keeps the keypoints")
     for side, over in overlong.items():
         low, high = (f"{r:.2f}" for r in (min(over["ratios"].values()), max(over["ratios"].values())))
         span = low if low == high else f"{low}-{high}"
@@ -288,6 +284,5 @@ def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
     pose_data["draw_threshold"] = draw_threshold
     pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold,
-                       forearm_limit=config.forearm_limit, hand_dedup=config.hand_dedup,
-                       mirror_rule=config.mirror_rule)
+                       forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup)
     return pose_images, pose_data, boxes, key_frame_body_points(pose_data, draw_threshold)

@@ -1,8 +1,8 @@
-"""The Pose Config draw rules of the pose pipeline: hand_dedup and mirror_rule off and forearm_limit 0
-draw the pose images as the pipeline without them does; hand_dedup on leaves a hand drawn on the other
-hand out of the images, mirror_rule on the elbow, wrist and hand of an arm drawn on the other arm, a
-forearm_limit above 0 the overlong forearm's wrist and hand, and none of them out of pose_data. Scripted detector and pose model (pose_fakes), hand-built keypoints; no ComfyUI server and
-no real model:
+"""The Pose Config draw rules of the pose pipeline: limb_dedup off and forearm_limit 0 draw the pose
+images as the pipeline without them does; limb_dedup on leaves a hand drawn on the other hand and
+the elbow, wrist and hand of an arm drawn on the other arm out of the images, a forearm_limit above 0
+the overlong forearm's wrist and hand, and none of them out of pose_data. Scripted detector and pose
+model (pose_fakes), hand-built keypoints; no ComfyUI server and no real model:
 
     python -m pytest tests/pipelines/test_pose_draw_rules.py
 """
@@ -23,10 +23,14 @@ def seeded_frames():
 
 def test_the_draw_rules_are_off_by_default_and_follow_the_measured_tunables():
     config = pose.PoseConfig()
-    assert config.forearm_limit == 0.0 and config.hand_dedup is False and config.mirror_rule is False
+    assert config.forearm_limit == 0.0 and config.limb_dedup is False
     # they travel in pose_data with the rest
     assert list(pose.asdict(config)) == ["min_keypoint_conf", "detection_threshold", "box_window", "forearm_limit",
-                                         "hand_dedup", "mirror_rule"]
+                                         "limb_dedup"]
+    # limb_dedup is the one switch: the separate hand and arm switches are gone
+    for gone in ("hand_dedup", "mirror_rule"):
+        with pytest.raises(TypeError, match=gone):
+            pose.PoseConfig(**{gone: True})
 
 
 # -- the draw rule acts on the pose images only -----------------------------------------------------
@@ -45,7 +49,7 @@ def overlong_forearm_pose_data(right=RIGHT_FOREARM, left=None, copies=None, mirr
     """One frame per `right` forearm length, the right hand drawn below the right wrist, as detect
     writes pose_data; the left forearm `left` long on each frame, 20 px when None, the left hand 20 px
     right of the right hand's place at 20 px. The shoulders are 20 px apart and the nose, not drawn,
-    10 px above the neck: the body scale is the shoulders' 20 px, mirror_rule's reach 4 px, and the
+    10 px above the neck: the body scale is the shoulders' 20 px, the arm test's reach 4 px, and the
     two arms 20 px apart are two arms. `mirrors` maps a frame to the side whose elbow and wrist are
     drawn on the other arm there (2 px right of the other side's) with its elbow less confident (0.6).
     `copies` maps a frame to the side whose hand is drawn on the other hand there (2 px right of it:
@@ -134,10 +138,10 @@ def test_pose_detection_draws_with_the_configs_draw_rules(caplog):
     caplog.clear()
     with caplog.at_level("INFO"):
         pose.pose_detection(seeded_frames(), ScriptedDetector(), RecordingPose(),
-                            config=pose.PoseConfig(forearm_limit=2.0, hand_dedup=True, mirror_rule=True))
+                            config=pose.PoseConfig(forearm_limit=2.0, limb_dedup=True))
     done = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[BCVideoNodes] drawing ")
             and " done in " in r.getMessage()]
-    assert len(done) == 1 and done[0].endswith("(hand_dedup frames 0, mirror_rule frames 0, forearm_rule frames 0)")
+    assert len(done) == 1 and done[0].endswith("(limb_dedup frames 0, forearm_rule frames 0)")
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
     assert forearm_warnings(caplog) == []
     caplog.clear()
@@ -184,25 +188,41 @@ def test_no_warning_at_forearm_limit_0_or_when_nothing_is_over_it(caplog):
         "(4): forearm 2.50x its clip median of 20 px; pose_data keeps the keypoints"]
 
 
-# -- hand_dedup: a hand drawn on the other hand ------------------------------------------------------
+# -- limb_dedup: a hand drawn on the other hand, an arm drawn on the other arm ----------------------
 
 # the left hand drawn on the right hand with the left elbow not drawn on frames 1-2 (each the other's
 # broken neighbour: both fire) and on frame 4 alone (its neighbours' left arms intact: it does not)
 COPIES = {1: "left", 2: "left", 4: "left"}
+# the left arm drawn on the right arm on frames 1-2 and on frame 4 alone: each frame is read alone,
+# all three fire
+MIRRORS = {1: "left", 2: "left", 4: "left"}
 
 
-def test_hand_dedup_off_draws_the_vendored_images():
-    pose_data = overlong_forearm_pose_data(right=[20.0] * 6, copies=COPIES)
-    for images in (pose.draw(pose_data), pose.draw(pose_data, hand_dedup=False)):
-        assert all(torch.equal(images[i], vendored(meta)) for i, meta in enumerate(pose_data["pose_metas"]))
+def union_pose_data():
+    """6 frames: the left arm on the right arm on frame 2 (the arm test), the left hand on the right
+    hand on frame 3 (the hand test, frame 4 its broken neighbour), both on frame 4; the right forearm
+    50 px on frame 4 (2.5 x its 20 px median)."""
+    return overlong_forearm_pose_data(right=RIGHT_FOREARM + (20.0,), copies={3: "left", 4: "left"},
+                                      mirrors={2: "left", 4: "left"})
 
 
-def test_hand_dedup_leaves_the_copy_out_of_the_images_and_not_out_of_pose_data():
+def limb_dedup_warnings(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "limb_dedup" in r.getMessage()]
+
+
+def test_limb_dedup_off_draws_the_vendored_images():
+    for pose_data in (overlong_forearm_pose_data(right=[20.0] * 6, copies=COPIES),
+                      overlong_forearm_pose_data(right=[20.0] * 6, mirrors=MIRRORS), union_pose_data()):
+        for images in (pose.draw(pose_data), pose.draw(pose_data, limb_dedup=False)):
+            assert all(torch.equal(images[i], vendored(meta)) for i, meta in enumerate(pose_data["pose_metas"]))
+
+
+def test_limb_dedup_leaves_a_hand_copy_out_of_the_images_and_not_out_of_pose_data():
     pose_data = overlong_forearm_pose_data(right=[20.0] * 6, copies=COPIES)
     metas = pose_data["pose_metas"]
     before = [(m.kps_lhand_p.copy(), m.kps_rhand_p.copy(), m.kps_body_p.copy()) for m in metas]
     originals = [{k: np.array(v, copy=True) for k, v in m.items()} for m in pose_data["pose_metas_original"]]
-    images = pose.draw(pose_data, hand_dedup=True)
+    images = pose.draw(pose_data, limb_dedup=True)
     assert all(torch.equal(images[i], vendored(metas[i], hide_left_hand=i in (1, 2))) for i in range(6))
     assert not torch.equal(images[1], vendored(metas[1]))
     assert all(np.array_equal(m.kps_lhand_p, lhand) and np.array_equal(m.kps_rhand_p, rhand)
@@ -211,75 +231,12 @@ def test_hand_dedup_leaves_the_copy_out_of_the_images_and_not_out_of_pose_data()
                for m, o in zip(pose_data["pose_metas_original"], originals))
 
 
-def test_hand_dedup_and_forearm_limit_leave_out_what_either_names(caplog):
-    # the right forearm 50 px on frame 4 (2.5 x its 20 px median), the left hand on the right hand
-    # on frames 3-4
-    pose_data = overlong_forearm_pose_data(copies={3: "left", 4: "left"})
-    metas = pose_data["pose_metas"]
-    with caplog.at_level("INFO"):
-        images = pose.draw(pose_data, forearm_limit=2.0, hand_dedup=True)
-    assert all(torch.equal(images[i], vendored(metas[i])) for i in range(3))
-    assert torch.equal(images[3], vendored(metas[3], hide_left_hand=True))
-    assert torch.equal(images[4], vendored(metas[4], hide_right_wrist=True, hide_left_hand=True))
-    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
-        "[BCVideoNodes] hand_dedup: left hand left out of the pose images on 2 frames (3-4): drawn on the other "
-        "hand; pose_data keeps the keypoints",
-        "[BCVideoNodes] forearm_limit 2.0: right wrist and hand left out of the pose images on 1 frame (4): "
-        "forearm 2.50x its clip median of 20 px; pose_data keeps the keypoints"]
-    done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
-    assert len(done) == 1 and done[0].endswith("(hand_dedup frames 2, forearm_rule frames 1)")
-
-
-def hand_dedup_warnings(caplog):
-    return [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "hand_dedup" in r.getMessage()]
-
-
-def test_hand_dedup_warns_once_per_side_it_fired_on(caplog):
-    # 12 frames: the left hand on the right one on frames 0-1, and on frame 10 alone (does not fire);
-    # the right hand on the left one on frames 5-7
-    copies = {0: "left", 1: "left", 5: "right", 6: "right", 7: "right", 10: "left"}
-    with caplog.at_level("INFO"):
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 12, copies=copies), hand_dedup=True)
-    assert hand_dedup_warnings(caplog) == [
-        "[BCVideoNodes] hand_dedup: right hand left out of the pose images on 3 frames (5-7): drawn on the other "
-        "hand; pose_data keeps the keypoints",
-        "[BCVideoNodes] hand_dedup: left hand left out of the pose images on 2 frames (0-1): drawn on the other "
-        "hand; pose_data keeps the keypoints"]
-    # the step line keeps its format: the frames any side fired on
-    done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
-    assert len(done) == 1 and done[0].endswith("(hand_dedup frames 5)")
-
-
-def test_no_hand_dedup_warning_when_off_or_when_nothing_fires(caplog):
-    with caplog.at_level("INFO"):
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6, copies=COPIES))
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6, copies=COPIES), hand_dedup=False)
-        # the copy on frame 4 alone: a one-frame dip of the left arm
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6, copies={4: "left"}), hand_dedup=True)
-    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
-    done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
-    assert [line.endswith("s") for line in done[:2]] == [True, True] and done[2].endswith("(hand_dedup frames 0)")
-
-
-# -- mirror_rule: an arm drawn on the other arm ------------------------------------------------------
-
-# the left arm drawn on the right arm on frames 1-2 and on frame 4 alone: each frame is read alone,
-# all three fire
-MIRRORS = {1: "left", 2: "left", 4: "left"}
-
-
-def test_mirror_rule_off_draws_the_vendored_images():
-    pose_data = overlong_forearm_pose_data(right=[20.0] * 6, mirrors=MIRRORS)
-    for images in (pose.draw(pose_data), pose.draw(pose_data, mirror_rule=False)):
-        assert all(torch.equal(images[i], vendored(meta)) for i, meta in enumerate(pose_data["pose_metas"]))
-
-
-def test_mirror_rule_leaves_the_copy_arm_out_of_the_images_and_not_out_of_pose_data():
+def test_limb_dedup_leaves_an_arm_copy_out_of_the_images_and_not_out_of_pose_data():
     pose_data = overlong_forearm_pose_data(right=[20.0] * 6, mirrors=MIRRORS)
     metas = pose_data["pose_metas"]
     before = [(m.kps_lhand_p.copy(), m.kps_rhand_p.copy(), m.kps_body_p.copy()) for m in metas]
     originals = [{k: np.array(v, copy=True) for k, v in m.items()} for m in pose_data["pose_metas_original"]]
-    images = pose.draw(pose_data, mirror_rule=True)
+    images = pose.draw(pose_data, limb_dedup=True)
     assert all(torch.equal(images[i], vendored(metas[i], hide_left_arm=i in MIRRORS)) for i in range(6))
     assert not torch.equal(images[1], vendored(metas[1]))
     assert all(np.array_equal(m.kps_lhand_p, lhand) and np.array_equal(m.kps_rhand_p, rhand)
@@ -288,55 +245,105 @@ def test_mirror_rule_leaves_the_copy_arm_out_of_the_images_and_not_out_of_pose_d
                for m, o in zip(pose_data["pose_metas_original"], originals))
 
 
-def test_the_three_rules_leave_out_what_any_names(caplog):
-    # the right forearm 50 px on frame 4 (2.5 x its 20 px median), the left hand on the right hand on
-    # frames 3-4, the left arm on the right arm on frames 2 and 4
-    pose_data = overlong_forearm_pose_data(right=RIGHT_FOREARM + (20.0,), copies={3: "left", 4: "left"},
-                                           mirrors={2: "left", 4: "left"})
+def test_limb_dedup_leaves_out_what_either_test_names(caplog):
+    pose_data = union_pose_data()
     metas = pose_data["pose_metas"]
     with caplog.at_level("INFO"):
-        images = pose.draw(pose_data, forearm_limit=2.0, hand_dedup=True, mirror_rule=True)
+        images = pose.draw(pose_data, limb_dedup=True)
+    assert all(torch.equal(images[i], vendored(metas[i])) for i in (0, 1, 5))
+    assert torch.equal(images[2], vendored(metas[2], hide_left_arm=True))
+    assert torch.equal(images[3], vendored(metas[3], hide_left_hand=True))
+    assert torch.equal(images[4], vendored(metas[4], hide_left_arm=True))
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
+        "[BCVideoNodes] limb_dedup: left hand left out of the pose images on 2 frames (3-4): drawn on the other "
+        "hand; pose_data keeps the keypoints",
+        "[BCVideoNodes] limb_dedup: left elbow, wrist and hand left out of the pose images on 2 frames (2, 4): "
+        "drawn on the other arm; pose_data keeps the keypoints"]
+    # the step line counts the frames limb_dedup left anything out of
+    done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
+    assert len(done) == 1 and done[0].endswith("(limb_dedup frames 3)")
+
+
+def test_limb_dedup_and_forearm_limit_leave_out_what_either_names(caplog):
+    pose_data = union_pose_data()
+    metas = pose_data["pose_metas"]
+    with caplog.at_level("INFO"):
+        images = pose.draw(pose_data, forearm_limit=2.0, limb_dedup=True)
     assert all(torch.equal(images[i], vendored(metas[i])) for i in (0, 1, 5))
     assert torch.equal(images[2], vendored(metas[2], hide_left_arm=True))
     assert torch.equal(images[3], vendored(metas[3], hide_left_hand=True))
     assert torch.equal(images[4], vendored(metas[4], hide_right_wrist=True, hide_left_arm=True))
     assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
-        "[BCVideoNodes] hand_dedup: left hand left out of the pose images on 2 frames (3-4): drawn on the other "
+        "[BCVideoNodes] limb_dedup: left hand left out of the pose images on 2 frames (3-4): drawn on the other "
         "hand; pose_data keeps the keypoints",
-        "[BCVideoNodes] mirror_rule: left elbow, wrist and hand left out of the pose images on 2 frames (2, 4): "
+        "[BCVideoNodes] limb_dedup: left elbow, wrist and hand left out of the pose images on 2 frames (2, 4): "
         "drawn on the other arm; pose_data keeps the keypoints",
         "[BCVideoNodes] forearm_limit 2.0: right wrist and hand left out of the pose images on 1 frame (4): "
         "forearm 2.50x its clip median of 20 px; pose_data keeps the keypoints"]
     done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
-    assert len(done) == 1 and done[0].endswith("(hand_dedup frames 2, mirror_rule frames 2, forearm_rule frames 1)")
+    assert len(done) == 1 and done[0].endswith("(limb_dedup frames 3, forearm_rule frames 1)")
 
 
-def mirror_rule_warnings(caplog):
-    return [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "mirror_rule" in r.getMessage()]
+def test_a_hand_copy_and_an_overlong_forearm_on_one_frame_leave_out_both(caplog):
+    # the right forearm 50 px on frame 4 (2.5 x its 20 px median), the left hand on the right hand
+    # on frames 3-4
+    pose_data = overlong_forearm_pose_data(copies={3: "left", 4: "left"})
+    metas = pose_data["pose_metas"]
+    with caplog.at_level("INFO"):
+        images = pose.draw(pose_data, forearm_limit=2.0, limb_dedup=True)
+    assert all(torch.equal(images[i], vendored(metas[i])) for i in range(3))
+    assert torch.equal(images[3], vendored(metas[3], hide_left_hand=True))
+    assert torch.equal(images[4], vendored(metas[4], hide_right_wrist=True, hide_left_hand=True))
+    assert [r.getMessage() for r in caplog.records if r.levelname == "WARNING"] == [
+        "[BCVideoNodes] limb_dedup: left hand left out of the pose images on 2 frames (3-4): drawn on the other "
+        "hand; pose_data keeps the keypoints",
+        "[BCVideoNodes] forearm_limit 2.0: right wrist and hand left out of the pose images on 1 frame (4): "
+        "forearm 2.50x its clip median of 20 px; pose_data keeps the keypoints"]
+    done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
+    assert len(done) == 1 and done[0].endswith("(limb_dedup frames 2, forearm_rule frames 1)")
 
 
-def test_mirror_rule_warns_once_per_side_it_fired_on(caplog):
+def test_limb_dedup_warns_once_per_side_it_left_a_hand_out_on(caplog):
+    # 12 frames: the left hand on the right one on frames 0-1, and on frame 10 alone (does not fire);
+    # the right hand on the left one on frames 5-7
+    copies = {0: "left", 1: "left", 5: "right", 6: "right", 7: "right", 10: "left"}
+    with caplog.at_level("INFO"):
+        pose.draw(overlong_forearm_pose_data(right=[20.0] * 12, copies=copies), limb_dedup=True)
+    assert limb_dedup_warnings(caplog) == [
+        "[BCVideoNodes] limb_dedup: right hand left out of the pose images on 3 frames (5-7): drawn on the other "
+        "hand; pose_data keeps the keypoints",
+        "[BCVideoNodes] limb_dedup: left hand left out of the pose images on 2 frames (0-1): drawn on the other "
+        "hand; pose_data keeps the keypoints"]
+    # the step line keeps its format: the frames any side fired on
+    done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
+    assert len(done) == 1 and done[0].endswith("(limb_dedup frames 5)")
+
+
+def test_limb_dedup_warns_once_per_side_it_left_an_arm_out_on(caplog):
     # 12 frames: the left arm on the right one on frames 0-1 and 10, the right arm on the left one on
     # frames 5-7
     mirrors = {0: "left", 1: "left", 5: "right", 6: "right", 7: "right", 10: "left"}
     with caplog.at_level("INFO"):
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 12, mirrors=mirrors), mirror_rule=True)
-    assert mirror_rule_warnings(caplog) == [
-        "[BCVideoNodes] mirror_rule: right elbow, wrist and hand left out of the pose images on 3 frames (5-7): "
+        pose.draw(overlong_forearm_pose_data(right=[20.0] * 12, mirrors=mirrors), limb_dedup=True)
+    assert limb_dedup_warnings(caplog) == [
+        "[BCVideoNodes] limb_dedup: right elbow, wrist and hand left out of the pose images on 3 frames (5-7): "
         "drawn on the other arm; pose_data keeps the keypoints",
-        "[BCVideoNodes] mirror_rule: left elbow, wrist and hand left out of the pose images on 3 frames (0-1, 10): "
+        "[BCVideoNodes] limb_dedup: left elbow, wrist and hand left out of the pose images on 3 frames (0-1, 10): "
         "drawn on the other arm; pose_data keeps the keypoints"]
     # the step line keeps its format: the frames any side fired on
     done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
-    assert len(done) == 1 and done[0].endswith("(mirror_rule frames 6)")
+    assert len(done) == 1 and done[0].endswith("(limb_dedup frames 6)")
 
 
-def test_no_mirror_rule_warning_when_off_or_when_nothing_fires(caplog):
+def test_no_limb_dedup_warning_when_off_or_when_nothing_fires(caplog):
     with caplog.at_level("INFO"):
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6, mirrors=MIRRORS))
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6, mirrors=MIRRORS), mirror_rule=False)
-        # the two arms 20 px apart on every frame
-        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6), mirror_rule=True)
+        pose.draw(union_pose_data())
+        pose.draw(union_pose_data(), limb_dedup=False)
+        # the hand copy on frame 4 alone: a one-frame dip of the left arm
+        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6, copies={4: "left"}), limb_dedup=True)
+        # the two arms 20 px apart and the two hands apart on every frame
+        pose.draw(overlong_forearm_pose_data(right=[20.0] * 6), limb_dedup=True)
     assert [r for r in caplog.records if r.levelname == "WARNING"] == []
     done = [r.getMessage() for r in caplog.records if " done in " in r.getMessage()]
-    assert [line.endswith("s") for line in done[:2]] == [True, True] and done[2].endswith("(mirror_rule frames 0)")
+    assert [line.endswith("s") for line in done[:2]] == [True, True]
+    assert [line.endswith("(limb_dedup frames 0)") for line in done[2:]] == [True, True]
