@@ -10,7 +10,7 @@ def _guard_inputs(config_cls, switch, tooltip):
 
 POSE_GUARD_TOOLTIP = "Stop the workflow when a pose check fails (torso jump, subject switch). Warnings never stop. Off still measures and reports every check."
 MASK_GUARD_TOOLTIP = "Stop the workflow when a mask check fails (empty, leaking, fragmented). Warnings never stop. Off still measures and reports every check."
-POSE_DATA_TOOLTIP = "The drawn pose of the same frames at the same size (Pose Detection or WanAnimate Preprocess). Optional, but it gives the best result: without it the guard runs only its pose-free checks (a detached piece, a region dropped for one frame) and cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece is the person."
+POSE_DATA_TOOLTIP = "The drawn pose of the same frames at the same size (Pose Detection or WanAnimate Preprocess). Optional, but it gives the best result: without it the guard runs only its pose-free checks (a detached piece, a region dropped for one frame) and cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece inside the frame is the person."
 
 
 class BCVPoseGuard:

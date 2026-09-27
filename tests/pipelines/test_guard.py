@@ -1,6 +1,7 @@
 """The guard on synthetic clips: a clean clip passes, each injected fault fires its own check
-on the injected frames only. Every test here goes the way the WanAnimate Preprocess Guard
-goes - both groups, then `combine_guards`; tests/pipelines/test_guard_split.py runs each group alone.
+on the injected frames only. The tests run both groups, then `combine_guards`, on the raw mask;
+the WanAnimate Preprocess Guard does the same on the final mask (`final_record` measures a mask
+as the final); tests/pipelines/test_guard_split.py runs each group alone.
 Runs without ComfyUI or any model:
 
     python -m pytest tests/pipelines/test_guard.py
@@ -13,7 +14,8 @@ import pytest
 import torch
 
 from bcvideonodes.pipelines import guard
-from guard_fakes import DRAW_THRESHOLD, LEGS, MASK, N, POSE, H, W, clip, drop_keypoints, hand, origin, place_keypoints
+from guard_fakes import (DRAW_THRESHOLD, LEGS, MASK, N, POSE, H, W, arm, clip, drop_keypoints, hand, origin,
+                         place_keypoints)
 
 
 def move_keypoint(pose_data, i, index, dx=0.0, dy=0.0):
@@ -400,41 +402,80 @@ def block(masks, frames, rows, cols):
         masks[i, y1 + rows[0]:y1 + rows[1], x1 + cols[0]:x1 + cols[1]] = 0
 
 
-def test_a_region_dropped_for_one_frame_is_mask_loss():
+def gone_on(*frames):
+    """Every frame but `frames`: the arm is held out on those and gone from the others' mask."""
+    return [i for i in range(N) if i not in frames]
+
+
+def test_a_part_the_final_mask_leaves_out_for_one_frame_is_mask_loss():
+    # her arm, held out 40 px from her side, is gone from frame 20's mask. The final mask the
+    # workflow feeds the models reaches FINAL_GROW (10 px) beyond her side; the 29 px beyond that
+    # which the frames around it hold (the body drifts a pixel a frame) are dropped: 29 x 40 px,
+    # a disc of radius 15
     masks, pose_data = clip()
-    block(masks, [20], (150, 180), (40, 70))     # between the knees: no keypoint in it
+    arm(masks, gone_on(20), (60, 100), 40)
     passed, flags, report = run(masks, pose_data)
     assert passed and flags == {"mask_loss": [20]}, report
     _, _, metrics, _ = guard_run(masks, pose_data)
     frames = json.loads(metrics)["frames"]
-    assert frames[20]["mask_loss"] == pytest.approx(15 / 240)   # the 30 x 30 hole holds a disc of radius 15
+    assert frames[20]["mask_loss"] == pytest.approx(15 / 240)
     assert frames[0]["mask_loss"] is None and frames[N - 1]["mask_loss"] is None
     assert "mask_loss (warning)" in report
 
 
-def test_mask_loss_is_the_thickness_not_the_area():
-    # a sliver 2 px wide down the whole body is 480 px, a 12 x 12 block 144 px: the block holds a
-    # disc of radius 6, the sliver of radius 1
+def pose_free_flags(masks):
+    """The Mask Guard's flags on `masks` without pose_data."""
+    return json.loads(guard.check_mask(masks, None, MASK, stop_on_fail=False)[2])["flags"]
+
+
+def test_a_hole_the_final_mask_fills_is_not_mask_loss():
+    # a 30 x 30 hole between the knees on one frame: the grow fills all but its 10 x 10 core (a
+    # disc of radius 5, over max_mask_loss), and every block of the final's grid over that core
+    # holds grown mask, so the models never see the hole
     masks, pose_data = clip()
-    block(masks, [12], (0, 240), (98, 100))
-    block(masks, [28], (150, 162), (44, 56))
+    block(masks, [20], (150, 180), (40, 70))
     _, flags, report = run(masks, pose_data)
-    assert flags == {"mask_loss": [28]}, report
+    assert "mask_loss" not in flags, report
+    assert json.loads(guard_run(masks, pose_data)[2])["frames"][20]["mask_loss"] == 0.0
+    assert "mask_loss" not in pose_free_flags(masks)
+
+
+def test_a_hole_that_holds_a_whole_block_of_the_final_s_grid_is_mask_loss():
+    # an 84 x 84 hole on frame 20; the grow leaves its 64 x 64 core. BlockifyMask cuts the grown
+    # box (rows 30-289, columns 70-189) into 8 x 3 blocks of 32 x 40 px: the block at rows
+    # 126-157, columns 110-149 lies inside the core, holds no grown pixel and stays off - a disc
+    # of radius 16 the models lose
+    masks, _ = clip()
+    block(masks, [20], (60, 144), (8, 92))
+    record = json.loads(guard.check_mask(masks, None, MASK, stop_on_fail=False)[2])
+    assert record["flags"] == {"mask_loss": [20]} and record["frames"][20]["mask_loss"] == pytest.approx(16 / 240)
+
+
+def test_mask_loss_is_the_thickness_not_the_area():
+    # beyond the final's reach, an arm 15 px wide down most of her side leaves a 4 x 200 px strip
+    # (800 px) when it is gone for a frame, one 25 px wide a 14 x 14 block (196 px): the block
+    # holds a disc of radius 7, over max_mask_loss, the strip one of radius 2, under half of it
+    strip, _ = clip()
+    arm(strip, gone_on(12), (20, 220), 15)
+    assert "mask_loss" not in pose_free_flags(strip)
+    blob, _ = clip()
+    arm(blob, gone_on(28), (60, 74), 25)
+    assert pose_free_flags(blob) == {"mask_loss": [28]}
 
 
 def test_a_region_lost_for_good_is_not_mask_loss():
     masks, pose_data = clip()
-    block(masks, range(20, 31), (150, 180), (40, 70))
+    arm(masks, range(0, 20), (60, 100), 40)
     _, flags, report = run(masks, pose_data)
     assert "mask_loss" not in flags, report
 
 
 def test_the_mask_loss_threshold_is_the_config_s():
-    # the 30 x 30 hole holds a disc of radius 15 (0.0625 of the shorter side); the left thigh
-    # crosses it, so half the threshold is enough: 0.1 flags it, 0.2 does not
+    # the arm gone from frame 20 leaves a disc of radius 15 (0.0625 of the shorter side) beyond the
+    # final's reach, and no limb crosses it: 0.06 flags it, 0.07 does not
     masks, pose_data = clip()
-    block(masks, [20], (150, 180), (40, 70))
-    for threshold, flagged in ((0.1, [20]), (0.2, None)):
+    arm(masks, gone_on(20), (60, 100), 40)
+    for threshold, flagged in ((0.06, [20]), (0.07, None)):
         loose = guard.MaskGuardConfig(**{**dataclasses.asdict(MASK), "max_mask_loss": threshold})
         _, _, metrics, _ = guard.check_mask(masks, pose_data, loose, stop_on_fail=False)
         record = json.loads(metrics)
@@ -442,10 +483,11 @@ def test_the_mask_loss_threshold_is_the_config_s():
 
 
 def test_a_region_dropped_for_a_few_frames_is_one_mask_loss():
-    # held on frame 19 and on frame 25, dropped on 20-24: the region every one of those frames
-    # drops is 26 x 30 (the body drifts a pixel a frame), a disc of radius 13
+    # the arm, held on frame 19 and on frame 25, is gone on 20-24: beyond the reach of the finals
+    # of those frames (her side drifts a pixel a frame) the region all of them drop is 25 x 40 px,
+    # a disc of radius 13
     masks, pose_data = clip()
-    block(masks, range(20, 25), (150, 180), (40, 70))
+    arm(masks, gone_on(*range(20, 25)), (60, 100), 40)
     passed, flags, report = run(masks, pose_data)
     assert passed and flags == {"mask_loss": list(range(20, 25))}, report
     _, _, metrics, _ = guard_run(masks, pose_data)
@@ -455,56 +497,120 @@ def test_a_region_dropped_for_a_few_frames_is_one_mask_loss():
 
 
 def test_a_run_of_frames_needs_twice_the_thickness():
-    # a 14 x 14 hole beside the skeleton: on one frame it holds a disc of radius 7 (0.029, over
-    # max_mask_loss 0.0185); over frames 20-22 the part every frame drops holds one of radius 6
-    # (0.025), under twice the threshold
+    # a 25 px arm gone for one frame leaves 14 x 14 px beyond the final's reach, a disc of radius 7
+    # (0.029, over max_mask_loss 0.0185); gone on frames 20-22, the part all three finals leave out
+    # holds one of radius 6 (0.025), under twice the threshold
     for frames, flagged in (([20], [20]), (range(20, 23), None)):
-        masks, pose_data = clip()
-        block(masks, frames, (160, 174), (76, 90))
-        _, flags, report = run(masks, pose_data)
-        assert flags.get("mask_loss") == flagged, report
+        masks, _ = clip()
+        arm(masks, gone_on(*frames), (60, 74), 25)
+        assert pose_free_flags(masks).get("mask_loss") == flagged
 
 
 def test_a_dropout_longer_than_the_window_is_not_mask_loss():
     masks, pose_data = clip()
-    block(masks, range(20, 29), (150, 180), (40, 70))     # nine frames
+    arm(masks, gone_on(*range(20, 29)), (60, 100), 40)     # nine frames
     _, flags, report = run(masks, pose_data)
     assert "mask_loss" not in flags, report
-
-
-def arm(masks, frames, rows):
-    """A 30 px wide arm held out from the body's right side at `rows` (relative to its top)."""
-    for i in frames:
-        x1, y1 = origin(i)
-        masks[i, y1 + rows[0]:y1 + rows[1], x1 + 100:x1 + 130] = 1.0
 
 
 def test_a_limb_that_moves_away_and_back_is_not_mask_loss():
     # the arm is lifted 50 px on frames 20-24 and back on frame 25: the spot it left is held on
     # both ends and on none of the frames between, as a dropout would be, but the arm is right
     # there the whole time
-    masks, pose_data = clip()
-    arm(masks, [*range(0, 20), *range(25, N)], (60, 100))
-    arm(masks, range(20, 25), (10, 50))
-    _, flags, report = run(masks, pose_data)
-    assert "mask_loss" not in flags, report
-    masks, pose_data = clip()
-    arm(masks, [*range(0, 20), *range(25, N)], (60, 100))   # the same arm gone from the mask instead
-    _, flags, report = run(masks, pose_data)
-    assert flags["mask_loss"] == list(range(20, 25)), report
+    masks, _ = clip()
+    arm(masks, gone_on(*range(20, 25)), (60, 100), 40)
+    arm(masks, range(20, 25), (10, 50), 40)
+    assert "mask_loss" not in pose_free_flags(masks)
+    masks, _ = clip()
+    arm(masks, gone_on(*range(20, 25)), (60, 100), 40)   # the same arm gone from the mask instead
+    assert pose_free_flags(masks)["mask_loss"] == list(range(20, 25))
 
 
 def test_a_thin_dropout_counts_where_the_skeleton_crosses_it():
-    # a 6 x 6 hole holds a disc of radius 3, 0.0125 of the shorter side: under max_mask_loss
-    # (0.0185) but over half of it; on the left thigh the pose sees the body there, beside the
-    # body it does not
-    for cols, with_pose in (((62, 68), [20]), ((80, 86), None)):
+    # a 17 px arm gone from frame 20 leaves 6 x 24 px beyond the final's reach: a disc of radius
+    # 3, 0.0125 of the shorter side, under max_mask_loss (0.0185) but over half of it. With her left
+    # forearm reaching into it the pose sees the body there; lower down, beside her hip, no limb
+    # crosses it
+    for rows, wrist, with_pose in (((100, 124), True, [20]), ((150, 174), False, None)):
         masks, pose_data = clip()
-        block(masks, [20], (160, 166), cols)
+        arm(masks, gone_on(20), rows, 17)
+        if wrist:
+            for i in range(N):
+                x1, y1 = origin(i)
+                place_keypoints(pose_data, [i], 7, x1 + 113, y1 + 112)
         _, flags, report = run(masks, pose_data)
         assert flags.get("mask_loss") == with_pose, report
-        _, _, metrics, _ = guard.check_mask(masks, None, MASK, stop_on_fail=False)
-        assert "mask_loss" not in json.loads(metrics)["flags"]
+        assert "mask_loss" not in pose_free_flags(masks)
+
+
+# --- the final mask: the WanAnimate Preprocess Guard's, grown and blockified -------------------
+
+def final_record(masks, pose_data, final=True):
+    """The mask group's metrics record on `masks` as the final mask (or, with `final` False, as a
+    raw one)."""
+    return json.loads(guard.check_mask(masks, pose_data, MASK, stop_on_fail=False, final=final)[2])
+
+
+def test_on_the_final_mask_a_dropped_block_counts_only_where_it_holds_a_keypoint():
+    # her left forearm reaches out of the body to the wrist 150 px right of her rectangle's left
+    # edge; the final mask's moving block grid turns a 32 px block above it on and off (on frames
+    # 19 and 21, off on 20). The forearm's line crosses that block, a raw mask's dropout; on the
+    # final no keypoint lies in it. A block the final drops over her wrist is the hand the raw mask lost
+    masks, pose_data = clip()
+    for i in range(N):
+        x1, y1 = origin(i)
+        masks[i, y1 + 100:y1 + 124, x1 + 100:x1 + 160] = 1.0
+        place_keypoints(pose_data, [i], 7, x1 + 150, y1 + 112)
+    for i in (19, 21):
+        x1, y1 = origin(i)
+        masks[i, y1 + 68:y1 + 100, x1 + 110:x1 + 142] = 1.0
+    assert final_record(masks, pose_data, final=False)["flags"].get("mask_loss") == [20]
+    assert "mask_loss" not in final_record(masks, pose_data)["flags"]
+    x1, y1 = origin(20)
+    masks[20, y1 + 96:y1 + 128, x1 + 136:x1 + 168] = 0
+    assert final_record(masks, pose_data)["flags"]["mask_loss"] == [20]
+
+
+def test_on_the_final_mask_a_block_the_grid_adds_on_one_frame_is_no_attached_leak():
+    # the final's outline moves by up to a block from frame to frame with no change in the raw
+    # mask: a 32 px column beside her on one frame is that, 60 px is background taken in
+    masks, pose_data = clip()
+    x2 = origin(20)[0] + 100
+    masks[20, 200:280, x2:x2 + 32] = 1.0
+    assert final_record(masks, pose_data, final=False)["flags"]["mask_attached_leak"] == [20]
+    assert "mask_attached_leak" not in final_record(masks, pose_data)["flags"]
+    masks[20, 200:280, x2:x2 + 60] = 1.0
+    assert final_record(masks, pose_data)["flags"]["mask_attached_leak"] == [20]
+
+
+def test_on_the_final_mask_the_padding_is_body_the_skeleton_accounts_for():
+    # the final reaches FINAL_PAD (26 px) beyond the raw mask on average: her rectangle grown by
+    # that much is the body the pose draws, grown as the mask was
+    masks, pose_data = clip()
+    for i in range(N):
+        x1, y1 = origin(i)
+        masks[i, y1 - 26:y1 + 266, x1 - 26:x1 + 126] = 1.0
+    assert final_record(masks, pose_data, final=False)["flags"]["body_not_drawn"] == list(range(N))
+    assert "body_not_drawn" not in final_record(masks, pose_data)["flags"]
+
+
+def test_on_the_final_mask_a_piece_is_measured_without_its_padding():
+    # a detached 32 px block is what the final makes of a speck of a few pixels; a 64 px piece
+    # keeps 12 x 12 px once the padding is off, 1.6% of her rectangle's 48 x 188 core: a speck
+    masks, pose_data = clip()
+    masks[20, 20:52, 4:36] = 1.0
+    assert final_record(masks, pose_data, final=False)["flags"]["mask_specks"] == [20]
+    assert final_record(masks, pose_data)["frames"][20]["fragments"] == []
+    masks[20, 20:84, 4:68] = 1.0
+    assert final_record(masks, pose_data, final=False)["flags"]["mask_fragmented"] == [20]
+    record = final_record(masks, pose_data)
+    assert record["flags"]["mask_specks"] == [20] and record["frames"][20]["fragments"] == [round(144 / (48 * 188), 4)]
+
+
+def test_the_final_mask_needs_its_pose():
+    masks, _ = clip()
+    with pytest.raises(ValueError, match="connect pose_data"):
+        guard.check_mask(masks, None, MASK, final=True)
 
 
 def test_background_attached_to_the_body_on_one_frame_is_a_warning():
@@ -584,8 +690,10 @@ def test_foreign_pose_data_is_an_error():
 def test_resized_mask_is_an_error():
     masks, pose_data = clip()
     small = torch.nn.functional.interpolate(masks[None], size=(H // 2, W // 2))[0]
-    with pytest.raises(ValueError, match="before any resize"):
+    with pytest.raises(ValueError, match="straight from the tracker, before any resize"):
         guard.check_mask(small, pose_data, MASK)
+    with pytest.raises(ValueError, match="the final mask of the same frames"):
+        guard.check_mask(small, pose_data, MASK, final=True)
 
 
 def test_single_frame_2d_mask_is_accepted():

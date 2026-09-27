@@ -5,8 +5,9 @@ import numpy as np
 from ...libs import log
 from ...libs.keypoints import BODY_NAMES, LIMBS
 from ...libs.pose_data import Detection, PoseData, PoseMeta
-from .common import (BOX_MARGIN, BOX_WINDOW, CARRIES, FRAGMENT_FRACTION, HANDS, LEAK_REACH, LEAK_WINDOW, LIMB_ENDS,
-                     LIMB_WIDTH, LOSS_DRAWN, LOSS_GAIN, LOSS_REACH, LOSS_REACH_FRAMES, LOSS_RUN, LOSS_WINDOW, MASK_CHECKS,
+from .common import (BOX_MARGIN, BOX_WINDOW, CARRIES, FINAL_BLOCK, FINAL_GROW, FINAL_ON_BODY, FINAL_PAD, FRAGMENT_FRACTION, HANDS,
+                     LEAK_REACH, LEAK_WINDOW, LIMB_ENDS, LIMB_WIDTH, LOSS_DRAWN, LOSS_GAIN, LOSS_ON_BODY, LOSS_REACH,
+                     LOSS_REACH_FRAMES, LOSS_RUN, LOSS_WINDOW, MASK_CHECKS,
                      POSE_FREE_MASK_CHECKS, RELIABLE_CONF, RELIABLE_KEYPOINTS,
                      SKELETON_REACH, SPECK_FRACTION, WHOLE_BODY, MaskRow, _body, _box_iou_prev, _flag, _frame_pose,
                      _hand, _in_frame, _keypoint_rows, _pose_inputs, _thresholds, body_scale, box_sides,
@@ -16,7 +17,6 @@ from .pose import limb_spikes
 from .report import _finish
 from .timeline import MASK_PANELS
 
-NO_KEYPOINTS = np.empty((0, 2))  # without a pose, the largest region is the person
 # A limb end's parent joint: the limb that reaches it runs from there.
 PARENT = {3: 2, 4: 3, 6: 5, 7: 6, 9: 8, 10: 9, 12: 11, 13: 12, 18: 13, 19: 10}
 
@@ -27,15 +27,17 @@ def _iou(a, b):
     return float(inter / union) if union else 1.0
 
 
-def _mask_inputs(mask, pose_data: PoseData):
+def _mask_inputs(mask, pose_data: PoseData, final=False):
     """The mask as [frames, height, width] booleans and the pose it is checked against (None,
-    None without pose_data), checked against each other."""
+    None without pose_data), checked against each other; `final` says it is the final mask."""
     if mask.dim() == 2:
         mask = mask.unsqueeze(0)
     if mask.dim() != 3:
         raise ValueError(f"mask must be [frames, height, width], got a tensor of shape {tuple(mask.shape)}")
     masks = (mask.cpu().numpy() > 0.5)
-    return (masks, *pose_of(masks, pose_data, "connect the mask straight from the tracker, before any resize"))
+    hint = ("connect the final mask of the same frames (GrowMaskWithBlur and BlockifyMask keep the size), before any "
+            "resize" if final else "connect the mask straight from the tracker, before any resize")
+    return (masks, *pose_of(masks, pose_data, hint))
 
 
 def pose_of(masks, pose_data: PoseData, hint):
@@ -83,9 +85,19 @@ def box_envelopes(detections: list[Detection], N, W, H):
     return out
 
 
-def mask_regions(mask, person_kps):
+def _sides(stats, i, H, W):
+    """The sides of the frame region `i` of cv2 connected-component `stats` reaches."""
+    import cv2
+
+    x, y = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
+    x2, y2 = x + stats[i, cv2.CC_STAT_WIDTH], y + stats[i, cv2.CC_STAT_HEIGHT]
+    return {side for side, on in (("left", x == 0), ("top", y == 0), ("right", x2 == W), ("bottom", y2 == H)) if on}
+
+
+def mask_regions(mask, person_kps, pad=0):
     """The person's part of `mask` and the regions detached from it, as fractions of its
-    largest region.
+    largest region, each region measured with `pad` px taken off its outline (the final mask's
+    padding, FINAL_PAD; 0 on a raw mask).
 
     The person is the largest region and every region holding one of her own drawn keypoints
     (`person_kps`, [K, 2+] pixels inside the frame): a piece the frame edge or a gap in the
@@ -93,7 +105,12 @@ def mask_regions(mask, person_kps):
     burned-in text cuts off the arm - is still her. Nothing else is excused. Asking only
     whether a piece touches the frame border is not enough to say the border is what
     separates it: on a clip where the body runs off the bottom of every frame, that excuses
-    anything at any edge, including the objects beside her that the decoder took in."""
+    anything at any edge, including the objects beside her that the decoder took in.
+
+    Without a pose (`person_kps` None) nothing says which piece is hers but the frame edge: a
+    piece that runs off a side of the frame the largest region also runs off is a part of her
+    that side cut away (an arm that leaves the shot and comes back further along it). A piece
+    off the edges, or at a side she does not reach, is not."""
     import cv2
 
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
@@ -101,11 +118,18 @@ def mask_regions(mask, person_kps):
         return mask, []
     areas = stats[1:, cv2.CC_STAT_AREA]
     main = int(np.argmax(areas)) + 1
-    xs = person_kps[:, 0].astype(int)
-    ys = person_kps[:, 1].astype(int)
-    person = (set(labels[ys, xs].tolist()) - {0}) | {main}
-    out = [round(float(stats[i, cv2.CC_STAT_AREA] / areas[main - 1]), 4)
-           for i in range(1, count) if i not in person]
+    if person_kps is None:
+        H, W = mask.shape
+        edges = _sides(stats, main, H, W)
+        person = {i for i in range(1, count) if _sides(stats, i, H, W) & edges} | {main}
+    else:
+        xs = person_kps[:, 0].astype(int)
+        ys = person_kps[:, 1].astype(int)
+        person = (set(labels[ys, xs].tolist()) - {0}) | {main}
+    if pad:
+        core = cv2.erode(mask.astype(np.uint8), np.ones((2 * pad + 1, 2 * pad + 1), np.uint8)).astype(bool)
+        areas = np.bincount(labels[core], minlength=count)[1:]
+    out = [round(float(areas[i - 1] / max(areas[main - 1], 1)), 4) for i in range(1, count) if i not in person]
     return np.isin(labels, list(person)), sorted((f for f in out if f >= SPECK_FRACTION), reverse=True)
 
 
@@ -115,11 +139,11 @@ def detached_fractions(mask, person_kps):
     return mask_regions(mask, person_kps)[1]
 
 
-def skeleton_zone(meta: PoseMeta, shape, draw_threshold, reach_scales=None):
+def skeleton_zone(meta: PoseMeta, shape, draw_threshold, reach_scales=None, pad=0):
     """The pixels the drawn skeleton accounts for: `reach_scales` body scales (SKELETON_REACH
-    when None) around every drawn body limb and keypoint and every drawn hand keypoint, and
-    along every limb that runs out of the shot from a drawn end (a thigh whose knee is below
-    the frame is body the pose image cannot draw)."""
+    when None), and `pad` px more (the final mask's padding), around every drawn body limb and
+    keypoint and every drawn hand keypoint, and along every limb that runs out of the shot from
+    a drawn end (a thigh whose knee is below the frame is body the pose image cannot draw)."""
     import cv2
 
     H, W = shape
@@ -127,7 +151,7 @@ def skeleton_zone(meta: PoseMeta, shape, draw_threshold, reach_scales=None):
     kps, drawn = _body(meta, W, H, draw_threshold)
     if not drawn.any():
         return zone.astype(bool)
-    reach = max(3, int((SKELETON_REACH if reach_scales is None else reach_scales) * body_scale(kps, drawn)))
+    reach = max(3, int((SKELETON_REACH if reach_scales is None else reach_scales) * body_scale(kps, drawn))) + pad
     points = [kps[j, :2] for j in np.flatnonzero(drawn)]
     for arm in HANDS:
         points += list(_hand(meta, arm, W, H, draw_threshold))
@@ -140,12 +164,42 @@ def skeleton_zone(meta: PoseMeta, shape, draw_threshold, reach_scales=None):
     return zone.astype(bool)
 
 
-def _grown(mask, size):
-    """`mask` dilated by a square kernel of 2% of `size`, odd and at least 3 pixels."""
+def _dilated(mask, k):
+    """`mask` dilated by a k x k square kernel."""
     import cv2
 
-    k = max(3, int(0.02 * size) | 1)
     return cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+
+
+def _grown(mask, size):
+    """`mask` dilated by a square kernel of 2% of `size`, odd and at least 3 pixels."""
+    return _dilated(mask, max(3, int(0.02 * size) | 1))
+
+
+def _final_mask(mask):
+    """The final mask the Wan Animate workflow makes of one raw [H, W] boolean frame, the one the
+    sampler and every model after the preprocess read: GrowMaskWithBlur (expand FINAL_GROW,
+    tapered corners: FINAL_GROW dilations by a 3 x 3 cross; an empty frame stays empty), then
+    BlockifyMask (FINAL_BLOCK): the grown mask's box cut into side // FINAL_BLOCK blocks along
+    each side (at least one, the remainder joining the last block), a block on wherever it holds
+    a grown pixel, nothing outside the box."""
+    import cv2
+
+    cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], np.uint8)
+    grown = cv2.dilate(mask.astype(np.uint8), cross, iterations=FINAL_GROW).astype(bool)
+    out = np.zeros_like(grown)
+    rows, cols = np.flatnonzero(grown.any(axis=1)), np.flatnonzero(grown.any(axis=0))
+    if not len(rows):
+        return out
+    y0, y1, x0, x1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+    hd, wd = max(1, (y1 - y0) // FINAL_BLOCK), max(1, (x1 - x0) // FINAL_BLOCK)
+    by = np.minimum(np.arange(y1 - y0) // ((y1 - y0) // hd), hd - 1)
+    bx = np.minimum(np.arange(x1 - x0) // ((x1 - x0) // wd), wd - 1)
+    on = np.zeros((hd, wd), bool)
+    ys, xs = np.nonzero(grown[y0:y1, x0:x1])
+    on[by[ys], bx[xs]] = True
+    out[y0:y1, x0:x1] = on[np.ix_(by, bx)]
+    return out
 
 
 def _thickest(lost):
@@ -168,11 +222,35 @@ def _thickest(lost):
     return float(dt.max()), piece[py.min():py.max() + 1, px.min():px.max() + 1], (y0 + py.min(), x0 + px.min())
 
 
-def _run_evidence(masks, t, g, piece, corner, reach, limbs):
+def _crosses(limbs):
+    """The body test of a raw mask: frame f's drawn body limbs (`limbs(f)`, pixel point pairs)
+    cross the piece `P`, whose top-left pixel is at `origin` (y, x)."""
+    def on_body(f, P, origin):
+        import cv2
+
+        (y0, x0), drawn = origin, np.zeros(P.shape, np.uint8)
+        for a, b in limbs(f):
+            cv2.line(drawn, (int(a[0]) - x0, int(a[1]) - y0), (int(b[0]) - x0, int(b[1]) - y0), 1, 1)
+        return bool((drawn.astype(bool) & P).any())
+    return on_body
+
+
+def _holds(keypoints):
+    """The body test of the final mask: the piece `P` holds one of frame f's drawn keypoints
+    (`keypoints(f)`, [K, 2+] pixels inside the frame)."""
+    def on_body(f, P, origin):
+        (y0, x0), kps = origin, keypoints(f)
+        ys, xs = kps[:, 1].astype(int) - y0, kps[:, 0].astype(int) - x0
+        inside = (ys >= 0) & (ys < P.shape[0]) & (xs >= 0) & (xs < P.shape[1])
+        return bool(P[ys[inside], xs[inside]].any())
+    return on_body
+
+
+def _run_evidence(masks, t, g, piece, corner, reach, on_body):
     """Around the dropped piece of the run t..t+g-1: the mask that turns up within `reach`
     pixels of it on the run's frames and on neither end, as a share of its area on average (a
-    limb that moved away), and the share of the run's frames whose drawn skeleton crosses it
-    (None without `limbs`)."""
+    limb that moved away), and the share of the run's frames the pose puts the body in it
+    (`on_body`, `_crosses` or `_holds`; None without a pose)."""
     import cv2
 
     N, H, W = masks.shape
@@ -183,18 +261,12 @@ def _run_evidence(masks, t, g, piece, corner, reach, limbs):
     near = cv2.distanceTransform((~P).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE) <= reach
     ends = masks[t - 1, y0:y1, x0:x1] | masks[t + g, y0:y1, x0:x1]
     gain = float(np.mean([(masks[f, y0:y1, x0:x1] & ~ends & near).sum() for f in range(t, t + g)])) / int(piece.sum())
-    if limbs is None:
+    if on_body is None:
         return gain, None
-    crossed = []
-    for f in range(t, t + g):
-        drawn = np.zeros(P.shape, np.uint8)
-        for a, b in limbs(f):
-            cv2.line(drawn, (int(a[0]) - x0, int(a[1]) - y0), (int(b[0]) - x0, int(b[1]) - y0), 1, 1)
-        crossed.append(bool((drawn.astype(bool) & P).any()))
-    return gain, float(np.mean(crossed))
+    return gain, float(np.mean([on_body(f, P, (y0, x0)) for f in range(t, t + g)]))
 
 
-def dropouts(masks, floor, limbs=None):
+def dropouts(masks, floor, on_body=None, share=LOSS_ON_BODY, cover=None):
     """mask_loss: per frame, the thickest region the mask drops on a run of up to LOSS_WINDOW
     frames covering it while holding it on the frame before the run and the frame after it - a
     dropout, out and back, the mask's counterpart of pose_spike - that is not a limb which moved
@@ -203,23 +275,40 @@ def dropouts(masks, floor, limbs=None):
     its own width, the slivers a mask's outline jitters by are only a few pixels thick however
     long they are. Regions thinner than `floor` (the same fraction) are not measured.
 
-    `masks` is [N, H, W] booleans; `limbs(f)` gives frame f's drawn body limbs as pixel point
-    pairs (None without a pose). Returns (loss, loss_run, loss_drawn), per frame: the thickness
-    of the single-frame dropout on it and of the thickest run of two frames or more over it (0.0
-    without one, None on the first and the last frame), and the thickest dropout over it the
-    drawn skeleton crosses on at least half the frames of its run (None without `limbs`)."""
+    `cover(mask)`, when given, is what the models downstream get of a frame's mask (the raw
+    mask's final, `_final_mask`): a region is dropped only where the cover of every frame of the
+    run leaves it out, since what the cover holds reaches the models on the run's frames.
+
+    `masks` is [N, H, W] booleans; `on_body(f, piece, origin)` says whether the pose puts the
+    body in the piece on frame f (None without a pose): the drawn skeleton crosses it on a raw
+    mask, it holds a drawn keypoint on the final mask. Returns (loss, loss_run, loss_drawn), per
+    frame: the thickness of the single-frame dropout on it and of the thickest run of two frames
+    or more over it (0.0 without one, None on the first and the last frame), and the thickest
+    dropout over it the pose puts the body in on at least `share` of the frames of its run (None
+    without `on_body`)."""
     N, H, W = masks.shape
     S = min(H, W)
     loss = [None if i in (0, N - 1) else 0.0 for i in range(N)]
     loss_run = list(loss)
-    loss_drawn = [None] * N if limbs is None else list(loss)
+    loss_drawn = [None] * N if on_body is None else list(loss)
     min_area = np.pi * (floor * S) ** 2    # a region holding a disc of the floor's radius is at least this big
+    covers = {}                            # frame -> its cover, for the frames a run from t can reach
+
+    def covered(f):
+        if cover is None:
+            return masks[f]
+        if f not in covers:
+            covers[f] = cover(masks[f])
+        return covers[f]
+
     for t in range(1, N - 1):
+        for f in [f for f in covers if f < t]:
+            del covers[f]
         gone = np.zeros((H, W), bool)
         for g in range(1, LOSS_WINDOW + 1):
             if t + g >= N:
                 break
-            gone |= masks[t + g - 1]
+            gone |= covered(t + g - 1)
             if (masks[t - 1] & ~gone).sum() < min_area:
                 break                                  # nothing held before the run is left to drop
             lost = masks[t - 1] & masks[t + g] & ~gone
@@ -228,7 +317,7 @@ def dropouts(masks, floor, limbs=None):
             radius, piece, corner = _thickest(lost)
             if radius < floor * S:
                 continue
-            gain, crossed = _run_evidence(masks, t, g, piece, corner, min(g, LOSS_REACH_FRAMES) * LOSS_REACH * S, limbs)
+            gain, body = _run_evidence(masks, t, g, piece, corner, min(g, LOSS_REACH_FRAMES) * LOSS_REACH * S, on_body)
             if gain >= LOSS_GAIN:
                 continue                               # a limb that moved away and came back
             for f in range(t, t + g):
@@ -236,7 +325,7 @@ def dropouts(masks, floor, limbs=None):
                     loss[f] = max(loss[f], radius / S)
                 else:
                     loss_run[f] = max(loss_run[f], radius / S)
-                if crossed is not None and crossed >= 0.5:
+                if body is not None and body >= share:
                     loss_drawn[f] = max(loss_drawn[f], radius / S)
     return loss, loss_run, loss_drawn
 
@@ -286,26 +375,37 @@ def lost_limb_end(j, kps, drawn, mask, grown, meta: PoseMeta, draw_threshold, sp
 
 
 def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detection], draw_threshold,
-                       max_mask_loss, max_limb_spike=LIMB_SPIKE) -> list[MaskRow]:
+                       max_mask_loss, max_limb_spike=LIMB_SPIKE, final=False, cover=None) -> list[MaskRow]:
     """One dict of raw mask measurements per frame (keys MASK_ROW); thresholds are applied
     afterwards, except where a measurement starts: `max_mask_loss` sets the thinnest dropout
     measured (LOSS_DRAWN of it), and `max_limb_spike` is pose_spike's jump (a limb end the pose
     checks call a spike is not a limb the mask lost). `masks` is [N, H, W] booleans on the
     frames the pose was found on; without a pose (`pose_metas` None) the pose-based
-    measurements are None and the lists empty."""
+    measurements are None and the lists empty. `final` says the masks are the final masks of
+    the Wan Animate workflow, measured as common.FINAL_BLOCK describes (it needs a pose).
+    `cover` is what the models downstream get of a frame's mask, for mask_loss (None: the mask
+    as it is; see `dropouts`)."""
     N, H, W = masks.shape
     posed = pose_metas is not None
     areas = masks.reshape(N, H * W).sum(axis=1)
+    pad = FINAL_PAD if final else 0
     if posed:
         envelopes = box_envelopes(detections, N, W, H)
         body = [_body(meta, W, H, draw_threshold) for meta in pose_metas]
+        whole = [_whole_body(meta, W, H, draw_threshold) for meta in pose_metas]
         spikes = limb_spikes(np.array([kps[:, :2] for kps, _ in body]).reshape(N, len(BODY_NAMES), 2),
                              np.array([on for _, on in body]).reshape(N, len(BODY_NAMES)), H, max_limb_spike)
     def drawn_limbs(f):
         kps, drawn = body[f]
         return [(kps[a, :2], kps[b, :2]) for a, b in LIMBS if drawn[a] and drawn[b]]
 
-    loss, loss_run, loss_drawn = dropouts(masks, LOSS_DRAWN * max_mask_loss, drawn_limbs if posed else None)
+    if not posed:
+        on_body, share = None, LOSS_ON_BODY
+    elif final:
+        on_body, share = _holds(lambda f: whole[f]), FINAL_ON_BODY
+    else:
+        on_body, share = _crosses(drawn_limbs), LOSS_ON_BODY
+    loss, loss_run, loss_drawn = dropouts(masks, LOSS_DRAWN * max_mask_loss, on_body, share, cover)
     rows = []
     prev_mask = None
     for i in range(N):
@@ -314,7 +414,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
         m = {"frame": i, "mask_area": area / (H * W), "mask_to_box": None, "box_reliable": False,
              "mask_outside_box": None, "attached_leak": None}
         if not posed:
-            m["fragments"] = mask_regions(mask, NO_KEYPOINTS)[1] if area else []
+            m["fragments"] = mask_regions(mask, None)[1] if area else []
             m.update({"keypoint_recall": None, "missed_keypoints": [], "missed_limbs": [], "body_not_drawn": None,
                       "box_iou_prev": None})
         else:
@@ -329,13 +429,14 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
             m["mask_outside_box"] = (area - inside) / area if area else 0.0
 
             # the person's part of the mask and the regions detached from it
-            person, fragments = mask_regions(mask, _whole_body(meta, W, H, draw_threshold)) if area else (mask, [])
+            person, fragments = mask_regions(mask, whole[i], pad) if area else (mask, [])
 
             # the person's region grown where neither the neighbours' masks nor the skeleton are
             near = [j for j in range(max(0, i - LEAK_WINDOW), min(N, i + LEAK_WINDOW + 1)) if j != i]
             if area and near:
                 reference = masks[near].any(axis=0)
-                grown = _grown(reference, np.sqrt(np.median(areas[near])))
+                grown = (_dilated(reference, 2 * FINAL_BLOCK + 1) if final
+                         else _grown(reference, np.sqrt(np.median(areas[near]))))
                 excess = person & ~grown & ~skeleton_zone(meta, (H, W), draw_threshold, LEAK_REACH)
                 m["attached_leak"] = float(excess.sum() / max(np.median(areas[near]), 1))
             else:
@@ -360,8 +461,8 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
 
             # the person's mask the drawn skeleton does not account for
             person_area = int(person.sum())
-            m["body_not_drawn"] = (float((person & ~skeleton_zone(meta, (H, W), draw_threshold)).sum() / person_area)
-                                   if person_area else 0.0)
+            m["body_not_drawn"] = (float((person & ~skeleton_zone(meta, (H, W), draw_threshold, pad=pad)).sum()
+                                         / person_area) if person_area else 0.0)
             m["box_iou_prev"] = _box_iou_prev(detections, i)
 
         # motion against the previous frame, and a region the mask drops on a run through this frame
@@ -372,9 +473,11 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
     return rows
 
 
-def mask_flags(rows: list[MaskRow], t):
+def mask_flags(rows: list[MaskRow], t, final=False):
     """The mask checks: check name -> frames it fired on, in the order the checks first fired.
-    A check whose measurement is None on a frame (no pose_data, no neighbour) does not run there."""
+    A check whose measurement is None on a frame (no pose_data, no neighbour) does not run there.
+    On the final mask (`final`) mask_loss counts only a dropout the pose puts the body in
+    (mask_loss_drawn): its outline moves by a block with no change in the raw mask."""
     flags = {}
 
     for m in rows:
@@ -403,28 +506,36 @@ def mask_flags(rows: list[MaskRow], t):
         if (m["mask_iou_prev"] is not None and m["box_iou_prev"] is not None
                 and m["box_iou_prev"] > 0.7 and m["mask_iou_prev"] < t["min_mask_iou"]):
             _flag(flags, "mask_unstable", i)
-        if ((m["mask_loss"] is not None and m["mask_loss"] > t["max_mask_loss"])
-                or (m["mask_loss_run"] is not None and m["mask_loss_run"] > LOSS_RUN * t["max_mask_loss"])
-                or (m["mask_loss_drawn"] is not None and m["mask_loss_drawn"] > LOSS_DRAWN * t["max_mask_loss"])):
+        if ((m["mask_loss_drawn"] is not None and m["mask_loss_drawn"] > LOSS_DRAWN * t["max_mask_loss"])
+                or (not final and m["mask_loss"] is not None and m["mask_loss"] > t["max_mask_loss"])
+                or (not final and m["mask_loss_run"] is not None and m["mask_loss_run"] > LOSS_RUN * t["max_mask_loss"])):
             _flag(flags, "mask_loss", i)
     return flags
 
 
-def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop_on_fail=True, max_limb_spike=LIMB_SPIKE):
+def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop_on_fail=True, max_limb_spike=LIMB_SPIKE,
+               final=False):
     """The mask checks on `mask` [frames, H, W] (or one [H, W] frame) against the keypoints and
     boxes in `pose_data`, which must be of the same frames at the same size. Without pose_data
     only the checks that do not read it run (POSE_FREE_MASK_CHECKS), and the report says so.
 
     `config` is a MaskGuardConfig (None = defaults); `enabled` and `stop_on_fail` as in
     `check_pose`; `max_limb_spike` is pose_spike's jump (the Pose Guard's widget in the wrapper
-    that runs both groups). Returns (mask unchanged, report, metrics JSON, timeline IMAGE)."""
+    that runs both groups). `final` says `mask` is the final mask of the Wan Animate workflow,
+    grown and blockified (the WanAnimate Preprocess Guard's), whose measures allow for its blocks
+    (common.FINAL_BLOCK); it needs pose_data. Otherwise `mask` is the raw mask, which the
+    workflow grows into that final before any model reads it: a region it drops counts only
+    where the final leaves it out (`_final_mask`). Returns (mask unchanged, report, metrics
+    JSON, timeline IMAGE)."""
     config = _config(config, MaskGuardConfig)
-    masks, pose_metas, detections = _mask_inputs(mask, pose_data)
+    if final and pose_data is None:
+        raise ValueError("the final mask is judged against its pose; connect pose_data")
+    masks, pose_metas, detections = _mask_inputs(mask, pose_data, final)
     thresholds = _thresholds(pose_data, config)
     with log.step(f"mask guard: checking {len(masks)} frames ({'on' if enabled else 'off'})"):
         rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["draw_threshold"], config.max_mask_loss,
-                                  max_limb_spike)
-        flags = mask_flags(rows, thresholds)
+                                  max_limb_spike, final, None if final else _final_mask)
+        flags = mask_flags(rows, thresholds, final)
     note = None if pose_data is not None else (
         "without pose_data, not checked: " + ", ".join(name for name in MASK_CHECKS if name not in POSE_FREE_MASK_CHECKS))
     report, metrics, timeline = _finish("Mask guard", "mask", rows, flags, thresholds,

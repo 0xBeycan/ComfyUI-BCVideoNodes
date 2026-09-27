@@ -42,6 +42,14 @@ def clip():
                    "draw_threshold": DRAW_THRESHOLD}
 
 
+def arm(masks, frames, rows, width=30):
+    """An arm `width` px wide held out from the body's right side at `rows` (relative to its top)
+    on `frames`."""
+    for i in frames:
+        x1, y1 = origin(i)
+        masks[i, y1 + rows[0]:y1 + rows[1], x1 + 100:x1 + 100 + width] = 1.0
+
+
 def drop_keypoints(pose_data, frames, indices, conf=0.05):
     """Make the named body keypoints unconfident on `frames`, as a pose model losing them."""
     for i in frames:

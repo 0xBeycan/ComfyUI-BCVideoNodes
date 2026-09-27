@@ -95,6 +95,16 @@ def test_the_guard_widgets_are_the_guard_configs():
     assert set(both) == set(spec("BCVPoseGuard")["required"]) | set(spec("BCVMaskGuard")["required"])
 
 
+def test_the_guard_wrapper_says_it_takes_the_final_mask():
+    # its mask checks are measured on the final mask, and its tooltips say so; the widget itself
+    # (type, default, range) is the Mask Guard's
+    both, mask = spec("BCVWanAnimatePreprocessGuard")["required"], spec("BCVMaskGuard")["required"]
+    assert both["mask"][0] == "MASK" and "BlockifyMask" in both["mask"][1]["tooltip"]
+    wrapped, raw = both["max_mask_loss"][1], mask["max_mask_loss"][1]
+    assert "holds a drawn keypoint on every frame" in wrapped["tooltip"] and "leaves out" in raw["tooltip"]
+    assert {**wrapped, "tooltip": None} == {**raw, "tooltip": None}
+
+
 @pytest.mark.parametrize("with_pose", [True, False])
 def test_the_guard_nodes_return_what_the_guard_does(with_pose):
     masks, pose_data = clip()
@@ -132,9 +142,10 @@ def test_the_guard_wrapper_is_the_two_guards_combined(switches):
         wrapped = nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, pose_guard, mask_guard, **values)
     except guard.GuardFailed as failure:
         wrapped = failure
-    # the chain: each node measuring without stopping, then the combined report
+    # the chain: each group measuring without stopping, then the combined report; the wrapper's
+    # mask is the final mask of the Wan Animate workflow
     pose_metrics = guard.check_pose(pose_data, POSE_THRESHOLDS, pose_guard, stop_on_fail=False)[2]
-    mask_metrics = guard.check_mask(masks, pose_data, MASK_THRESHOLDS, mask_guard, stop_on_fail=False)[2]
+    mask_metrics = guard.check_mask(masks, pose_data, MASK_THRESHOLDS, mask_guard, stop_on_fail=False, final=True)[2]
     if pose_guard:
         assert isinstance(wrapped, guard.GuardFailed) and "pose_jump" in str(wrapped)
         with pytest.raises(guard.GuardFailed) as chained:

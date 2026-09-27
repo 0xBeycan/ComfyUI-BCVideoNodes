@@ -9,7 +9,7 @@ import json
 import pytest
 
 from bcvideonodes.pipelines import guard
-from guard_fakes import LEGS, MASK, POSE, H, W, clip, drop_keypoints, origin
+from guard_fakes import LEGS, MASK, N, POSE, H, W, arm, clip, drop_keypoints, origin
 
 
 def jump_torso(pose_data, i):
@@ -188,8 +188,8 @@ def test_combined_equals_both_groups_side_by_side():
 def test_mask_guard_without_pose_data_runs_the_pose_free_checks():
     masks, pose_data = clip()
     masks[30, 170:250, 0:30] = 1.0                        # an object beside her
-    x1, y1 = origin(20)
-    masks[20, y1 + 150:y1 + 180, x1 + 40:x1 + 70] = 0     # a region dropped for one frame
+    arm(masks, [i for i in range(N) if i != 20], (60, 100), 40)   # her arm held out, dropped on one frame
+    _, y1 = origin(20)
     masks[25:35, y1 + 200:, :] = 0                        # her legs cut off for good: only a pose sees that
     out, report, metrics, timeline = guard.check_mask(masks, None, MASK, stop_on_fail=False)
     record = json.loads(metrics)
@@ -216,6 +216,29 @@ def test_mask_guard_without_pose_data_cannot_tell_her_hand_from_an_object():
     assert not json.loads(metrics)["frames"][30]["fragments"]
     _, _, metrics, _ = guard.check_mask(masks, None, MASK, stop_on_fail=False)
     assert json.loads(metrics)["frames"][30]["fragments"]
+
+
+def test_mask_guard_without_pose_data_takes_a_piece_the_frame_edge_cut_off_for_her():
+    # her arm leaves the shot at the right edge and comes back in further up it: the piece runs
+    # off the side of the frame her body runs off, so the frame edge is what cut it from her
+    masks, _ = clip()
+    x1, y1 = origin(30)
+    masks[30, y1 + 110:y1 + 140, x1 + 100:] = 1.0     # the arm runs off the right edge
+    masks[30, y1 + 10:y1 + 40, W - 20:] = 1.0          # and comes back in further up that edge
+    _, _, metrics, _ = guard.check_mask(masks, None, MASK, stop_on_fail=False)
+    record = json.loads(metrics)
+    assert record["frames"][30]["fragments"] == [] and not record["flags"], record["flags"]
+
+
+@pytest.mark.parametrize("rows", [(5, 30), (0, 25)], ids=["inside the frame", "at a side she does not reach"])
+def test_mask_guard_without_pose_data_still_reports_a_piece_off_her_edges(rows):
+    # a hand above her head, cut from the arm by a burned-in caption: inside the frame, or running
+    # off the top while her body reaches no side of the frame - nothing says it is hers
+    masks, _ = clip()
+    x1, _ = origin(30)
+    masks[30, rows[0]:rows[1], x1 + 30:x1 + 60] = 1.0
+    _, _, metrics, _ = guard.check_mask(masks, None, MASK, stop_on_fail=False)
+    assert json.loads(metrics)["flags"] == {"mask_specks": [30]}
 
 
 def test_both_guards_take_a_zero_frame_clip():

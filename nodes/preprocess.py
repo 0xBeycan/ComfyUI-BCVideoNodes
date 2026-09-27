@@ -49,11 +49,18 @@ class BCVWanAnimatePreprocess:
         return (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes)
 
 
+FINAL_MASK_TOOLTIP = "The final mask the sampler gets: the WanAnimate Preprocess mask through GrowMaskWithBlur (expand 10) and BlockifyMask (32), at the size the pose was found on. The raw preprocess mask goes to the Mask Guard."
+FINAL_MASK_LOSS_TOOLTIP = "mask_loss (warning): the final mask drops a region for 1 to 8 frames while holding it on the frames before and after, no limb moved away to account for it, and the region holds a drawn keypoint on every frame of the run (the final's outline moves by up to a block with no change in the raw mask, while the block of a keypoint inside the raw mask stays on); flagged over the whole run when it is thicker than half this. Thickness is the radius of the largest disc the region holds, as a fraction of the frame's shorter side. Set on the test clips."
+
+
 class BCVWanAnimatePreprocessGuard:
     @classmethod
     def INPUT_TYPES(cls):
         pose = BCVPoseGuard.INPUT_TYPES()["required"]
         mask = BCVMaskGuard.INPUT_TYPES()["required"]
+        kind, options = mask["max_mask_loss"]
+        mask = {**mask, "mask": (mask["mask"][0], {"tooltip": FINAL_MASK_TOOLTIP}),
+                "max_mask_loss": (kind, {**options, "tooltip": FINAL_MASK_LOSS_TOOLTIP})}
         return {
             "required": {
                 "mask": mask["mask"],
@@ -69,7 +76,7 @@ class BCVWanAnimatePreprocessGuard:
     RETURN_NAMES = ("mask", "pose_data", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = "BCVideoNodes/Wan/Animate"
-    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler: a failed check of an enabled guard stops the workflow with the report, warnings never stop; 'metrics' has every measurement per frame and 'timeline' plots them."
+    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler, on the final mask the sampler gets (the preprocess mask through GrowMaskWithBlur expand 10 and BlockifyMask 32): background attached to the body, body the pose does not draw, detached pieces and dropped regions are measured allowing for its blocks; the box-based checks, the mask's stability and the keypoints inside the mask read the final as it is. A failed check of an enabled guard stops the workflow with the report, warnings never stop; 'metrics' has every measurement per frame and 'timeline' plots them."
 
     def check(self, mask, pose_data, pose_guard, mask_guard, **thresholds):
         from ..pipelines import guard
@@ -78,6 +85,6 @@ class BCVWanAnimatePreprocessGuard:
         pose_config = _config(guard.PoseGuardConfig, thresholds)
         _, _, pose_metrics, _ = guard.check_pose(pose_data, pose_config, enabled=pose_guard, stop_on_fail=False)
         _, _, mask_metrics, _ = guard.check_mask(mask, pose_data, _config(guard.MaskGuardConfig, thresholds), enabled=mask_guard,
-                                                 stop_on_fail=False, max_limb_spike=pose_config.max_limb_spike)
+                                                 stop_on_fail=False, max_limb_spike=pose_config.max_limb_spike, final=True)
         report, metrics, timeline = guard.combine_guards(pose_metrics, mask_metrics)
         return (mask, pose_data, report, metrics, timeline)

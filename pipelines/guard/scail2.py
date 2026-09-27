@@ -19,8 +19,9 @@ and the rest are warnings:
 
   driving_empty         a driving frame without the person
   driving_fragmented    a detached region at least 5% of the largest one on a driving frame
-                        (without a pose a piece of the person cannot be told from another object;
-                        with one, a piece holding her own drawn keypoints is her)
+                        (without a pose only a piece the frame edge cut from her - one that runs
+                        off a side of the frame she runs off - is told from another object; with
+                        one, a piece holding her own drawn keypoints is her)
   mask_loss             a region the driving mask drops for a run of up to 8 frames between two
                         frames that hold it, not a limb that moved away (see the Mask Guard)
   reference_fragmented  the same on the reference mask
@@ -51,7 +52,7 @@ from ...models.scail2.adapter import ON, REPLACEMENT, mask_convention
 from .common import (FRAGMENT_FRACTION, MASK_CHECKS, POSE_FREE_MASK_CHECKS, SCAIL2_CHECKS, SCAIL2_DRIVING_CHECKS,
                      SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
 from .config import MaskGuardConfig, SCAIL2GuardConfig, _config
-from .mask import NO_KEYPOINTS, _iou, mask_flags, mask_frame_metrics, mask_regions, pose_of
+from .mask import _iou, mask_flags, mask_frame_metrics, mask_regions, pose_of
 from .report import _kind, _stop, write_report
 from .timeline import SCAIL2_PANELS, timeline_image
 
@@ -147,7 +148,7 @@ def reference_record(reference_image_mask, width, height, first_frame, t) -> Sca
     person = _person(reference_image_mask[0, ..., :3].float().cpu()).numpy()
     Hr, Wr = person.shape
     area = int(person.sum())
-    fragments = mask_regions(person, NO_KEYPOINTS)[1] if area else []
+    fragments = mask_regions(person, None)[1] if area else []
     # what core makes of it: the center crop to the generation's aspect, resized nearest-exact
     x, y = center_crop(Wr, Hr, width, height)
     kept = person[y:Hr - y, x:Wr - x]

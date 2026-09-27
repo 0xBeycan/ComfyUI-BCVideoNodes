@@ -85,13 +85,33 @@ LIMB_WIDTH = 0.25
 # average; a dropped part is nowhere. A run of two frames or more has to be LOSS_RUN times as
 # thick as max_mask_loss: over several frames the mask's own changes leave out-and-back traces
 # too (a limb moving inside the area both ends hold, background both ends take in between the
-# legs). When the drawn skeleton crosses the region on at least half the frames of the run, the
-# pose sees the body there, and LOSS_DRAWN of max_mask_loss is thick enough.
+# legs). When the drawn skeleton crosses the region on at least LOSS_ON_BODY of the frames of the
+# run, the pose sees the body there, and LOSS_DRAWN of max_mask_loss is thick enough. No model
+# reads the raw mask: the Wan Animate workflow grows it into the final mask (FINAL_GROW,
+# FINAL_BLOCK below) first, so on the raw mask a region is dropped only where the final of every
+# frame of the run leaves it out - what the grow restores never reaches the sampler.
 LOSS_WINDOW = 8
 LOSS_REACH, LOSS_REACH_FRAMES = 0.05, 4
 LOSS_GAIN = 0.25
 LOSS_RUN = 2.0
 LOSS_DRAWN = 0.5
+LOSS_ON_BODY = 0.5
+# The final mask the Wan Animate workflow feeds the sampler: the raw mask grown by
+# GrowMaskWithBlur (expand FINAL_GROW, tapered) and cut into BlockifyMask's blocks of FINAL_BLOCK
+# px. The Mask Guard's mask_loss counts on the raw mask only what that final leaves out (above);
+# the WanAnimate Preprocess Guard judges the final itself. BlockifyMask lays its grid from each
+# frame's own box, so the grid moves from frame to frame, and fills every block that holds a
+# grown pixel: the final's outline lies
+# FINAL_GROW to FINAL_GROW + FINAL_BLOCK beyond the raw mask's, FINAL_PAD on average, and moves by
+# up to a block between frames with no change in the raw mask. Its outline says nothing finer, so
+# the measures of the final allow for it: mask_attached_leak grows the neighbouring frames' masks
+# by a block, body_not_drawn grows the skeleton zone by FINAL_PAD, a detached piece is measured
+# with FINAL_PAD taken off its outline, and mask_loss counts only a region holding a drawn
+# keypoint on every frame of its run (FINAL_ON_BODY; a block holding a keypoint inside the raw
+# mask is always on, a limb line runs through background blocks the moving grid turns on and off).
+FINAL_GROW, FINAL_BLOCK = 10, 32
+FINAL_PAD = FINAL_GROW + FINAL_BLOCK // 2
+FINAL_ON_BODY = 1.0
 # The person faces the camera when her right shoulder is left of her left one on the image by at
 # least this share of her torso (neck to the middle of the hips): turned to profile the shoulders
 # close up (a quarter turn short of profile they are still about half the torso apart), with her

@@ -191,23 +191,31 @@ mask, not a limb drawn along the outside of the mask in fast motion.
 `mask_loss` is a region the mask drops for a run of 1 to 8 frames while
 holding it on the frames before and after, flagged over the whole run. It is
 measured by its thickness (the radius of the largest disc inside it, as a
-fraction of the frame's shorter side), so a dropped hand or foot counts and
-the slivers an outline jitters by do not: over `max_mask_loss` on a single
-frame, over twice that on a longer run. A limb that moved away and came back
+fraction of the frame's shorter side): a dropped hand or foot is as thick as
+it is wide, the slivers an outline jitters by are a few pixels thick however
+long they are. It counts over `max_mask_loss` on a single frame, over twice
+that on a longer run. A limb that moved away and came back
 leaves the same trace, but the mask shows it nearby meanwhile; such a run is
-not a loss. With `pose_data`, a region the drawn skeleton crosses on the
-dropped frames counts from half the threshold (the pose sees the body there).
-Without `pose_data` a thin dropout of a small moving part (a foot that also
-moves between the frames around the loss) can stay under the threshold, and
-a limb moving within the area both frames around the run hold is not told
-apart from a loss.
+not a loss. With `pose_data` a region the drawn skeleton crosses on at least
+half the frames of the run counts from half the threshold (the pose sees the
+body there). No model reads the raw mask: the Wan Animate workflow grows it
+into the final mask (GrowMaskWithBlur expand 10, then BlockifyMask 32) before
+the sampler or any other model gets it, so only the part of a region that
+the final of every frame of the run leaves out counts - what the grow
+restores never reaches them. Without `pose_data` a thin dropout of a small
+moving part (a foot that also moves between the frames around the loss) can
+stay under the threshold, and a limb moving within the area both frames
+around the run hold is not told apart from a loss.
 
 - Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
   `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
 - Mask Guard: in `mask`, optional `pose_data`; out `mask` (unchanged),
   `report`, `metrics`, `timeline`. `pose_data` gives the best result: without
   it the guard runs only `mask_fragmented`, `mask_specks` and `mask_loss`,
-  and the report names the checks it did not run.
+  and the report names the checks it did not run. Without it a detached piece
+  is the person only when it runs off a side of the frame her largest region
+  also runs off (the frame edge cut it from her); with it, a piece holding
+  her own drawn keypoints is her.
 
 ### WanAnimate Preprocess and WanAnimate Preprocess Guard
 
@@ -221,7 +229,17 @@ the chained nodes produce with the same settings.
   `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
   report. Inputs `mask`, `pose_data`, both switches and all thresholds;
-  outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`.
+  outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`. Its `mask` is
+  the final mask the sampler gets: the preprocess mask through
+  GrowMaskWithBlur (expand 10) and BlockifyMask (32). BlockifyMask lays its
+  grid from each frame's own box, so the grid moves from frame to frame and
+  the final's outline is known only to within a block: the mask checks allow
+  for that (`mask_attached_leak` allows the neighbouring frames' masks a
+  block, `body_not_drawn` and the detached pieces allow for the padding, and
+  `mask_loss` counts only a region holding a drawn keypoint on every frame of
+  its run; a block holding a keypoint inside the raw mask is always on). The
+  Mask Guard on the raw mask judges the mask at its own precision, and its
+  `mask_loss` by what the final leaves out.
 
 ### SCAIL-2 Colored Mask and SCAIL-2 Preprocess
 
@@ -266,7 +284,8 @@ the sampler reads it (blue above 225/255). End-to-end SCAIL-2 draws no pose,
 so `pose_data` is optional: connected (Pose Detection on the driving frames
 at the generation size), the driving mask also gets the Mask Guard's
 pose-based checks, with their levels, and a detached piece holding the
-person's keypoints is her. The mode is read from the reference mask's border, as the
+person's keypoints is her (without it, only a piece that runs off a side of
+the frame she runs off is). The mode is read from the reference mask's border, as the
 sampler reads it; the driving mask is taken to be at the generation size. On
 SCAIL-2's own examples blank frames and a split-up mask are normal (the person
 leaves the shot, a passer-by occludes her), so only two checks stop the

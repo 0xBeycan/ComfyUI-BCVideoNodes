@@ -63,7 +63,8 @@ Mask checks, per frame, from the mask against `pose_data`:
                       blob are reported as mask_specks (warning only). A piece holding the
                       person's own drawn keypoints - body, hands or face - is that same
                       person, a hand the frame edge cut away from the body, and counts as
-                      neither
+                      neither; without pose_data so is a piece that runs off a side of the
+                      frame the largest region also runs off (the edge cut it away)
   mask_missing_keypoints
                       fewer than `min_keypoint_recall` of the drawn keypoints inside the
                       frame fall inside the mask; the report names them (warning)
@@ -78,10 +79,22 @@ Mask checks, per frame, from the mask against `pose_data`:
   mask_loss           the mask drops a region for a run of 1 to 8 frames and holds it on the
                       frames before and after, and no limb moved away to account for it:
                       thicker than `max_mask_loss` on a single frame, twice that over a longer
-                      run, half that where the drawn skeleton crosses it (warning)
+                      run, half that where the drawn skeleton crosses it on at least half the
+                      frames of the run. No model reads the raw mask: the Wan Animate workflow
+                      grows it into the final mask (GrowMaskWithBlur expand 10, BlockifyMask 32)
+                      first, so only the part the final of every frame of the run leaves out
+                      counts (warning)
+
+The WanAnimate Preprocess Guard judges the final mask the sampler gets, the preprocess mask grown
+(GrowMaskWithBlur expand 10) and cut into 32 px blocks (BlockifyMask), whose grid is laid from
+each frame's own box and moves with it (check_mask(final=True), common.FINAL_BLOCK): its outline
+is known only to within a block, so mask_attached_leak allows the neighbouring frames' masks a
+block, body_not_drawn and the detached pieces allow for the padding, and mask_loss counts only a
+region holding a drawn keypoint on every frame of its run.
 
 Without pose_data the Mask Guard runs only the checks that do not read it: mask_fragmented and
-mask_specks (the largest region is the person) and mask_loss.
+mask_specks (the largest region, and the pieces the frame edge cut from it, are the person) and
+mask_loss.
 
 Each group is switched on separately. Everything measured is always reported and plotted; a
 failed check of an enabled group stops the workflow, since sampling on a wrong mask or pose is
