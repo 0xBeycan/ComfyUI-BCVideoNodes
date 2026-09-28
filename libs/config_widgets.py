@@ -7,8 +7,11 @@ WIDGET_TYPES = {bool: "BOOLEAN", int: "INT", float: "FLOAT", str: "STRING"}
 def config_inputs(config_cls):
     """Widgets for every field of the config dataclass `config_cls`, in field order: the
     field's default, and its range and description from the field metadata ("min", "max",
-    "step", "tooltip" or "doc"). A field of any other type than bool / int / float / str
-    raises; a str field with "choices" in its metadata is a combo."""
+    "step", "tooltip" or "doc"). A field with "experimental" in its metadata (why, a phrase) is
+    shown as "<name> (experimental)" (the input's display_name; the input name, which saved
+    workflows use, stays the field name) and its tooltip starts "Experimental: <why>. ". A field
+    of any other type than bool / int / float / str raises; a str field with "choices" in its
+    metadata is a combo."""
     import dataclasses
 
     inputs = {}
@@ -28,6 +31,9 @@ def config_inputs(config_cls):
             if key in meta and kind in (int, float):
                 options[key] = kind(meta[key])
         tooltip = meta.get("tooltip") or meta.get("doc")
+        if meta.get("experimental"):
+            options["display_name"] = "{} (experimental)".format(f.name)
+            tooltip = " ".join(filter(None, ("Experimental: {}.".format(meta["experimental"]), tooltip)))
         if tooltip:
             options["tooltip"] = tooltip
         if kind is str and "choices" in meta:

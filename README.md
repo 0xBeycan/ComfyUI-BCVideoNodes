@@ -51,7 +51,8 @@ and the pose images are drawn.
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
 `pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
-`box_window`, `forearm_limit`, `limb_dedup`, `back_view_face`, `edge_snap`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
+`box_window`, `forearm_limit`, `limb_dedup`, `back_view_face` (these three
+experimental), `edge_snap`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count the keypoints that reach Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
 
@@ -64,16 +65,19 @@ as detected or supplied, widened by `box_window`; supplied `bboxes` are
 snapped too when it is on. Its on/off comparison is planned.
 
 `forearm_limit`, `limb_dedup` and `back_view_face` are draw rules
-(`libs/draw_rules.py`), all off by default. A part any rule names is left out
+(`libs/draw_rules.py`), all off by default and **experimental**: the node shows
+them as `forearm_limit (experimental)`, `limb_dedup (experimental)` and
+`back_view_face (experimental)`. In a diffusion comparison they gave no clear
+gain, and each can remove a correct part. A part any rule names is left out
 of the pose images, with one console warning per side and part a rule fired on
 naming the frames; `pose_data` keeps every keypoint.
 
-`forearm_limit` (0, off): ViTPose puts a wrist it cannot see on something
+`forearm_limit` (experimental; 0, off): ViTPose puts a wrist it cannot see on something
 else, the leg or the frame edge, and the forearm ending there is drawn far too
 long. Above 0, a drawn forearm longer than `forearm_limit` times its median
 drawn length over the clip (2.0: over twice it) has its wrist and hand left out.
 
-`limb_dedup` (off): ViTPose draws a hand it cannot see on the other hand, and
+`limb_dedup` (experimental; off): ViTPose draws a hand it cannot see on the other hand, and
 an arm it cannot see along the other arm. On, both are left out:
 
 - a hand: two drawn hands whose matching keypoints nearly coincide are one
@@ -87,7 +91,7 @@ an arm it cannot see along the other arm. On, both are left out:
   twice: the arm whose elbow and wrist are less confident is the copy, and its
   elbow, wrist and hand are left out.
 
-`back_view_face` (off): ViTPose invents a nose and eyes on the back of the
+`back_view_face` (experimental; off): ViTPose invents a nose and eyes on the back of the
 head, up to 0.99 confident, and the profile drawn from them flips side from
 frame to frame. On, a frame whose body is seen from behind (the model's left
 shoulder on the image left of its right shoulder) and whose face is not seen

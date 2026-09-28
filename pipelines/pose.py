@@ -43,14 +43,18 @@ EDGE_SNAP = 0.15
 # shoulders, the hips and the ankles, the set the upstream node exported.
 KEY_FRAME = 0
 KEY_FRAME_BODY_POINTS = (0, 1, 2, 5, 8, 11, 10, 13)
+# Why the draw rules forearm_limit, limb_dedup and back_view_face are experimental: Pose Config
+# shows each as "<name> (experimental)" with this in its tooltip (libs/config_widgets.py).
+EXPERIMENTAL_DRAW_RULE = "off by default; in a diffusion comparison it gave no clear gain and can remove a correct part"
 
 
 @dataclass
 class PoseConfig:
     """The Pose Detection tunables. Defaults are the measured values; the Pose Config node
-    only overrides them. Each field's metadata holds its range and a one-line description. A
-    field changed from its default that the run does not read (detection_threshold with
-    supplied boxes) is named in one console line."""
+    only overrides them. Each field's metadata holds its range and a one-line description; the
+    draw rules forearm_limit, limb_dedup and back_view_face are marked experimental. A field
+    changed from its default that the run does not read (detection_threshold with supplied
+    boxes) is named in one console line."""
 
     min_keypoint_conf: float = field(default=0.3, metadata={
         "min": 0.0, "max": 1.0, "step": 0.05,
@@ -63,10 +67,13 @@ class PoseConfig:
         "doc": "Frames either side whose person boxes each frame's box is widened to; supplied bboxes are widened too"})
     forearm_limit: float = field(default=0.0, metadata={
         "min": 0.0, "max": 10.0, "step": 0.1,
+        "experimental": EXPERIMENTAL_DRAW_RULE,
         "doc": "Leave out of the pose images a wrist and its hand whose forearm is drawn longer than this many times its median drawn length in the clip (2.0: over twice it). 0 is off. pose_data keeps the keypoints"})
     limb_dedup: bool = field(default=False, metadata={
+        "experimental": EXPERIMENTAL_DRAW_RULE,
         "doc": "Leave out of the pose images a hand or an arm the model drew on its visible twin: a hand on the other hand when its own arm is broken (elbow or wrist not drawn) there and on a neighbouring frame, or a whole arm (elbow, wrist and hand) along the other arm, the less confident of the two. pose_data keeps the keypoints"})
     back_view_face: bool = field(default=False, metadata={
+        "experimental": EXPERIMENTAL_DRAW_RULE,
         "doc": "Leave the nose and both eyes out of the pose images on a frame whose body is seen from behind (the left shoulder on the image left of the right one) and whose face is not seen (the mean confidence of the 17 jaw-line face keypoints under 0.835): ViTPose invents a nose and eyes on the back of the head, up to 0.99 confident, and the profile drawn from them flips side. The ears keep the head's place. pose_data keeps the keypoints"})
     edge_snap: bool = field(default=True, metadata={
         "doc": "Extend a person box edge that stops within 15% of the box's size from a frame edge to that edge. Made for SAM 3.1 Multiplex's box prompt (box_keypoint mode, the keypoint mask), so clothing at the frame edge is not cut off the mask. The same box also cuts the pose crop and goes to the guards, and on typical clips it moves an edge on nearly every frame. Off: the boxes are used as detected or supplied, widened by box_window. Supplied bboxes are snapped too. An on/off comparison is planned"})
