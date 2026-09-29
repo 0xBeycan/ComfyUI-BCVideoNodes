@@ -436,15 +436,25 @@ is a later phase).
   mode can then collapse into replacement behaviour (SCAIL-2 README); in
   replacement mode it is an error, since the reference would be cut out to
   black.
-- **SCAIL-2 Preprocess** = SAM 3.1 Multiplex Video Track (prompt mode, one
-  object) on the whole driving video once, and on the reference image unless
-  `reference_mask` is connected, then SCAIL-2 Colored Mask. Tracking the
-  whole clip once keeps the mask's shape and colour the same across the
-  sampler's chunks (the official template re-tracks every segment). Widgets:
-  `replacement_mode`, `prompt`, `black_background` (default off); optional
-  `reference_mask`, `sam3_config`. Outputs: `pose_video` (the driving video,
-  which SCAIL-2's end-to-end mode reads as its pose input in both modes),
-  `pose_video_mask`, `reference_image_mask`, `mask`, `reference_mask`.
+- **SCAIL-2 Preprocess** = SAM 3.1 Multiplex Video Track (one object) in the
+  chosen `mode` on the whole driving video once, and in prompt mode on the
+  reference image unless `reference_mask` is connected, then SCAIL-2 Colored
+  Mask. Tracking the whole clip once keeps the mask's shape and colour the
+  same across the sampler's chunks (the official template re-tracks every
+  segment). `mode` is the Video Track's widget (`prompt` default,
+  `box_keypoint`, `prompt_pose`), so the mask comes from the chosen mode and
+  switching needs no rewiring: in `box_keypoint` and `prompt_pose` the node
+  first runs Pose Detection on the driving frames, at its default widgets
+  (SCAIL-2 draws no pose; the pose only shapes the mask) with `pose_config`
+  when connected, and passes its `pose_data` to the track; `prompt` runs no
+  pose. The reference image is tracked in prompt mode whatever the mode: the
+  pose modes are video modes, and the reference is one image, so `prompt` is
+  read in every mode. Widgets: `replacement_mode`, `mode`, `prompt`,
+  `black_background` (default off); optional `reference_mask`, `pose_config`,
+  `sam3_config`. Outputs: `pose_video` (the driving video, which SCAIL-2's
+  end-to-end mode reads as its pose input in animation and replacement mode
+  alike), `pose_video_mask`, `reference_image_mask`, `mask`,
+  `reference_mask`.
 - `black_background` (animation mode only): `pose_video` becomes the driving
   video with every pixel outside the person's mask black, as SCAIL-2's
   training pose videos were (zai-org/SCAIL-2 issue #17; SCAIL-Pose's

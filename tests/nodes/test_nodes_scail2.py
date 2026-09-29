@@ -1,11 +1,14 @@
-"""The SCAIL-2 nodes: SCAIL-2 Preprocess computes exactly what SAM 3.1 Multiplex Video Track and
-SCAIL-2 Colored Mask compute when chained, and the SCAIL-2 Long Video Sampler's widget order
+"""The SCAIL-2 nodes: SCAIL-2 Preprocess computes exactly what Pose Detection (in the modes that
+read the pose), SAM 3.1 Multiplex Video Track and SCAIL-2 Colored Mask compute when chained, and
+the SCAIL-2 Long Video Sampler's widget order
 and defaults (read under the sampler_fakes stubs), whose shift / scheduler / steps give the sigmas
 the official ComfyUI SCAIL-2 template samples with, computed by ComfyUI itself. Fake SAM model, synthetic frames. Runs where
 ComfyUI is importable (with the ComfyUI root on PYTHONPATH):
 
     PYTHONPATH=/path/to/ComfyUI python -m pytest tests/nodes/test_nodes_scail2.py
 """
+import inspect
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -15,6 +18,7 @@ cli_args.args.disable_xformers = True
 pytest.importorskip("folder_paths")
 
 from names import nodes  # noqa: E402
+from pose_fakes import pose  # noqa: E402
 from sam3_1_multiplex_fakes import sam3  # noqa: E402
 from sampler_fakes import SCAIL2, node_module  # noqa: E402,F401
 from scail2_fakes import scail2  # noqa: E402
@@ -29,13 +33,33 @@ def clip_frames(n=4, seed=0):
     return torch.rand(n, 64, 32, 3, generator=torch.Generator().manual_seed(seed))
 
 
-@pytest.mark.parametrize("replacement_mode", [False, True])
-def test_the_preprocess_wrapper_is_the_two_nodes_chained(fake_models, replacement_mode):
-    images, reference = clip_frames(), clip_frames(1, seed=1)
-    wrapped = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, "person")
+def spy(monkeypatch, cls, name):
+    """Records each call of `cls.name`, its arguments by name (defaults filled in) and what it
+    returned, and calls through."""
+    real = getattr(cls, name)
+    calls = []
 
-    (mask,) = nodes.BCVSAM3VideoTrack().track(images, sam3.MODE_PROMPT, "person", 1, -1)
-    (reference_mask,) = nodes.BCVSAM3VideoTrack().track(reference, sam3.MODE_PROMPT, "person", 1, -1)
+    def recorded(self, *args, **kwargs):
+        bound = inspect.signature(real).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        out = real(self, *args, **kwargs)
+        calls.append(({k: v for k, v in bound.arguments.items() if k != "self"}, out))
+        return out
+
+    monkeypatch.setattr(cls, name, recorded)
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["prompt", "box_keypoint", "prompt_pose"])
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_the_preprocess_wrapper_is_the_nodes_chained(fake_models, replacement_mode, mode):
+    images, reference = clip_frames(), clip_frames(1, seed=1)
+    wrapped = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person")
+
+    # Pose Detection at its default widgets, only where the mode reads the pose
+    pose_data = None if mode == "prompt" else nodes.BCVPoseDetection().detect(images, -1, -1, True, 0.5)[1]
+    (mask,) = nodes.BCVSAM3VideoTrack().track(images, mode, "person", 1, -1, pose_data=pose_data)
+    (reference_mask,) = nodes.BCVSAM3VideoTrack().track(reference, "prompt", "person", 1, -1)
     pose_video_mask, reference_image_mask = nodes.BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask)
     chained = (images, pose_video_mask, reference_image_mask, mask, reference_mask)
 
@@ -43,9 +67,44 @@ def test_the_preprocess_wrapper_is_the_two_nodes_chained(fake_models, replacemen
     for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES, wrapped, chained):
         assert same(a, b), name
     assert wrapped[0] is images  # the driving video is the pose input, unchanged
-    # the whole driving clip once, then the reference, both from the prompt alone
+    # the whole driving clip once in the mode, with the pose where the mode reads it; then the
+    # reference from the prompt alone in every mode
     calls = fake_models.calls[:2]
-    assert [(c["mode"], c["prompt"], c["pose_data"]) for c in calls] == [(sam3.MODE_PROMPT, "person", False)] * 2
+    assert [(c["mode"], c["prompt"], c["pose_data"]) for c in calls] == [(mode, "person", mode != "prompt"),
+                                                                          ("prompt", "person", False)]
+
+
+def test_prompt_mode_runs_no_pose(fake_models, monkeypatch, caplog):
+    detections = spy(monkeypatch, nodes.BCVPoseDetection, "detect")
+    tracks = spy(monkeypatch, nodes.BCVSAM3VideoTrack, "track")
+    caplog.set_level("INFO")
+    images, reference = clip_frames(), clip_frames(1, seed=1)
+    nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person")
+    assert detections == []
+    assert [(args["mode"], args["pose_data"]) for args, _ in tracks] == [("prompt", None)] * 2
+    assert "pose_config not used" not in caplog.text
+    # a connected pose_config is not read, and the console says so
+    nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person", pose_config=pose.PoseConfig())
+    assert detections == []
+    assert "prompt mode runs no pose; pose_config not used" in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["box_keypoint", "prompt_pose"])
+def test_the_pose_modes_detect_the_pose_once_on_the_driving_frames(fake_models, monkeypatch, mode):
+    detections = spy(monkeypatch, nodes.BCVPoseDetection, "detect")
+    tracks = spy(monkeypatch, nodes.BCVSAM3VideoTrack, "track")
+    images, reference = clip_frames(), clip_frames(1, seed=1)
+    config = pose.PoseConfig(detection_threshold=0.3)
+    nodes.BCVSCAIL2Preprocess().process(images, reference, False, mode, "person", pose_config=config)
+
+    [(detected, (_, pose_data, _, _))] = detections
+    assert detected["images"] is images and detected["pose_config"] is config and detected["bboxes"] is None
+    # SCAIL-2 draws no pose: Pose Detection's default widgets
+    assert {k: detected[k] for k in ("body_stick_width", "hand_stick_width", "draw_head", "draw_threshold")} == \
+        {"body_stick_width": -1, "hand_stick_width": -1, "draw_head": True, "draw_threshold": 0.5}
+    [(driving, _), (ref, _)] = tracks
+    assert driving["images"] is images and driving["mode"] == mode and driving["pose_data"] is pose_data
+    assert ref["images"] is reference and ref["mode"] == "prompt" and ref["pose_data"] is None
 
 
 def test_a_connected_reference_mask_is_not_tracked(fake_models):
@@ -53,7 +112,8 @@ def test_a_connected_reference_mask_is_not_tracked(fake_models):
     reference_mask = torch.zeros(1, 64, 32)
     reference_mask[:, 10:40, 5:20] = 1.0
     config = sam3.SAM3Config()
-    out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "person", reference_mask=reference_mask, sam3_config=config)
+    out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person", reference_mask=reference_mask,
+                                              sam3_config=config)
     assert len(fake_models.calls) == 1 and fake_models.calls[0]["config"] is config
     assert out[4] is reference_mask
     assert same(out[2], nodes.BCVSCAIL2ColoredMask().render(out[3], False, reference_mask)[1])
@@ -61,8 +121,8 @@ def test_a_connected_reference_mask_is_not_tracked(fake_models):
 
 def test_black_background_blacks_out_the_driving_video_around_the_tracked_person(fake_models):
     images, reference = clip_frames(), clip_frames(1, seed=1)
-    out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "person", black_background=True)
-    plain = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "person")
+    out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person", black_background=True)
+    plain = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person")
     assert same(out[0], scail2.driving_on_black(images, out[3]))
     assert not same(out[0], images)
     for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES[1:], out[1:], plain[1:]):
@@ -71,13 +131,27 @@ def test_black_background_blacks_out_the_driving_video_around_the_tracked_person
 
 def test_black_background_in_replacement_mode_raises_before_any_tracking(fake_models):
     with pytest.raises(ValueError, match="black_background is for animation mode"):
-        nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), True, "person", black_background=True)
+        nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), True, "prompt", "person", black_background=True)
     assert fake_models.calls == []
 
 
-def test_black_background_is_the_last_required_widget_and_off_by_default():
-    required = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()["required"]
-    assert list(required) == ["images", "reference_image", "replacement_mode", "prompt", "black_background"]
+def test_the_preprocess_widgets_mode_before_prompt_and_black_background_last():
+    spec = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()
+    required, optional = spec["required"], spec["optional"]
+    assert list(required) == ["images", "reference_image", "replacement_mode", "mode", "prompt", "black_background"]
+    assert list(optional) == ["reference_mask", "pose_config", "sam3_config"]
+    # mode is SAM 3.1 Multiplex Video Track's widget, as on WanAnimate Preprocess
+    track = nodes.BCVSAM3VideoTrack.INPUT_TYPES()["required"]
+    assert required["mode"] == track["mode"]
+    assert required["mode"][0] == ["prompt", "box_keypoint", "prompt_pose"] and required["mode"][1]["default"] == "prompt"
+    # the prompt segments the reference in every mode, and its tooltip says so; the widget is the Video Track's
+    assert {**required["prompt"][1], "tooltip": None} == {**track["prompt"][1], "tooltip": None}
+    assert "the character on the reference image (every mode" in required["prompt"][1]["tooltip"]
+    assert "Ignored in box_keypoint mode" not in required["prompt"][1]["tooltip"]
+    assert optional["pose_config"][0] == "POSE_CONFIG"
+    assert optional["pose_config"][1]["tooltip"].startswith("[box_keypoint, prompt_pose] ")
+    assert "Ignored in prompt mode, which runs no pose" in optional["pose_config"][1]["tooltip"]
+    assert "The reference image is tracked in prompt mode in every mode" in nodes.BCVSCAIL2Preprocess.DESCRIPTION
     assert required["black_background"] == ("BOOLEAN", required["black_background"][1])
     assert required["black_background"][1]["default"] is False
 
