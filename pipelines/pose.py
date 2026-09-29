@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from ..libs import log
-from ..libs.bbox import BOX_WINDOW, box_corners, point_in_frame, supplied_boxes, whole_frame_box, widen_over_time
+from ..libs.bbox import box_corners, point_in_frame, supplied_boxes, whole_frame_box, widen_over_time
 from ..libs.draw_rules import (HIDDEN, RULES, Hidden, back_view_faces, duplicate_hands, hidden_parts, mirrored_arms,
                                 overlong_forearms)
 from ..libs.pose_data import PoseData
@@ -35,8 +35,8 @@ MIN_BOX_SIDE = 10
 # box prompt in box_keypoint mode: the decoder stops at the box, and the clothing between it and
 # the frame edge would stay unmasked. The same box also cuts the pose crop and goes to the guard,
 # and on typical clips it moves an edge on nearly every frame (3,044 of 3,073 on the base run, by
-# up to 166 px, some boxes to the whole frame). Ours only: Wan and Kijai crop the raw box.
-# edge_snap False leaves every box as it is; the on/off comparison is planned.
+# up to 166 px, some boxes to the whole frame). Ours only: Wan and Kijai crop the raw box. Off
+# by default and experimental (EXPERIMENTAL_BOX_SWITCH).
 EDGE_SNAP = 0.15
 # key_frame_body_points: the frame it is taken from (easy-sam3 prompts frame_index 0 by
 # default) and the body keypoints it exports, in the AAPose body layout - nose, neck, the
@@ -46,15 +46,24 @@ KEY_FRAME_BODY_POINTS = (0, 1, 2, 5, 8, 11, 10, 13)
 # Why the draw rules forearm_limit, limb_dedup and back_view_face are experimental: Pose Config
 # shows each as "<name> (experimental)" with this in its tooltip (libs/config_widgets.py).
 EXPERIMENTAL_DRAW_RULE = "off by default; in a diffusion comparison it gave no clear gain and can remove a correct part"
+# Why the box switches box_window and edge_snap are off by default and experimental: a five-arm
+# pose A/B (box_window on and off x edge_snap on and off, plus Kijai's original preprocess) found no
+# net gain for either on the pose; the errors moved between frames rather than going away. The
+# official Wan and Kijai preprocess crop the raw detector box, and with both switches off the pose
+# path matches theirs except for the detector model and the ViTPose precision. The switches may
+# still be revisited for SAM 3.1 Multiplex's box prompt (box_keypoint mode), which reads the same
+# boxes. Pose Config shows each as "<name> (experimental)" with this in its tooltip.
+EXPERIMENTAL_BOX_SWITCH = ("off by default; in a pose comparison it gave no net gain (the errors moved between frames "
+                           "rather than going away)")
 
 
 @dataclass
 class PoseConfig:
     """The Pose Detection tunables. Defaults are the measured values; the Pose Config node
     only overrides them. Each field's metadata holds its range and a one-line description; the
-    draw rules forearm_limit, limb_dedup and back_view_face are marked experimental. A field
-    changed from its default that the run does not read (detection_threshold with supplied
-    boxes) is named in one console line."""
+    box switches box_window and edge_snap and the draw rules forearm_limit, limb_dedup and
+    back_view_face are marked experimental. A field changed from its default that the run does not
+    read (detection_threshold with supplied boxes) is named in one console line."""
 
     min_keypoint_conf: float = field(default=0.3, metadata={
         "min": 0.0, "max": 1.0, "step": 0.05,
@@ -62,9 +71,10 @@ class PoseConfig:
     detection_threshold: float = field(default=0.05, metadata={
         "min": 0.0, "max": 1.0, "step": 0.01,
         "doc": "Person detector (YOLO) score below which a box is discarded. Ignored when bboxes is connected (YOLO does not run)"})
-    box_window: int = field(default=BOX_WINDOW, metadata={
+    box_window: int = field(default=0, metadata={
         "min": 0, "max": 30, "step": 1,
-        "doc": "Frames either side whose person boxes each frame's box is widened to; supplied bboxes are widened too"})
+        "experimental": EXPERIMENTAL_BOX_SWITCH,
+        "doc": "Frames either side whose person boxes each frame's box is widened to; supplied bboxes are widened too. 0 is off: the box as detected or supplied"})
     forearm_limit: float = field(default=0.0, metadata={
         "min": 0.0, "max": 10.0, "step": 0.1,
         "experimental": EXPERIMENTAL_DRAW_RULE,
@@ -75,8 +85,9 @@ class PoseConfig:
     back_view_face: bool = field(default=False, metadata={
         "experimental": EXPERIMENTAL_DRAW_RULE,
         "doc": "Leave the nose and both eyes out of the pose images on a frame whose body is seen from behind (the left shoulder on the image left of the right one) and whose face is not seen (the mean confidence of the 17 jaw-line face keypoints under 0.835): ViTPose invents a nose and eyes on the back of the head, up to 0.99 confident, and the profile drawn from them flips side. The ears keep the head's place. pose_data keeps the keypoints"})
-    edge_snap: bool = field(default=True, metadata={
-        "doc": "Extend a person box edge that stops within 15% of the box's size from a frame edge to that edge. Made for SAM 3.1 Multiplex's box prompt (box_keypoint mode, the keypoint mask), so clothing at the frame edge is not cut off the mask. The same box also cuts the pose crop and goes to the guards, and on typical clips it moves an edge on nearly every frame. Off: the boxes are used as detected or supplied, widened by box_window. Supplied bboxes are snapped too. An on/off comparison is planned"})
+    edge_snap: bool = field(default=False, metadata={
+        "experimental": EXPERIMENTAL_BOX_SWITCH,
+        "doc": "Extend a person box edge that stops within 15% of the box's size from a frame edge to that edge. Made for SAM 3.1 Multiplex's box prompt (box_keypoint mode, the keypoint mask), so clothing at the frame edge is not cut off the mask. The same box also cuts the pose crop and goes to the guards, and on typical clips it moves an edge on nearly every frame. Off: the boxes are used as detected or supplied, widened by box_window. Supplied bboxes are snapped too"})
 
     def __post_init__(self):
         for f in fields(self):
@@ -146,7 +157,7 @@ def _detected_boxes(detector, images_np, W, H, threshold, pbar):
 def _supplied_boxes(bboxes, frames):
     """The caller's boxes, (x1, y1, x2, y2) per frame or a single one for every frame, as the
     detector would have handed them over: score 1 and one person each. They then go through the
-    same box logic as detections (widened by box_window, snapped unless edge_snap is off), with no
+    same box logic as detections (widened by box_window, snapped when edge_snap is on), with no
     MIN_BOX_SIDE check: a box under it is cropped all the same."""
     return supplied_boxes(bboxes, frames), [1] * frames
 
@@ -160,12 +171,12 @@ def detect(detector, pose_model, images, bboxes=None, config=None
 
     Returns (pose_data, boxes). pose_data carries the per-frame pose metas (`pose_metas` as
     AAPoseMeta for drawing, `pose_metas_original` as dicts with the normalised keypoints),
-    `detections` (the person box as everything downstream sees it: widened to the neighbouring
-    frames' boxes (config.box_window) and extended to frame edges it nearly touches
-    (config.edge_snap), the whole frame where nothing was detected; its score, -1 when nothing
-    was detected; and the number of people the detector was fairly sure of) and `pose_config`,
-    the config the pose was made with. boxes are the same boxes as (x1, y1, x2, y2) tuples, one
-    per frame.
+    `detections` (the person box as everything downstream sees it: the detected or supplied box,
+    widened to the neighbouring frames' boxes when config.box_window is above 0 and extended to
+    frame edges it nearly touches when config.edge_snap is on (both off by default), the whole
+    frame where nothing was detected; its score, -1 when nothing was detected; and the number of
+    people the detector was fairly sure of) and `pose_config`, the config the pose was made with.
+    boxes are the same boxes as (x1, y1, x2, y2) tuples, one per frame.
     """
     from comfy.utils import ProgressBar
     from tqdm import tqdm

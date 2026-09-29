@@ -31,10 +31,11 @@ boxes come out at the size of the frames that went in.
 
 ### Pose Detection
 
-YOLOv10x finds the person, each frame's box is widened to the boxes of the
-frames around it (`box_window`) and extended to a frame edge it nearly touches
-(`edge_snap`), ViTPose-H gives the 133 COCO-WholeBody keypoints on every frame,
-and the pose images are drawn.
+YOLOv10x finds the person, ViTPose-H gives the 133 COCO-WholeBody keypoints on
+every frame from the person box, and the pose images are drawn. By default the
+box is the detector's raw box, as the official Wan and Kijai preprocess crop
+it; Pose Config's experimental `box_window` and `edge_snap` widen it to the
+boxes of the frames around it and extend it to a frame edge it nearly touches.
 
 - in: `images`; optional `bboxes` (BBOX, one `(x1, y1, x2, y2)` per frame or
   one for all: the detector is then skipped), `pose_config` (POSE_CONFIG)
@@ -50,19 +51,34 @@ and the pose images are drawn.
 
 Optional; without it Pose Detection runs with the measured defaults, which are
 the values the node shows. Its widgets are generated from `PoseConfig` in
-`pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`,
-`box_window`, `forearm_limit`, `limb_dedup`, `back_view_face` (these three
-experimental), `edge_snap`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
+`pipelines/pose.py`: `min_keypoint_conf`, `detection_threshold`, and the
+experimental `box_window`, `forearm_limit`, `limb_dedup`, `back_view_face`,
+`edge_snap`. `min_keypoint_conf` travels in `pose_data` to SAM 3.1 Multiplex Video Track's
 `box_keypoint` mode; the guards count the keypoints that reach Pose Detection's
 `draw_threshold` (also carried in `pose_data`).
 
-`edge_snap` (on): a box edge that stops within 15% of the box's own size from
-a frame edge is extended to that edge. It was made for SAM 3.1 Multiplex's box
-prompt in `box_keypoint` mode, so clothing at the frame edge is not cut off the
-mask. The same box also cuts the pose crop and goes to the guards, and on
-typical clips it moves an edge on nearly every frame. Off, the boxes are used
-as detected or supplied, widened by `box_window`; supplied `bboxes` are
-snapped too when it is on. Its on/off comparison is planned.
+`box_window` and `edge_snap` are the box switches, both off by default and
+**experimental**: the node shows them as `box_window (experimental)` and
+`edge_snap (experimental)`. A five-arm pose A/B (`box_window` on and off x
+`edge_snap` on and off, plus Kijai's original preprocess) found no net gain for
+either on the pose: the errors moved between frames rather than going away. The
+official Wan and Kijai preprocess crop the raw detector box, and with both
+switches off the pose path matches theirs except for the detector model and the
+ViTPose precision. The switches may still be revisited for SAM 3.1 Multiplex's
+box prompt (`box_keypoint` mode), which reads the same boxes.
+
+`box_window` (experimental; 0, off): each frame's box is widened to the union
+of the detected boxes within this many frames either side, against a detector
+box that shrinks to the upper body when the person comes close and around the
+blur when they move fast. Supplied `bboxes` are widened too.
+
+`edge_snap` (experimental; off): a box edge that stops within 15% of the box's
+own size from a frame edge is extended to that edge. It was made for SAM 3.1
+Multiplex's box prompt in `box_keypoint` mode, so clothing at the frame edge is
+not cut off the mask. The same box also cuts the pose crop and goes to the
+guards, and on typical clips it moves an edge on nearly every frame. Off, the
+boxes are used as detected or supplied, widened by `box_window`; supplied
+`bboxes` are snapped too when it is on.
 
 `forearm_limit`, `limb_dedup` and `back_view_face` are draw rules
 (`libs/draw_rules.py`), all off by default and **experimental**: the node shows

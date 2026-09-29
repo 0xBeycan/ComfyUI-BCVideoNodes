@@ -27,7 +27,7 @@ class BCVPoseDetection:
                 "draw_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "A limb is drawn when both its ends reach this confidence; key_frame_body_points uses the same threshold. Carried in pose_data: the guards count the keypoints that reach it. SAM 3.1 Multiplex box_keypoint mode reads pose_config.min_keypoint_conf instead"}),
             },
             "optional": {
-                "bboxes": ("BBOX", {"tooltip": "Person boxes (x1, y1, x2, y2), one per frame or one for all. When connected the detector does not run and pose_config.detection_threshold is ignored; the boxes are still widened (box_window) and snapped to a frame edge they nearly touch, unless pose_config.edge_snap is off."}),
+                "bboxes": ("BBOX", {"tooltip": "Person boxes (x1, y1, x2, y2), one per frame or one for all. When connected the detector does not run and pose_config.detection_threshold is ignored; the boxes still go through pose_config.box_window (widened) and pose_config.edge_snap (snapped to a frame edge they nearly touch), both off by default."}),
                 "pose_config": ("POSE_CONFIG", {"tooltip": "Overrides from Pose Config; the measured defaults without it. Its min_keypoint_conf travels in pose_data to SAM 3.1 Multiplex."}),
             },
         }

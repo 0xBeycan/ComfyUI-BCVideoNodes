@@ -1,6 +1,6 @@
 """The pose module on synthetic frames with fake models: the supplied-box path that skips the
-detector, the key_frame_body_points string, the config, edge_snap on the detected and the supplied
-boxes, and draw_head off and 0 stick widths at draw threshold 0. No ComfyUI and no real model:
+detector, the key_frame_body_points string, the config, the raw box by default, edge_snap on the
+detected and the supplied boxes, and draw_head off and 0 stick widths at draw threshold 0. No ComfyUI and no real model:
 
     python -m pytest tests/pipelines/test_pose.py
 """
@@ -37,8 +37,7 @@ def test_supplied_boxes_need_no_detector_object():
 
 
 def test_a_single_supplied_box_is_used_on_every_frame():
-    config = pose.PoseConfig(box_window=0)
-    _, boxes = pose.detect(NoDetector(), FakePose(), frames(), bboxes=[(30.0, 20.0, 90.0, 140.0, 0.5)], config=config)
+    _, boxes = pose.detect(NoDetector(), FakePose(), frames(), bboxes=[(30.0, 20.0, 90.0, 140.0, 0.5)])
     assert boxes == [(30.0, 20.0, 90.0, 140.0)] * B
 
 
@@ -204,10 +203,20 @@ def centres(model):
     return [tuple(call[1][0].tolist()) for call in model.calls]
 
 
-def test_edge_snap_is_on_by_default_and_moves_only_an_edge_near_the_frame():
-    assert pose.PoseConfig().edge_snap is True
+def test_box_window_and_edge_snap_are_off_by_default_so_the_pose_is_cropped_from_the_raw_box():
+    # the official Wan and Kijai preprocess crop the raw detector box
+    config = pose.PoseConfig()
+    assert (config.box_window, config.edge_snap) == (0, False)
     model = RecordingPose()
-    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames(), config=pose.PoseConfig(box_window=0))
+    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames())
+    assert boxes == corners(raw_boxes())
+    assert [tuple(d["bbox"]) for d in pose_data["detections"]] == boxes
+    assert centres(model) == [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in boxes]
+
+
+def test_edge_snap_on_moves_only_an_edge_near_the_frame():
+    model = RecordingPose()
+    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames(), config=pose.PoseConfig(edge_snap=True))
     expected = corners(raw_boxes())
     expected[7] = (0.0, 21.0, 65.0, 128.0)  # its left edge 5 px from the frame, under 0.15 of its 60 px width
     assert boxes == expected == [snapped(box) for box in raw_boxes()]
@@ -218,7 +227,8 @@ def test_edge_snap_is_on_by_default_and_moves_only_an_edge_near_the_frame():
 
 def test_edge_snap_on_snaps_the_widened_boxes():
     model = RecordingPose()
-    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames())
+    config = pose.PoseConfig(box_window=4, edge_snap=True)
+    pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames(), config=config)
     assert boxes == [snapped(box) for box in pose.widen_over_time(raw_boxes(), 4)]
     assert [tuple(d["bbox"]) for d in pose_data["detections"]] == boxes
     assert centres(model) == [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in boxes]
@@ -226,7 +236,7 @@ def test_edge_snap_on_snaps_the_widened_boxes():
 
 def test_edge_snap_off_uses_the_widened_boxes_as_they_are():
     model = RecordingPose()
-    config = pose.PoseConfig(edge_snap=False)
+    config = pose.PoseConfig(box_window=4)
     pose_data, boxes = pose.detect(ScriptedDetector(), model, seeded_frames(), config=config)
     widened = corners(pose.widen_over_time(raw_boxes(), 4))
     assert boxes == widened
@@ -234,17 +244,14 @@ def test_edge_snap_off_uses_the_widened_boxes_as_they_are():
     assert pose_data["pose_config"]["edge_snap"] is False
     assert centres(model) == [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in widened]
     # on, the snap moves the left edge of every box frame 7's 5 px reaches through the widening
-    _, on = pose.detect(ScriptedDetector(), RecordingPose(), seeded_frames())
+    _, on = pose.detect(ScriptedDetector(), RecordingPose(), seeded_frames(),
+                        config=pose.PoseConfig(box_window=4, edge_snap=True))
     assert [i for i in range(B) if on[i] != widened[i]] == [4, 6, 7, 8, 9, 10, 11]
-    # without widening either, the pose is cropped from the detected box
-    _, boxes = pose.detect(ScriptedDetector(), RecordingPose(), seeded_frames(),
-                           config=pose.PoseConfig(box_window=0, edge_snap=False))
-    assert boxes == corners(raw_boxes())
 
 
 def test_edge_snap_acts_on_supplied_boxes():
     box = [(5.0, 20.0, 65.0, 140.0)]  # 5 px from the left edge, under 0.15 of its 60 px width
-    _, on = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box)
-    _, off = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box, config=pose.PoseConfig(edge_snap=False))
+    _, on = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box, config=pose.PoseConfig(edge_snap=True))
+    _, off = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box)
     assert on == [(0.0, 20.0, 65.0, 140.0)] * B
     assert off == [(5.0, 20.0, 65.0, 140.0)] * B

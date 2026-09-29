@@ -1,7 +1,6 @@
 """The Pose Detection node: supplied boxes that never build the detector; the Pose Config node: the
-forearm_limit, limb_dedup and back_view_face widgets, off and marked experimental, and the edge_snap
-widget, on and not experimental. Fake models,
-synthetic frames. The node loads models/common/download.py, which imports folder_paths at its top,
+box_window and edge_snap widgets and the forearm_limit, limb_dedup and back_view_face widgets, off and
+marked experimental, and nothing else marked. Fake models, synthetic frames. The node loads models/common/download.py, which imports folder_paths at its top,
 so this runs where ComfyUI is importable (with the ComfyUI root on PYTHONPATH) and is skipped
 elsewhere:
 
@@ -22,6 +21,9 @@ from pose_fakes import FakeDetector, FakePose, frames, loader, pose  # noqa: E40
 EXPERIMENTAL = ("forearm_limit", "limb_dedup", "back_view_face")
 EXPERIMENTAL_TOOLTIP = ("Experimental: off by default; in a diffusion comparison it gave no clear gain and can "
                         "remove a correct part. ")
+BOX_SWITCHES = ("box_window", "edge_snap")
+BOX_SWITCH_TOOLTIP = ("Experimental: off by default; in a pose comparison it gave no net gain (the errors moved "
+                      "between frames rather than going away). ")
 
 
 def test_supplied_boxes_never_build_the_detector(monkeypatch):
@@ -82,31 +84,45 @@ def test_pose_config_shows_the_back_view_face_off():
         "flips side", "The ears keep the head's place", "pose_data keeps the keypoints"))
 
 
-def test_pose_config_shows_the_edge_snap_on():
+def test_pose_config_shows_the_box_window_off():
+    from names import spec
+
+    inputs = spec("BCVPoseConfig")["required"]
+    kind, options = inputs["box_window"]
+    assert (kind, {k: options[k] for k in ("default", "min", "max", "step")}) == (
+        "INT", {"default": 0, "min": 0, "max": 30, "step": 1})
+    tooltip = options["tooltip"]
+    assert tooltip.startswith(BOX_SWITCH_TOOLTIP + "Frames either side whose person boxes each frame's box is widened")
+    assert all(part in tooltip for part in ("supplied bboxes are widened too", "0 is off"))
+
+
+def test_pose_config_shows_the_edge_snap_off():
     from names import spec
 
     inputs = spec("BCVPoseConfig")["required"]
     assert list(inputs)[-1] == "edge_snap"
     kind, options = inputs["edge_snap"]
-    assert (kind, options["default"], set(options)) == ("BOOLEAN", True, {"default", "tooltip"})
+    assert (kind, options["default"], set(options)) == ("BOOLEAN", False, {"default", "display_name", "tooltip"})
     tooltip = options["tooltip"]
+    assert tooltip.startswith(BOX_SWITCH_TOOLTIP + "Extend a person box edge")
     assert all(part in tooltip for part in (
         "within 15% of the box's size from a frame edge", "SAM 3.1 Multiplex's box prompt",
         "clothing at the frame edge", "The same box also cuts the pose crop", "nearly every frame",
-        "Supplied bboxes are snapped too", "An on/off comparison is planned"))
+        "Supplied bboxes are snapped too"))
 
 
-def test_pose_config_marks_the_three_draw_rules_experimental_and_nothing_else():
+def test_pose_config_marks_the_box_switches_and_the_draw_rules_experimental_and_nothing_else():
     # the label is the input's display_name, which the frontend shows as the widget's label; the
     # input name saved workflows use stays the field name
     from names import spec
 
     inputs = spec("BCVPoseConfig")["required"]
     for name, (_, options) in inputs.items():
-        if name in EXPERIMENTAL:
+        if name in EXPERIMENTAL + BOX_SWITCHES:
             assert options["display_name"] == f"{name} (experimental)"
-            assert options["tooltip"].startswith(EXPERIMENTAL_TOOLTIP)
+            assert options["tooltip"].startswith(EXPERIMENTAL_TOOLTIP if name in EXPERIMENTAL else BOX_SWITCH_TOOLTIP)
         else:
             assert "display_name" not in options and "xperimental" not in options["tooltip"], name
-    assert [name for name, (_, options) in inputs.items() if "display_name" in options] == list(EXPERIMENTAL)
-    assert {"edge_snap", "detection_threshold", "box_window", "min_keypoint_conf"} <= set(inputs) - set(EXPERIMENTAL)
+    assert [name for name, (_, options) in inputs.items() if "display_name" in options] == [
+        "box_window", "forearm_limit", "limb_dedup", "back_view_face", "edge_snap"]
+    assert {"detection_threshold", "min_keypoint_conf"} <= set(inputs) - set(EXPERIMENTAL + BOX_SWITCHES)
