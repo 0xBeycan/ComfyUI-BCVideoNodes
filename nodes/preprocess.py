@@ -33,7 +33,7 @@ class BCVWanAnimatePreprocess:
     RETURN_NAMES = ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes")
     FUNCTION = "process"
     CATEGORY = "BCVideoNodes/Wan/Animate"
-    DESCRIPTION = "The whole WanAnimate preprocess in one node: Pose Detection, SAM 3.1 Multiplex Video Track and Face Crop chained, computing exactly what the three nodes compute when wired by hand. In prompt mode the mask comes from the text prompt alone (one track, the union mask); in box_keypoint mode from the pose, with no extra boxes or points. The models are downloaded on first use. Feed it frames already at the generation size."
+    DESCRIPTION = "The whole WanAnimate preprocess in one node: Pose Detection, SAM 3.1 Multiplex Video Track and Face Crop chained, computing exactly what the three nodes compute when wired by hand. In prompt mode the mask comes from the text prompt alone (one track, the union mask); in box_keypoint mode from the pose, with no extra boxes or points; in prompt_pose mode from the text prompt, with the pose's drawn keypoints as points where the track lost a whole forearm-and-hand or lower leg for one frame. The models are downloaded on first use. Feed it frames already at the generation size."
 
     def process(self, images, body_stick_width, hand_stick_width, draw_head, draw_threshold, face_padding,
                 mode, prompt, pose_config=None, sam3_config=None):
@@ -42,8 +42,8 @@ class BCVWanAnimatePreprocess:
         from ..pipelines.sam3_1_multiplex import track as sam3
 
         # prompt mode segments from the text alone; pose_data is connected only where it is read
-        box_keypoint = mode == sam3.MODE_BOX_KEYPOINT
-        (mask,) = BCVSAM3VideoTrack().track(images, mode, prompt, 1, -1, pose_data=pose_data if box_keypoint else None,
+        reads_pose = mode != sam3.MODE_PROMPT
+        (mask,) = BCVSAM3VideoTrack().track(images, mode, prompt, 1, -1, pose_data=pose_data if reads_pose else None,
                                             sam3_config=sam3_config)
         face_images, face_bboxes = BCVFaceCrop().crop(images, pose_data, face_padding)
         return (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes)

@@ -91,6 +91,7 @@ CHECK3_MODULES = [
     "pipelines.sam3_1_multiplex",
     "pipelines.sam3_1_multiplex.config",
     "pipelines.sam3_1_multiplex.prompt",
+    "pipelines.sam3_1_multiplex.prompt_pose",
     "pipelines.sam3_1_multiplex.pose",
     "pipelines.sam3_1_multiplex.track",
     "pipelines.scail2",

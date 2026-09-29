@@ -1,14 +1,16 @@
-"""SAM 3.1 Multiplex on core's primitives, as both prompting modes (pipelines/sam3_1_multiplex/)
+"""SAM 3.1 Multiplex on core's primitives, as the prompting modes (pipelines/sam3_1_multiplex/)
 drive it: the model's parts (`multiplex_parts`, `propagation_backbone`), the prompt encoding
 (`encode_prompt`), a frame's backbone features (`backbone_frame`), a conditioning frame from a
 mask (`condition_on_mask`), a propagated frame (`track_frame`) and the same with its mask logits
-cleaned (`track_and_clean`), one frame's mask logits from box and point prompts (`decode`), mask
+cleaned (`track_and_clean`), one frame's mask logits from box and point prompts (`decode`), a
+conditioning frame from points on the tracked object (`refine_with_points`, prompt_pose), mask
 propagation (`propagate`) and the helpers over the tracker's memory (`memory_lookback`,
 `new_output_dict`, `new_mux`, `new_memory`, `forget_older`, `store_output`, `encode_memory`,
 `encode_memory_into`, `clear_memory`, `object_score`).
 
-Both modes drive core's primitives (`_compute_backbone_frame`, `track_step`,
-`_condition_with_masks`, `_deferred_memory_encode`, `_forward_sam_heads`) directly. Core's
+The modes drive core's primitives (`_compute_backbone_frame`, `track_step`,
+`_condition_with_masks`, `_deferred_memory_encode`, `_forward_sam_heads`, and for prompt_pose's
+refine `_encode_new_memory`) directly. Core's
 `SAM3Model.forward_video` / `track_video_with_detection` are not used: their detection policy
 is a much cruder one - it thresholds the raw query score, its NMS measures overlap as
 max(IoU, IoM), it has no false-positive guard and no reconditioning.
@@ -195,6 +197,83 @@ def decode(sam3, frame, point_inputs, box_inputs, refine):
             backbone_features=backbone_feat, point_inputs=None, mask_inputs=logits, box_inputs=None,
             high_res_features=high_res, multimask_output=False)
     return logits
+
+
+# Meta's point refine (SAM 3.0, easy-sam3 @ 88fe578): at most this many points reach the prompt
+# encoder, past it the first half and the last half (max_point_num_in_prompt_enc, "to reduce
+# domain gap"); the stability fallback of its interactive decoder (dynamic_multimask_via_stability,
+# which SAM 3.1 keeps): with two points or more the single mask of token 0 is taken unless the share
+# of its logits above +DELTA among those above -DELTA is under THRESHOLD; and the clamp on a
+# previous mask given as the dense prompt.
+MAX_REFINE_POINTS = 16
+STABILITY_DELTA, STABILITY_THRESHOLD = 0.05, 0.98
+PREVIOUS_LOGITS_CLAMP = 32.0
+
+
+def refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux,
+                       previous=None):
+    """A conditioning output for one frame from positive `points` on the tracked object: Meta's
+    point refine, as its video predictor runs it after the text pass (add_new_points on the
+    existing object, use_prev_mem_frame off), on core's primitives. Returns (output, info).
+
+    The decode reads no memory: the interactive neck on the frame's cached trunk plus
+    `interactivity_no_mem_embed`, as core's conditioning path builds it (`_condition_with_masks`,
+    `track_step`), then the interactive heads (`_forward_sam_heads`). `frame` and `trunk_out` are
+    backbone_frame's, `vision_feats` / `vision_pos` / `feat_sizes` its propagation features.
+    `points` are (x, y) in the tracker's 1008x1008 space, in the order to send them; past
+    MAX_REFINE_POINTS the first half and the last half are kept. `previous`, the frame's earlier
+    [1, 1, 288, 288] mask logits or None, is the dense prompt, clamped to +/-PREVIOUS_LOGITS_CLAMP.
+    One point decodes three masks and keeps the best-IoU one; two or more decode token 0's single
+    mask, and where its stability is under STABILITY_THRESHOLD, the best-IoU of the three instead,
+    the object pointer staying token 0's (core's decoder has no such fallback, so it takes a second
+    call; both are deterministic). The stability is Meta's score, the pixels over +STABILITY_DELTA
+    against those over -STABILITY_DELTA (1.0 when there are none), read on the logits as core's
+    heads return them: where the object score is not positive they hold the no-object score
+    everywhere (1.0), and the mask is the no-object mask whichever token is taken.
+
+    The output is shaped like core's conditioning output: the masks, the object pointer muxed,
+    the object-score logits, the spatial memory encoded from the 1008x1008 mask with sigmoid and
+    the conditioning channel on (SAM 3.1: interacted objects are conditioning, never binarized),
+    and the propagation features the decoupled memory attention reads. `info` holds the points
+    sent, token 0's stability (None with one point) and whether the fallback was taken."""
+    from comfy.ldm.sam3.tracker import to_spatial
+    from comfy.ops import cast_to_input
+    _, _, interactive, _ = backbone(frame, tracker_mode="interactive", cached_trunk=trunk_out, tracker_only=True)
+    high_res, low = interactive[:-1], interactive[-1]
+    H, W = feat_sizes[-1]
+    flat = low.flatten(2)
+    pix = to_spatial(flat.permute(0, 2, 1) + cast_to_input(tracker.interactivity_no_mem_embed, flat), H, W)
+
+    points = list(points)
+    if len(points) > MAX_REFINE_POINTS:
+        first = MAX_REFINE_POINTS // 2
+        points = points[:first] + points[len(points) - (MAX_REFINE_POINTS - first):]
+    device = pix.device
+    point_inputs = {"point_coords": torch.tensor([points], device=device, dtype=torch.float32),
+                    "point_labels": torch.ones(1, len(points), dtype=torch.int32, device=device)}
+    mask_inputs = None if previous is None else previous.to(device).clamp(-PREVIOUS_LOGITS_CLAMP, PREVIOUS_LOGITS_CLAMP)
+
+    def heads(multimask):
+        return tracker._forward_sam_heads(backbone_features=pix, point_inputs=point_inputs, mask_inputs=mask_inputs,
+                                          high_res_features=high_res, multimask_output=multimask)
+
+    single_point = len(points) <= 1
+    low_res, high_res_mask, obj_ptr, score = heads(single_point)
+    stable, fallback = None, False
+    if not single_point:
+        union = int((low_res > -STABILITY_DELTA).sum())
+        stable = int((low_res > STABILITY_DELTA).sum()) / union if union else 1.0
+        if stable < STABILITY_THRESHOLD:
+            low_res, high_res_mask, _, _ = heads(True)
+            fallback = True
+    maskmem_features, maskmem_pos_enc = tracker._encode_new_memory(
+        pix_feat=to_spatial(vision_feats[-1], H, W), pred_masks_high_res=high_res_mask, object_score_logits=score,
+        is_mask_from_pts=False, multiplex_state=mux, is_conditioning=True)
+    output = {"maskmem_features": maskmem_features, "maskmem_pos_enc": maskmem_pos_enc,
+              "image_features": vision_feats[-1], "image_pos_enc": vision_pos[-1],
+              "pred_masks": low_res, "pred_masks_high_res": high_res_mask, "obj_ptr": mux.mux(obj_ptr),
+              "object_score_logits": score}
+    return output, {"points": points, "stability": stable, "fallback": fallback}
 
 
 def memory_lookback(tracker):

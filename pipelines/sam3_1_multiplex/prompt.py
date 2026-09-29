@@ -317,10 +317,26 @@ PromptCounts = TypedDict("PromptCounts", {"false starts": int, "reconditioned": 
                                           "frames segmented": int, "tracked from frame": int}, total=False)
 
 
-def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=None):
+# What segment_by_prompt hands over when it is given a `capture` dict (prompt_pose's second pass
+# reads it): the live track's birth frame (no key while no track is born, -1 after a false start),
+# its multiplex state, its conditioning outputs as they were created - the birth and every fired
+# anchor, those prune_conditioning dropped later included - without their 1008x1008 high-res mask,
+# and, when the caller put a dict under "raw" (None: not kept), each propagated frame's decoder
+# logits before the cleaning, a CPU copy. It only reads the run: the masks are the same with it.
+PromptCapture = TypedDict("PromptCapture", {"raw": Optional[dict], "birth": int, "mux": object, "cond": dict},
+                          total=False)
+
+
+def _conditioning_copy(output):
+    """A conditioning output as the capture keeps it: a shallow copy without "pred_masks_high_res"."""
+    return {key: value for key, value in output.items() if key != "pred_masks_high_res"}
+
+
+def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=None, capture=None):
     """[N, H, W] float masks of the person in `images` [N, H, W, 3], from the text prompt
     alone. `result`, if given, is filled with what happened for the log; `logits`, if given, a
-    dict, receives each output frame's low-res logits (see `logits_record`).
+    dict, receives each output frame's low-res logits (see `logits_record`); `capture`, if given,
+    a dict with a "raw" key, receives what the run hands over to prompt_pose (see PromptCapture).
 
     The [prompt] A/B switches of `config` pick ours or Meta's side of a policy step (A6, A7); at
     their defaults this is the policy described in the module docstring. `anchor_output` picks
@@ -382,6 +398,8 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                     tracker, seed, f, vision_feats, vision_pos, feat_sizes, high_res,
                     output_dict, N, mux, backbone, frame, trunk_out)
                 birth, unmatched, quiet_until, how = f, 0, -1, "birth"
+                if capture is not None:
+                    capture.update(birth=f, mux=mux, cond={f: _conditioning_copy(current)})
                 # `dumped`: the logits before the output's cleaning, None when the frame shows
                 # the conditioning mask itself
                 shown, dumped = current["pred_masks"], None
@@ -394,6 +412,8 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                     index = int(current["mask_index"][0])
                 if selection:
                     current["memory_score"] = memory_score(current)
+                if capture is not None and capture["raw"] is not None:
+                    capture["raw"][f] = raw.to("cpu", copy=True)
 
                 overlap = iou(det_masks, current["pred_masks"][:, 0])[:, 0] if det_masks.shape[0] else None
                 matched = overlap is not None and float(overlap.max()) >= c.match_iou
@@ -408,6 +428,8 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                         counts["false starts"] += 1
                         if record is not None:   # the dropped track's slots
                             record["anchors"] = [a for a in record["anchors"] if a["frame"] < birth]
+                        if capture is not None:
+                            capture.update(birth=-1, mux=None, cond={}, raw=None if capture["raw"] is None else {})
                         output_dict = new_output_dict()
                         mux, birth, pending = None, -1, []
                         pbar.update(1)
@@ -453,6 +475,8 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                     # else the frame keeps showing the mask the tracker propagated onto it
                     how = "anchor"
                     counts["reconditioned"] += 1
+                    if capture is not None:
+                        capture["cond"][f] = _conditioning_copy(current)
                     prune_conditioning(output_dict["cond_frame_outputs"], c.max_conditioning_frames, c.keep_birth_frame)
 
             mask = to_frame_size(shown, H, W)

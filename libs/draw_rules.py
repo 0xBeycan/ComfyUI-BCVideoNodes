@@ -202,3 +202,18 @@ def hidden_parts(frame_count, duplicates: dict[str, list[int]], mirrored: dict[s
         out.append({"body": sorted(body), "hands": sorted({*named["limb_dedup"], *named["forearm_rule"]}),
                     "rules": fired})
     return out
+
+
+def hidden_by_rules(pose_metas, threshold, forearm_limit=0.0, limb_dedup=False, back_view_face=False):
+    """What the enabled draw rules find on the clip `pose_metas` (pose_data's `pose_metas_original`)
+    at the draw `threshold`, as (duplicates, mirrored, overlong, back_view, hidden): each rule's
+    findings (duplicate_hands, mirrored_arms, overlong_forearms, back_view_faces; empty for a rule
+    that is off) and, per frame, the parts they leave out of the pose image (hidden_parts). The pose
+    images and SAM 3.1 Multiplex's prompt_pose mode both take the parts from here, so the mask is
+    given points only where the pose images draw them."""
+    duplicates = duplicate_hands(pose_metas, threshold) if limb_dedup else {}
+    mirrored = mirrored_arms(pose_metas, threshold) if limb_dedup else {}
+    overlong = overlong_forearms(pose_metas, threshold, forearm_limit)
+    back_view = back_view_faces(pose_metas, threshold) if back_view_face else []
+    return (duplicates, mirrored, overlong, back_view,
+            hidden_parts(len(pose_metas), duplicates, mirrored, overlong, back_view))

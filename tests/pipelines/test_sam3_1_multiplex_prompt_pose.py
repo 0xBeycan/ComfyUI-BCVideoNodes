@@ -1,0 +1,617 @@
+"""SAM 3.1 Multiplex prompt_pose mode: the keypoints it reads (those the pose images draw), the rule
+that picks the frames it refines and their points (C1-C5 on synthetic masks and keypoints), the
+demotion and the two-sided memory of its second pass, the capture segment_by_prompt hands over, and
+the whole mode on the scripted tracker of test_sam3_1_multiplex_ab (the refine stood in for; its
+own tests are in tests/models/test_sam3_1_multiplex_refine.py). No model is loaded.
+
+Needs ComfyUI importable (the ComfyUI root on PYTHONPATH), like the other SAM 3.1 Multiplex tests:
+
+    PYTHONPATH=/path/to/ComfyUI python -m pytest tests/pipelines/test_sam3_1_multiplex_prompt_pose.py
+"""
+import dataclasses
+
+import pytest
+
+np = pytest.importorskip("numpy")
+torch = pytest.importorskip("torch")
+pytest.importorskip("cv2")
+cli_args = pytest.importorskip("comfy.cli_args")
+cli_args.args.disable_xformers = True
+
+from sam3_1_multiplex_fakes import sam3  # noqa: E402
+from test_sam3_1_multiplex_ab import (PROBATION, DefaultsTracker, FakeModel, FakeTracker, box,  # noqa: E402,F401
+                                      config, pointers, position, range_prep, reproduce, rig)
+from test_sam3_1_multiplex_ab import H as RIG_H  # noqa: E402
+from test_sam3_1_multiplex_ab import N as RIG_N  # noqa: E402
+from test_sam3_1_multiplex_ab import W as RIG_W  # noqa: E402
+
+NOTHING = {"body": [], "hands": [], "rules": {}}    # a frame no draw rule leaves anything out of
+
+
+def right_hand(j):
+    return sam3.HANDS["right"] + j
+
+
+def left_hand(j):
+    return sam3.HANDS["left"] + j
+
+
+def meta(points, W, H, conf=0.9):
+    """One frame of pose_metas_original: the pose-order keypoints `points` ({keypoint: (x, y)} in
+    pixels) at confidence `conf` (or {keypoint: (x, y, conf)}), every other keypoint at confidence 0;
+    the face keypoints all confident and all where the first point is."""
+    rows = np.zeros((sam3.KEYPOINT_COUNT, 3))
+    for k, p in points.items():
+        x, y, c = p if len(p) == 3 else (*p, conf)
+        rows[k] = (x / W, y / H, c)
+    face = np.tile([*rows[next(iter(points))][:2], 0.9], (69, 1)) if points else np.zeros((69, 3))
+    return {"width": W, "height": H, "keypoints_body": rows[:20].copy(), "keypoints_left_hand": rows[20:41].copy(),
+            "keypoints_right_hand": rows[41:].copy(), "keypoints_face": face}
+
+
+def pose_data(metas, threshold=0.5, **rules):
+    return {"pose_metas_original": metas, "draw_threshold": threshold,
+            "pose_config": {"min_keypoint_conf": 0.3, "forearm_limit": 0.0, "limb_dedup": False,
+                            "back_view_face": False, **rules}}
+
+
+# --- the scene the rule is tested on ------------------------------------------------------------
+# A 200 x 300 portrait frame (the shorter side 200, so the default D is 14 px). The body is on
+# every frame; the forearm and hand are on every frame but LOST, where the track dropped them. Five
+# right-hand keypoints hold still in the middle of the forearm-and-hand block, 60 px right of the
+# body's last column on the frame that lost it.
+W, H, FRAMES, LOST = 200, 300, 5, 2
+BODY = (slice(50, 250), slice(20, 60))
+ARM = (slice(80, 120), slice(60, 140))
+HAND = {right_hand(j): (119.5, 90.5 + 4 * j) for j in range(5)}
+
+
+def masks_of(lost=(LOST,), arm=ARM, empty=(), W=W, H=H):
+    masks = torch.zeros(FRAMES, H, W)
+    for f in range(FRAMES):
+        if f not in empty:
+            masks[f][BODY] = 1.0
+            if f not in lost:
+                masks[f][arm] = 1.0
+    return masks
+
+
+def fired(masks, frames_points, birth=0, share=0.07, threshold=0.5, **rules):
+    """The rule on `masks` and one {keypoint: position} per frame, through the pose reader."""
+    N, H, W = masks.shape
+    metas = [meta(points, W, H) for points in frames_points]
+    metas, threshold, hidden = sam3.prompt_pose_inputs(pose_data(metas, threshold, **rules), N)
+    xy, drawn = sam3.drawn_keypoints(metas, threshold, hidden, H, W)
+    return sam3.refine_points(masks, xy, drawn, birth, share * min(H, W))
+
+
+def still(points, frames=FRAMES):
+    return [dict(points) for _ in range(frames)]
+
+
+def test_a_hand_lost_for_one_frame_far_outside_the_mask_is_refined_with_its_drawn_keypoints():
+    assert fired(masks_of(), still(HAND)) == {LOST: sorted(HAND)}
+
+
+def test_c1_the_keypoints_must_lie_the_distance_or_more_from_the_mask():
+    # the hand is 60 px out: D 59 px refines it, D 61 px (60 = D - 1) does not
+    assert fired(masks_of(), still(HAND), share=59 / 200) == {LOST: sorted(HAND)}
+    assert fired(masks_of(), still(HAND), share=61 / 200) == {}
+
+
+def test_c1_the_distance_is_a_share_of_the_shorter_side():
+    # the same 60 px at D = 0.25 of the shorter side: 50 px on a 200 px wide frame, 75 px on 400 x 300
+    assert fired(masks_of(), still(HAND), share=0.25) == {LOST: sorted(HAND)}
+    wide = masks_of(W=400, H=300)
+    assert fired(wide, still(HAND), share=0.25) == {}
+    assert fired(wide, still(HAND), share=0.195) == {LOST: sorted(HAND)}    # 58.5 px
+
+
+def test_c2_a_limb_outside_on_the_frame_after_too_is_no_one_frame_loss():
+    assert fired(masks_of(lost=(LOST, LOST + 1)), still(HAND)) == {}
+    frames = still(HAND)
+    frames[LOST - 1] = {}                     # not drawn on the frame before
+    assert fired(masks_of(), frames) == {}
+
+
+def test_c3_a_keypoint_that_jumped_for_one_frame_is_no_loss_and_a_moving_one_is():
+    frames = still(HAND)
+    frames[LOST] = {k: (179.5, y) for k, (x, y) in HAND.items()}           # 60 px off where it was before and after
+    assert fired(masks_of(), frames) == {}
+    moving = [{k: (x + 15 * (f - LOST), y) for k, (x, y) in HAND.items()} for f in range(FRAMES)]
+    moving[0] = moving[4] = HAND                                           # 104.5 on f-1, 134.5 on f+1: no jump
+    assert fired(masks_of(), moving) == {LOST: sorted(HAND)}
+
+
+def test_c4_a_limb_needs_three_qualifying_keypoints():
+    two = {k: HAND[k] for k in sorted(HAND)[:2]}
+    three = {k: HAND[k] for k in sorted(HAND)[:3]}
+    assert fired(masks_of(), still(two)) == {}
+    assert fired(masks_of(), still(three)) == {LOST: sorted(three)}
+
+
+def test_c5_a_hand_still_20_percent_inside_is_no_whole_limb_loss():
+    points = {**{k: HAND[k] for k in sorted(HAND)[:4]}, right_hand(4): (40.5, 100.5)}   # the fifth on the body
+    assert fired(masks_of(), still(points)) == {}
+    # an elbow is not part of its hand: an elbow on the body leaves the hand whole
+    assert fired(masks_of(), still({**HAND, sam3.R_ELBOW: (40.5, 100.5)})) == {LOST: sorted(HAND)}
+
+
+def test_only_keypoints_the_pose_images_draw_count():
+    faint = {k: (x, y, 0.49) for k, (x, y) in HAND.items()}
+    # 0.49 against pose_data's draw_threshold 0.5, whatever the pose's min_keypoint_conf (0.3)
+    assert fired(masks_of(), still(faint)) == {}
+    assert fired(masks_of(), still({k: (x, y, 0.5) for k, (x, y) in HAND.items()})) == {LOST: sorted(HAND)}
+    assert fired(masks_of(), still(faint), threshold=0.45) == {LOST: sorted(HAND)}
+
+
+def test_a_keypoint_off_the_canvas_is_dropped_not_clamped():
+    arm = (slice(80, 120), slice(60, 200))                  # the forearm and hand reach the right edge
+    edge = {right_hand(0): (150.5, 90.5), right_hand(1): (150.5, 94.5), right_hand(2): (199.6, 98.5)}
+    frames = still(edge)
+    frames[LOST] = {**edge, right_hand(2): (200.4, 98.5)}      # past the edge on the lost frame
+    assert fired(masks_of(arm=arm), frames) == {}              # two keypoints are left
+    frames[LOST] = {**edge, right_hand(2): (199.9, 98.5)}      # on the canvas: three
+    assert fired(masks_of(arm=arm), frames) == {LOST: sorted(edge)}
+
+
+def test_the_reader_keeps_the_draw_code_s_rules():
+    points = {right_hand(0): (0.5, 50.0), right_hand(1): (1.0, 50.0), right_hand(2): (50.0, 0.9),
+              sam3.NOSE: (0.5, 50.0), sam3.R_WRIST: (200.0, 50.0), sam3.R_ELBOW: (-0.1, 50.0),
+              left_hand(0): (199.9, 299.9)}
+    xy, drawn = sam3.drawn_keypoints([meta(points, W, H)], 0.5, [NOTHING], H, W)
+    drawn = {k: bool(drawn[0, k]) for k in points}
+    # a hand keypoint needs int(x) and int(y) of 1 or more (the eps rule), a body keypoint does not;
+    # x = W or x < 0 is off the canvas
+    assert drawn == {right_hand(0): False, right_hand(1): True, right_hand(2): False, sam3.NOSE: True,
+                     sam3.R_WRIST: False, sam3.R_ELBOW: False, left_hand(0): True}
+    assert np.allclose(xy[0, right_hand(1)], (1.0 / W, 50.0 / H))
+    hidden = [{"body": [sam3.NOSE], "hands": ["right"], "rules": {}}]
+    _, drawn = sam3.drawn_keypoints([meta(points, W, H)], 0.5, hidden, H, W)
+    assert not drawn[0, sam3.NOSE] and not drawn[0, right_hand(1)] and drawn[0, left_hand(0)]
+
+
+def test_head_shoulders_hips_and_face_never_trigger():
+    trunk = {k: (119.5, 90.5 + 2 * k) for k in (0, 1, 2, 5, 8, 11, 14, 15, 16, 17)}
+    assert fired(masks_of(), still(trunk)) == {}
+    # the face keypoints (all confident, on the lost region) are never read
+    assert fired(masks_of(), still({**trunk, **{k: HAND[k] for k in sorted(HAND)[:2]}})) == {}
+
+
+def test_a_forearm_the_forearm_limit_draw_rule_hides_is_no_candidate():
+    """The right forearm is 20 px long on every frame but LOST, where its wrist lies 60 px from the
+    elbow: 3 times its clip median, so forearm_limit 2.0 leaves that wrist and its hand out of the
+    pose image, and out of the points."""
+    arm = {sam3.R_ELBOW: (50.5, 100.5), sam3.R_WRIST: (70.5, 100.5)}
+    frames = still({**arm, **HAND})
+    frames[LOST] = {**arm, sam3.R_WRIST: (110.5, 100.5), **HAND}
+    assert fired(masks_of(), frames) == {LOST: sorted(HAND)}   # the wrist jumped (C3); the hand is refined
+    assert fired(masks_of(), frames, forearm_limit=2.0) == {}
+
+
+@pytest.mark.parametrize("birth, lost, empty, refined", [
+    (1, (2,), (), {2}),          # the frame after the birth can be refined
+    (2, (2,), (), set()),        # the birth frame never is
+    (3, (2,), (), set()),        # nor a frame before the birth
+    (0, (4,), (), set()),        # nor the last frame
+    (0, (3,), (), {3}),
+    (0, (2,), (2,), set()),      # nor a frame whose mask is empty
+    (-1, (2,), (), set()),       # no track, nothing
+])
+def test_where_the_rule_never_refines(birth, lost, empty, refined):
+    assert set(fired(masks_of(lost=lost, empty=empty), still(HAND), birth=birth)) == refined
+
+
+def test_the_points_go_in_pose_order_body_left_hand_right_hand():
+    """Both hands dropped together, and the right wrist: 23 points, the body keypoint first, then
+    the left hand's, then the right hand's (the refine then sends the first 8 and the last 8)."""
+    points = {**{left_hand(j): (100.5 + 3 * j, 84.5) for j in range(11)},
+              **{right_hand(j): (100.5 + 3 * j, 110.5) for j in range(11)},
+              sam3.R_WRIST: (75.5, 100.5)}
+    got = fired(masks_of(), still(points))
+    assert got == {LOST: [sam3.R_WRIST] + [left_hand(j) for j in range(11)] + [right_hand(j) for j in range(11)]}
+
+
+def test_the_pose_reader_raises_on_pose_data_it_cannot_read():
+    good = pose_data([meta(HAND, W, H)] * 2)
+    metas, threshold, hidden = sam3.prompt_pose_inputs(good, 2)
+    assert metas is good["pose_metas_original"] and threshold == 0.5 and hidden == [NOTHING, NOTHING]
+    with pytest.raises(ValueError, match="covers 2 pose frames, the images are 3"):
+        sam3.prompt_pose_inputs(good, 3)
+    for missing in ("draw_threshold", "pose_metas_original"):
+        with pytest.raises(ValueError, match="draw_threshold"):
+            sam3.prompt_pose_inputs({k: v for k, v in good.items() if k != missing}, 2)
+    no_rules = {**good, "pose_config": {"min_keypoint_conf": 0.3}}
+    with pytest.raises(ValueError, match="forearm_limit, limb_dedup, back_view_face"):
+        sam3.prompt_pose_inputs(no_rules, 2)
+
+
+def test_the_draw_rules_are_read_from_pose_config():
+    frames = [meta({sam3.R_ELBOW: (50.0, 100.0), sam3.R_WRIST: (50.0, 120.0 if f != 2 else 170.0)}, W, H)
+              for f in range(5)]
+    _, _, hidden = sam3.prompt_pose_inputs(pose_data(frames, forearm_limit=2.0), 5)
+    assert [h["body"] for h in hidden] == [[], [], [sam3.R_WRIST], [], []] and hidden[2]["hands"] == ["right"]
+
+
+# --- demotion and the second pass's memory ------------------------------------------------------
+
+def test_demotion_takes_pass_1_s_conditioning_frames_within_16_of_a_refined_frame():
+    g = 40
+    conditioning = {t: f"out {t}" for t in (g - 17, g - 16, g, g + 16, g + 17)}
+    kept, demoted = sam3.demote(conditioning, {g: "refined"})
+    assert sam3.DEMOTION_WINDOW == 16
+    # g itself is refined, not demoted: its refine replaces pass 1's conditioning of it
+    assert kept == {g - 17: f"out {g - 17}", g + 17: f"out {g + 17}"} and demoted == [g - 16, g + 16]
+    # refined frames 10 and 70: 23 and 24 are 13 and 14 frames from 10, 56 and 57 14 and 13 from 70
+    kept, demoted = sam3.demote(conditioning, {10: "refined", 70: "refined"})
+    assert demoted == [g - 17, g - 16, g + 16, g + 17] and list(kept) == [g]
+
+
+def test_the_conditioning_frames_read_are_the_closest_on_both_sides():
+    cond = {t: t for t in (0, 16, 32, 48, 64)}
+    selected, unselected = sam3.closest_conditioning(cond, 30, 4)
+    # the closest before (16), the closest at or after (32), then the nearest of the rest (48, then 0)
+    assert sorted(selected) == [0, 16, 32, 48] and unselected == {64: 64}
+    selected, _ = sam3.closest_conditioning(cond, 32, 2)
+    assert sorted(selected) == [16, 32]                  # "at or after" takes the frame itself
+    selected, _ = sam3.closest_conditioning({t: t for t in (0, 16, 32, 48)}, 24, 3)
+    assert sorted(selected) == [0, 16, 32]               # 0 and 48 tie: the earlier
+    selected, unselected = sam3.closest_conditioning(cond, 70, 2)
+    assert sorted(selected) == [48, 64] and sorted(unselected) == [0, 16, 32]
+    assert sam3.closest_conditioning(cond, 30, 5) == (cond, {})
+
+
+def stored_outputs(scores):
+    return {t: {"memory_score": s, "obj_ptr": t, "maskmem_features": t} for t, s in scores.items()}
+
+
+def test_the_second_pass_view_reads_an_unselected_conditioning_frame_as_ordinary_memory():
+    """Without memory selection, by distance: of the conditioning frames 10, 12, 14 and 20, frame 15
+    selects 14 and 20 (keep 2) and reads 10 and 12, 5 and 3 frames back, as ordinary memory."""
+    cond = {t: {"obj_ptr": f"c{t}", "maskmem_features": f"c{t}"} for t in (10, 12, 14, 20)}
+    stored = stored_outputs({11: 0.5, 13: 0.5})
+    view = sam3.pass_two_view(cond, stored, 15, 2, 5, selection=False)
+    assert sorted(view["cond_frame_outputs"]) == [14, 20]
+    assert view["non_cond_frame_outputs"] == {10: cond[10], 12: cond[12], **stored}
+    # a conditioning frame after the frame is never ordinary memory
+    view = sam3.pass_two_view(cond, stored, 11, 2, 5, selection=False)
+    assert sorted(view["cond_frame_outputs"]) == [10, 12] and view["non_cond_frame_outputs"] == stored
+
+
+def test_the_second_pass_reads_its_own_frames_as_prompt_mode_reads_its_propagated_ones():
+    stored = stored_outputs({1: 0.5, 3: 0.5, 5: 0.0, 6: 0.5, 7: 0.0, 8: 0.5})
+    cond = {2: "c2", 4: "c4", 20: "c20"}
+    for selection in (False, True):
+        view = sam3.pass_two_view(cond, stored, 9, 2, 3, selection)
+        assert view["cond_frame_outputs"] == {4: "c4", 20: "c20"}
+        prompt = sam3.memory_view({"cond_frame_outputs": {}, "non_cond_frame_outputs": stored}, 9, 3)
+        assert view["non_cond_frame_outputs"] == (prompt["non_cond_frame_outputs"] if selection else {2: "c2", **stored})
+
+
+# --- the capture: what segment_by_prompt hands over, read-only ----------------------------------
+# The scripted run of test_sam3_1_multiplex_ab: the person born on frame 2, re-anchored on 16 and 32.
+
+def prompt_run(rig, monkeypatch, cfg, make=FakeTracker, capture=None, logits=None):
+    """segment_by_prompt on the stand-ins the rig installed, with a fresh tracker from `make`:
+    (masks, log, result)."""
+    tracker = make()
+    monkeypatch.setattr(sam3, "_multiplex_parts", lambda model: (None, None, tracker, None))
+    result = {}
+    masks = sam3.segment_by_prompt(FakeModel(), object(), torch.zeros(RIG_N, RIG_H, RIG_W, 3), "p", cfg,
+                                   result=result, logits=logits, capture=capture)
+    return masks, tracker.log, result
+
+
+def test_the_capture_changes_nothing_segment_by_prompt_does(rig, monkeypatch):
+    cfg = config()
+    base, base_log, base_result = rig(cfg, ring=2, speck=True)
+    for capture, dump in (({"raw": {}}, None), ({"raw": None}, None), ({"raw": {}}, {}), (None, {})):
+        masks, log, result = prompt_run(rig, monkeypatch, cfg, lambda: FakeTracker(ring=2, speck=True), capture, dump)
+        assert torch.equal(masks, base) and log == base_log and result == base_result
+
+
+def test_the_capture_holds_the_track_s_birth_its_conditioning_frames_as_created_and_its_raw_logits(rig, monkeypatch):
+    cfg = config()   # max_conditioning_frames 2 with the birth kept: pass 1 drops the anchor on 16 at 32
+    dump = {}
+    rig(cfg, logits=dump)
+    capture = {"raw": {}}
+    prompt_run(rig, monkeypatch, cfg, capture=capture)
+    assert capture["birth"] == 2 and sorted(capture["cond"]) == [2, 16, 32]
+    assert all("pred_masks_high_res" not in out and "maskmem_features" in out for out in capture["cond"].values())
+    assert sorted(capture["raw"]) == list(range(3, RIG_N))     # every propagated frame, anchors included
+    for f, raw in capture["raw"].items():
+        assert raw.device.type == "cpu" and dump["raw"][f] and torch.equal(raw[0, 0].to(torch.float16), dump["logits"][f])
+    capture = {"raw": None}
+    prompt_run(rig, monkeypatch, cfg, capture=capture)
+    assert capture["raw"] is None and capture["birth"] == 2
+
+
+def test_a_false_start_resets_the_capture(rig, monkeypatch):
+    rig(config(), **PROBATION)
+    capture = {"raw": {}}
+    _, _, result = prompt_run(rig, monkeypatch, config(), lambda: FakeTracker(empty=range(3, 10)), capture)
+    assert result["false starts"] == 1
+    assert capture["birth"] == 12 and sorted(capture["cond"]) == [12, 16, 32] and min(capture["raw"]) == 13
+
+
+# --- the mode on the scripted tracker --------------------------------------------------------------
+
+class Backbone:
+    """The vision backbone as prompt_pose reads it: the scripted tracker makes the features itself,
+    so only the trunk the second pass times is here."""
+    def __init__(self):
+        self.trunk = torch.nn.Identity()
+
+
+class Run:
+    """What pp_rig's run returns."""
+
+
+def refined_box(real):
+    """The stand-in refine's mask logits on frame `real`: the person's box, two rows taller."""
+    return box(*position(real), h=10, ring=1)[None, None]
+
+
+@pytest.fixture
+def pp_rig(rig, monkeypatch):
+    """segment_by_prompt_pose on test_sam3_1_multiplex_ab's stand-ins, the refine stood in for (the
+    person's box two rows taller) and, when `chosen` is given, the rule too. `make` builds the
+    tracker; prompt mode is run on one of its own first, as the baseline."""
+    def run(cfg=None, chosen=None, metas=None, logits=None, make=None, **rig_kwargs):
+        cfg = cfg or config()
+        tracker_kwargs = {k: rig_kwargs.pop(k) for k in ("ring", "speck", "scores", "empty") if k in rig_kwargs}
+        make = make or (lambda: FakeTracker(**tracker_kwargs))
+        out = Run()
+        out.prompt, out.prompt_log, out.prompt_result = rig(cfg, tracker=make(), **rig_kwargs)
+        out.tracker = tracker = make()
+        monkeypatch.setattr(sam3, "_multiplex_parts", lambda model: (None, None, tracker, Backbone()))
+        detect, out.detected = sam3.detect_person, []
+        monkeypatch.setattr(sam3, "detect_person", lambda *a: out.detected.append(a[2]) or detect(*a))
+        out.refines = []
+
+        def refine(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux,
+                   previous=None):
+            real = vision_feats[0]
+            out.refines.append({"frame": real, "points": points, "previous": previous, "log": len(tracker.log)})
+            logits_ = refined_box(real)
+            return ({"pred_masks": logits_, "pred_masks_high_res": logits_, "object_score_logits": torch.tensor([[7.0]]),
+                     "obj_ptr": 0, "maskmem_features": ("cond", "refined", real), "maskmem_pos_enc": [0]},
+                    {"points": list(points)[:16], "stability": 0.99, "fallback": False})
+
+        monkeypatch.setattr(sam3, "refine_with_points", refine)
+        if chosen is not None:
+            monkeypatch.setattr(sam3, "refine_points", lambda *args: dict(chosen))
+        metas = metas or [meta({}, RIG_W, RIG_H)] * RIG_N
+        out.result = {}
+        out.masks = sam3.segment_by_prompt_pose(FakeModel(), object(), torch.zeros(RIG_N, RIG_H, RIG_W, 3), "p", cfg,
+                                                metas, 0.5, [NOTHING] * RIG_N, result=out.result, logits=logits)
+        out.log = tracker.log
+        out.second = tracker.log[out.refines[0]["log"]:] if out.refines else []    # the second pass's calls
+        return out
+    return run
+
+
+def at_defaults(best=None, **tracker_kwargs):
+    """pp_rig's arguments for the config defaults (test_sam3_1_multiplex_ab's defaults run): frames
+    in -1..1 read back by the tracker, a propagation decoder for the best_iou pointer and memory
+    selection (on frame f it selects mask best.get(f, 0)), and core's MultiplexState."""
+    return dict(make=lambda: DefaultsTracker(signed=True, best=best or {}, **tracker_kwargs), prep=range_prep,
+                core_mux=True)
+
+
+def tracked(entries):
+    """{frame: the conditioning frames it read} of the ("track", ...) entries of a forward pass."""
+    return {e[1]: e[3] for e in entries if e[0] == "track"}
+
+
+def shown(logits_, cfg):
+    return sam3.to_frame_size(sam3.clean_channel_logits(logits_, cfg.fill_hole_area), RIG_H, RIG_W)
+
+
+@pytest.mark.parametrize("defaults", [False, True])
+def test_with_no_frame_to_refine_the_result_is_prompt_mode_s_tensor(pp_rig, caplog, defaults):
+    with caplog.at_level("INFO"):
+        out = pp_rig(sam3.SAM3Config() if defaults else config(), **(at_defaults() if defaults else {}))
+    assert torch.equal(out.masks, out.prompt) and out.log == out.prompt_log and out.result == out.prompt_result
+    assert out.refines == [] and out.detected == list(range(RIG_N))      # no refine, no second pass
+    assert "prompt_pose: no frame needed points; the mask is prompt mode's" in caplog.text
+
+
+@pytest.mark.parametrize("defaults", [False, True])
+def test_the_second_pass_tracks_again_from_the_birth_around_the_kept_and_refined_frames(pp_rig, defaults):
+    """Frame 36 refined: the anchor on 32 is within 16 of it and is demoted; the birth (2) and the
+    anchor on 16 are kept - on the earlier baseline 16 although pass 1 had let it go at 32
+    (max_conditioning_frames 2). The second pass tracks every other frame from the birth on with the
+    tracker alone, each reading the max_conditioning_frames conditioning frames closest to it on both
+    sides (2 of the 3; at the defaults' 4, all three), its memory from the decoder's raw logits. At
+    the defaults it reads its frames in -1..1, builds each pointer from the best-IoU mask's token and
+    ranks its memory (memory selection); the baseline reads its memory by distance."""
+    cfg = sam3.SAM3Config() if defaults else config()
+    rig_kwargs = at_defaults(speck=True, best={20: 2}) if defaults else dict(speck=True)
+    out = pp_rig(cfg, chosen={36: [right_hand(0)]}, **rig_kwargs)
+    assert [r["frame"] for r in out.refines] == [36] and out.refines[0]["previous"] is None
+    retracked = [f for f in range(3, RIG_N) if f not in (16, 36)]
+    reads = tracked(out.second)
+    assert list(reads) == retracked
+    assert (reads[3], reads[20], reads[32], reads[37]) == \
+        (((2, 16, 36),) * 4 if defaults else ((2, 16), (16, 36), (16, 36), (16, 36)))
+    # frame 18 reads 17 and 15-12 by distance (16 is a conditioning frame); ranked, 11 fills the slot 16 leaves
+    assert out.tracker.reads[18] == ((17, 15, 14, 13, 12, 11) if defaults else (17, 15, 14, 13, 12))
+    if defaults:   # every frame the backbone was given in -1..1; frame 21 reads mask 2's token (3), not token 0's
+        assert all(value == float(torch.tensor(real / 100) * 2 - 1) for real, value in out.tracker.seen)
+        assert pointers(out.second)[21] == 3.0
+    assert out.detected == list(range(RIG_N))                            # the detector ran in pass 1 only
+    encodes = [e for e in out.second if e[0] == "encode"]
+    assert [e[1] for e in encodes] == retracked
+    assert {e[2] for e in encodes} <= {60, 68}                            # the raw box: 56 or 64 px and the 4 px speck
+    assert {e[2] for e in out.prompt_log if e[0] == "encode"} <= {56, 64}  # pass 1 encodes the cleaned mask
+    for f in (0, 1, 2, 16):                                               # before the birth, and the kept frames
+        assert torch.equal(out.masks[f], out.prompt[f]), f
+    assert torch.equal(out.masks[36], shown(refined_box(36), cfg))
+    assert not torch.equal(out.masks[36], out.prompt[36])
+    assert out.result["refined frames"] == 1 and out.result["demoted"] == 1 and out.result["re-tracked"] == 35
+    assert out.result["frames segmented"] == RIG_N
+
+
+def test_a_demoted_anchor_pass_1_had_let_go_is_tracked_again(pp_rig):
+    out = pp_rig(config(), chosen={20: [right_hand(0)]})
+    reads = tracked(out.second)
+    assert 16 in reads and 32 in reads and 2 not in reads                 # 16 and 32 demoted, the birth kept
+    assert (reads[16], reads[25]) == ((2, 20), (2, 20))
+
+
+def test_refined_frames_stay_conditioning_frames_whatever_their_distance(pp_rig):
+    out = pp_rig(config(), chosen={20: [right_hand(0)], 30: [right_hand(0)]})
+    reads = tracked(out.second)
+    assert 20 not in reads and 30 not in reads and reads[25] == (20, 30)
+    assert out.result["refined frames"] == 2 and out.result["demoted"] == 2   # 16 and 32
+
+
+def test_pose_refine_with_mask_gives_the_refine_the_first_pass_s_raw_logits_of_the_frame(pp_rig, rig):
+    dump = {}
+    rig(config(), logits=dump)
+    out = pp_rig(config(pose_refine_with_mask=True), chosen={36: [right_hand(0)]})
+    previous = out.refines[0]["previous"]
+    assert previous.device.type == "cpu" and dump["raw"][36]
+    assert torch.equal(previous[0, 0].to(torch.float16), dump["logits"][36])
+    out = pp_rig(config(), chosen={36: [right_hand(0)]})
+    assert out.refines[0]["previous"] is None                             # the default: the points alone
+
+
+class LosesTheArm(FakeTracker):
+    """The scripted tracker, whose mask on frame LOSES drops the right part of the person (the low-res
+    columns from x + 5 on, where the three right-hand keypoints below lie)."""
+    def track_step(self, frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs):
+        out = super().track_step(frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs)
+        real = current_vision_feats[0]
+        if real == LOSES:
+            _, x = position(real)
+            out["pred_masks"][0, 0, :, x + 5:] = -10.0
+        return out
+
+
+LOSES = 20
+
+
+def hand_on_the_person(real):
+    """Three right-hand keypoints near the right edge of the person's box on frame `real`, in frame
+    pixels (the box's low-res columns x..x+7 are frame columns 2x..2x+15)."""
+    _, x = position(real)
+    return {right_hand(j): (2 * x + 13.5, 12.5 + 2 * j) for j in range(3)}
+
+
+def test_the_rule_on_a_tracked_clip_refines_the_one_frame_that_lost_the_hand(pp_rig):
+    metas = [meta(hand_on_the_person(f), RIG_W, RIG_H) for f in range(RIG_N)]
+    out = pp_rig(config(), metas=metas, make=LosesTheArm)
+    (refine,) = out.refines
+    points = hand_on_the_person(LOSES)
+    # the points reach the decoder at x * 1008, y * 1008 of pose_data's normalised position
+    assert refine["frame"] == LOSES
+    assert refine["points"] == pytest.approx([(x / RIG_W * 1008, y / RIG_H * 1008) for x, y in points.values()])
+    assert (out.result["refined frames"], out.result["points"], out.result["demoted"], out.result["re-tracked"]) == \
+        (1, 3, 2, 36)
+
+
+def test_the_logits_record_reproduces_prompt_pose_s_masks(pp_rig):
+    cfg = config()
+    dump = {}
+    out = pp_rig(cfg, chosen={36: [right_hand(0)]}, logits=dump, ring=2, speck=True)
+    assert (dump["cut"][2], dump["cut"][16], dump["cut"][32], dump["cut"][36]) == ("birth", "anchor", "prompt", "prompt")
+    assert set(dump["cut"]) == {"prompt", "birth", "anchor"}
+    assert [f for f in range(RIG_N) if not dump["raw"][f]] == [2]        # the kept birth shows its conditioning mask
+    assert [a["frame"] for a in dump["anchors"] if a["fired"]] == [16, 32]  # the first pass's slots
+    for f in range(RIG_N):
+        again = reproduce(dump["logits"][f], "prompt", RIG_H, RIG_W, 0.0, None, 0, cfg, dump["raw"][f])
+        assert torch.equal(again, out.masks[f]), f
+
+
+def test_the_sink_names_the_mode_and_gets_the_record(pp_rig):
+    cfg = config()
+    got = {}
+    pp_rig(cfg, chosen={36: [right_hand(0)]})   # installs the stand-ins
+    masks = sam3.track((FakeModel(), object()), torch.zeros(RIG_N, RIG_H, RIG_W, 3),
+                       pose_data=pose_data([meta({}, RIG_W, RIG_H)] * RIG_N), mode="prompt_pose", config=cfg,
+                       logits_sink=lambda logits_, info: got.update(logits=logits_, info=info))
+    info = got["info"]
+    assert info["mode"] == "prompt_pose" and info["raw"][36] and info["cut"][36] == "prompt"
+    assert info["fill_hole_area"] == cfg.fill_hole_area and "anchors" in info
+    assert torch.equal(masks[36], shown(refined_box(36), cfg))
+
+
+# --- the entry: what prompt_pose mode reads and ignores -------------------------------------------
+
+@pytest.fixture
+def stub(monkeypatch):
+    """segment_by_prompt_pose / segment_by_prompt / segment_by_pose stand-ins that record what they
+    were handed."""
+    calls = []
+
+    def by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw_threshold, hidden, result=None, **kwargs):
+        calls.append(("prompt_pose", prompt, pose_metas, draw_threshold, hidden))
+        return torch.zeros(images.shape[:3])
+
+    monkeypatch.setattr(sam3, "segment_by_prompt_pose", by_prompt_pose)
+    monkeypatch.setattr(sam3, "segment_by_prompt", lambda model, clip, images, *a, **k: torch.zeros(images.shape[:3]))
+    monkeypatch.setattr(sam3, "segment_by_pose", lambda model, images, *a, **k: torch.zeros(images.shape[:3]))
+    return calls
+
+
+def two_frames(**rules):
+    frames = [meta(HAND, W, H)] * 2
+    data = pose_data(frames, 0.4, **rules)
+    data["detections"] = [{"bbox": [1.0, 1.0, 7.0, 7.0], "score": 0.9, "persons": 1}] * 2
+    return data
+
+
+def not_used(caplog):
+    return [r.getMessage() for r in caplog.records if "not used" in r.getMessage()]
+
+
+def test_prompt_pose_needs_pose_data_and_a_prompt(stub):
+    with pytest.raises(ValueError, match="prompt_pose mode adds points from the pose; connect pose_data"):
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), mode="prompt_pose")
+    with pytest.raises(ValueError, match="empty"):
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=two_frames(), mode="prompt_pose", prompt=" ")
+    with pytest.raises(ValueError, match="covers 2 pose frames, the images are 3"):
+        sam3.track((None, None), torch.zeros(3, 8, 8, 3), pose_data=two_frames(), mode="prompt_pose")
+
+
+def test_prompt_pose_reads_the_pose_and_the_prompt_and_ignores_the_rest_in_one_line(stub, caplog):
+    cfg = sam3.SAM3Config(birth_threshold=0.6, clear_on_anchor=True, reseed_interval=5, assoc_iou=0.2,
+                          pose_point_distance=0.1, pose_refine_with_mask=True)
+    data = two_frames(forearm_limit=2.0)
+    with caplog.at_level("INFO"):
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=data, bboxes=[2, 2, 6, 6],
+                   positive_coords='[{"x": 1, "y": 1}]', negative_coords="[]", mode="prompt_pose", prompt="a dog",
+                   max_objects=3, object_index=2, config=cfg)
+    (line,) = not_used(caplog)
+    for name in ("bboxes", "positive_coords", "negative_coords", "max_objects 3", "object_index 2",
+                 "sam3_config.reseed_interval", "sam3_config.assoc_iou"):
+        assert name in line, name
+    for read in ("birth_threshold", "clear_on_anchor", "pose_point_distance", "pose_refine_with_mask", "prompt 'a dog'"):
+        assert read not in line, read
+    ((kind, prompt, metas, threshold, hidden),) = stub
+    assert (kind, prompt, threshold) == ("prompt_pose", "a dog", 0.4) and metas is data["pose_metas_original"]
+    assert hidden == sam3.prompt_pose_inputs(data, 2)[2]
+
+
+@pytest.mark.parametrize("mode", ["prompt", "box_keypoint"])
+def test_the_other_modes_name_a_changed_prompt_pose_field(stub, caplog, mode):
+    cfg = sam3.SAM3Config(pose_point_distance=0.1, pose_refine_with_mask=True)
+    with caplog.at_level("INFO"):
+        sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=two_frames() if mode == "box_keypoint" else None,
+                   mode=mode, config=cfg)
+    (line,) = not_used(caplog)
+    assert "sam3_config.pose_point_distance" in line and "sam3_config.pose_refine_with_mask" in line
+
+
+def test_the_prompt_pose_fields_come_last_and_leave_every_other_default():
+    fields = dataclasses.fields(sam3.SAM3Config)
+    assert [f.name for f in fields][-2:] == ["pose_point_distance", "pose_refine_with_mask"]
+    distance, with_mask = fields[-2], fields[-1]
+    assert (distance.default, distance.metadata["min"], distance.metadata["max"], distance.metadata["step"]) == \
+        (0.07, 0.0, 0.5, 0.005)
+    assert with_mask.default is False and with_mask.metadata["experimental"].startswith("off by default")
+    assert distance.metadata["tooltip"].startswith("[prompt_pose] ")
+    assert with_mask.metadata["tooltip"].startswith("[prompt_pose] ")
+    assert sam3.MODES == ("prompt", "box_keypoint", "prompt_pose") and sam3.MODE_PROMPT_POSE == "prompt_pose"

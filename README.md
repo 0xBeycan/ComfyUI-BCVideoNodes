@@ -140,6 +140,55 @@ connected, so the behaviour can be switched without rewiring:
   adding hand-placed points on frame 0. `max_objects` applies to `prompt`
   mode only; `box_keypoint` mode tracks one person, ignores it and logs one
   line.
+- `prompt_pose`: `prompt` mode's track of one person, and where the pose
+  (`pose_data`, required) shows the track lost a whole forearm-and-hand or
+  lower leg for one frame, far outside the mask, that limb's drawn keypoints
+  go onto that frame as positive points: Meta's point refine on the same
+  object, followed by Meta's tracker-only re-propagation of the clip. A clip
+  where no frame needs points gets `prompt` mode's mask exactly. Nothing is
+  removed on pose grounds: there are no negative points. Limits: as `prompt`;
+  only such one-frame whole-limb drops are recovered.
+
+How `prompt_pose` works, in Meta's order (SAM 3's video predictor, as
+easy-sam3 vendors it: the text prompt with its full pass, points on the
+existing object, then the re-propagation its action history asks for):
+
+1. Pass 1 is `prompt` mode, unchanged.
+2. The frames to refine are chosen from pass 1's masks and the keypoints the
+   pose images draw: body and hand keypoints at `pose_data`'s
+   `draw_threshold`, on the canvas (one off it is dropped, not clamped), a
+   hand keypoint only at x and y of 1 px or more (the draw code's rule), and
+   none an enabled Pose Config draw rule (`forearm_limit`, `limb_dedup`,
+   `back_view_face`) leaves out of the images. Pose Config's
+   `min_keypoint_conf` is not read. A frame (after the birth frame, before the
+   last, its mask not empty) is refined when a forearm-and-hand or a lower leg
+   has 3 or more keypoints that lie outside its mask by `pose_point_distance`
+   of the frame's shorter side or more, inside the masks of the frames before
+   and after, near the midpoint of where they were on those two frames (no
+   one-frame jump), with at least 90% of their distal part outside. Head,
+   neck, shoulders and hips never trigger.
+3. Each such frame is refined from its points (in pose order, capped at 16:
+   the first 8 and the last 8) on the interactive decoder with no memory, with
+   Meta's stability fallback, and becomes a conditioning frame. By default the
+   refine decodes from the points alone, as Meta does on the first refine of a
+   frame; `pose_refine_with_mask` (experimental) adds pass 1's raw mask of the
+   frame as the dense prompt.
+4. Pass 1's conditioning frames (the birth and the fired re-anchors) within 16
+   frames of a refined frame are demoted to ordinary frames, and the tracker
+   alone tracks the clip again from the birth: no detection, no re-anchor, no
+   probation. Each frame reads the `max_conditioning_frames` conditioning
+   frames closest to it on both sides, and its memory is encoded from the
+   decoder's raw logits (Meta's re-propagation; `memory_mask` is read in pass
+   1 only).
+
+The result: the frames before the birth and the kept conditioning frames are
+pass 1's, the refined frames the refine, every other frame the second pass.
+On a clip with a refined frame, every frame but those can differ from `prompt`
+mode's, because the second pass tracks the whole clip again. The console line
+names the refined frames with their points, the stability fallback, the
+object score, the demoted and kept conditioning frames and the seconds of
+each pass. `pose_data`'s `draw_head` and stick widths are node widgets, not in
+`pose_data`, so a part a stick width of 0 leaves out still counts as drawn.
 
 ### SAM 3.1 Multiplex Config
 
@@ -174,6 +223,15 @@ What changed, and why:
   `0.50`): easy-sam3's values.
 - `memory_mask` stays `cleaned` (easy-sam3's side; `raw` is Meta's).
 
+The two `[prompt_pose]` fields come last. `pose_point_distance` (0.07 of the
+frame's shorter side, 50 px at 720) is how far outside the mask a drawn limb
+keypoint must lie to become a point: on the test clips every keypoint the pose
+drew on a label, toy, cabinet or floor lay within 46 px of the mask, and the
+one hand the mask lost 68-126 px out. `pose_refine_with_mask` (experimental,
+off) decodes a refined frame from its points plus pass 1's mask of it instead
+of its points alone. `prompt_pose` also reads every `[prompt]` and
+`[prompt, max_objects 1]` field: its first pass is `prompt` mode.
+
 The six re-anchor and memory fields (`clear_on_anchor` to `memory_selection`)
 are read at `max_objects` 1 only. With `max_objects` above 1 the shared
 defaults apply (input range, pointer token, `memory_gap`, the thresholds) with
@@ -204,6 +262,9 @@ and its propagated ones at 0.
   hand-placed one is dropped.
 - In `box_keypoint` mode, connected `bboxes` replace `pose_data`'s person
   boxes and count as detections on every frame.
+- `prompt_pose` mode reads `pose_data` and the prompt; `bboxes`,
+  `positive_coords`, `negative_coords`, `max_objects` and `object_index` are
+  ignored with the console line.
 - `face_bboxes` on Face Crop are cut as given; `pose_data`'s face keypoints,
   `face_padding` and `face_box_smoothing` are then not used.
 - A keypoint at exactly `min_keypoint_conf` counts as found.
@@ -328,7 +389,9 @@ the chained nodes produce with the same settings.
 - **WanAnimate Preprocess** = Pose Detection -> SAM 3.1 Multiplex Video Track -> Face
   Crop. Widgets: the drawing widgets, `face_padding`, `mode`,
   `prompt`; optional `pose_config`, `sam3_config`. In `box_keypoint` mode the
-  mask is prompted from the pose. Outputs: `pose_images`, `face_images`,
+  mask is prompted from the pose; in `prompt_pose` mode the pose's drawn
+  keypoints add points where the track lost a limb for one frame (`pose_data`
+  is passed whenever the mode is not `prompt`). Outputs: `pose_images`, `face_images`,
   `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
   report. Inputs `mask`, `pose_data`, both switches and all thresholds;

@@ -3,7 +3,7 @@ alone, without pose_data), the flags they raise, and check_mask."""
 import numpy as np
 
 from ...libs import log
-from ...libs.keypoints import BODY_NAMES, LIMBS
+from ...libs.keypoints import BODY_NAMES, LIMBS, in_frame
 from ...libs.pose_data import Detection, PoseData, PoseMeta
 from .common import (BOX_MARGIN, BOX_WINDOW, CARRIES, FINAL_BLOCK, FINAL_GROW, FINAL_ON_BODY, FINAL_PAD, FRAGMENT_FRACTION, HANDS,
                      HEAD_OUT_KEYPOINT, HEAD_OUT_SIDES, LEAK_REACH, LEAK_WINDOW, LIMB_ENDS,
@@ -11,7 +11,7 @@ from .common import (BOX_MARGIN, BOX_WINDOW, CARRIES, FINAL_BLOCK, FINAL_GROW, F
                      LOSS_RUN, LOSS_WINDOW, MASK_CHECKS,
                      POSE_FREE_MASK_CHECKS, RELIABLE_CONF, RELIABLE_KEYPOINTS,
                      SKELETON_REACH, SPECK_FRACTION, WHOLE_BODY, MaskRow, _body, _box_iou_prev, _flag, _frame_pose,
-                     _hand, _in_frame, _keypoint_rows, _pose_inputs, _thresholds, body_scale, box_sides,
+                     _hand, _keypoint_rows, _pose_inputs, _thresholds, body_scale, box_sides,
                      out_of_shot_limbs)
 from .config import LIMB_SPIKE, MaskGuardConfig, _config
 from .pose import limb_spikes
@@ -60,7 +60,7 @@ def _whole_body(meta: PoseMeta, W, H, draw_threshold):
     """Every drawn keypoint of the person inside the frame - body, hands and face - in pixels."""
     parts = [_keypoint_rows(meta, key) for key in WHOLE_BODY if key in meta]
     kps = np.concatenate(parts) * np.array([W, H, 1.0])
-    return kps[(kps[:, 2] >= draw_threshold) & _in_frame(kps, W, H)]
+    return kps[(kps[:, 2] >= draw_threshold) & in_frame(kps, W, H)]
 
 
 def box_envelopes(detections: list[Detection], N, W, H):

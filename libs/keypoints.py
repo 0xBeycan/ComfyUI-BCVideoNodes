@@ -1,6 +1,6 @@
 """The AAPose 20-point body layout the pose data is drawn in: the keypoint names, the limbs the
-pose images are drawn from, and the index names of the keypoints the pipelines address by
-position."""
+pose images are drawn from, the index names of the keypoints the pipelines address by
+position, and which keypoints lie on the frame (in_frame)."""
 
 BODY_NAMES = ["nose", "neck", "r_shoulder", "r_elbow", "r_wrist", "l_shoulder", "l_elbow", "l_wrist",
               "r_hip", "r_knee", "r_ankle", "l_hip", "l_knee", "l_ankle", "r_eye", "l_eye", "r_ear", "l_ear",
@@ -18,8 +18,15 @@ HEAD_LIMBS = {(1, 0), (0, 14), (14, 16), (0, 15), (15, 17)}
 NOSE, NECK, R_SHOULDER, L_SHOULDER, R_HIP, L_HIP = 0, 1, 2, 5, 8, 11
 R_ELBOW, L_ELBOW = 3, 6
 R_WRIST, L_WRIST = 4, 7
+R_KNEE, L_KNEE = 9, 12
 R_EYE, L_EYE = 14, 15
 # The body layout carries one foot point per side, the midpoint of that side's two toe
 # keypoints; pose2d_utils.split_kp2ds_for_aa averages wholebody 17/18 into the left one and
 # 20/21 into the right one, and drops the heels, so these are the only feet there are.
 R_ANKLE, L_ANKLE, R_FOOT, L_FOOT = 10, 13, 19, 18
+
+
+def in_frame(xy, W, H):
+    """[K] bool: which of the keypoints `xy` ([K, 2 or more], pixel x and y first) lie on a W x H
+    frame, 0 <= x < W and 0 <= y < H. One off it is not seen: it is dropped, not clamped."""
+    return (xy[:, 0] >= 0) & (xy[:, 0] < W) & (xy[:, 1] >= 0) & (xy[:, 1] < H)

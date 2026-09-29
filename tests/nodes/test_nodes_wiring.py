@@ -239,7 +239,7 @@ def test_the_preprocess_wrapper_is_the_three_nodes_chained(fake_models, mode):
 
     pose_images, pose_data, bboxes, key_points = nodes.BCVPoseDetection().detect(images, pose_config=config, **widgets)
     (mask,) = nodes.BCVSAM3VideoTrack().track(images, mode, sam3.PROMPT, 1, -1,
-                                             pose_data=pose_data if mode == sam3.MODE_BOX_KEYPOINT else None)
+                                             pose_data=pose_data if mode != sam3.MODE_PROMPT else None)
     face_images, face_bboxes = nodes.BCVFaceCrop().crop(images, pose_data, 8)
     chained = (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes)
 
@@ -247,4 +247,4 @@ def test_the_preprocess_wrapper_is_the_three_nodes_chained(fake_models, mode):
     for name, a, b in zip(nodes.BCVWanAnimatePreprocess.RETURN_NAMES, wrapped, chained):
         assert same(a, b), name
     call = fake_models.calls[0]
-    assert call["mode"] == mode and call["pose_data"] == (mode == sam3.MODE_BOX_KEYPOINT)
+    assert call["mode"] == mode and call["pose_data"] == (mode != sam3.MODE_PROMPT)

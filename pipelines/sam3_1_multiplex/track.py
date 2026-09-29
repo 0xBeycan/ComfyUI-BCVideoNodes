@@ -1,4 +1,4 @@
-"""Person segmentation with SAM 3.1: one entry point, `track`, and two prompting modes."""
+"""Person segmentation with SAM 3.1: one entry point, `track`, and three prompting modes."""
 import json
 from typing import Optional
 
@@ -11,18 +11,22 @@ from comfy.ldm.sam3.tracker import MultiplexState, _prep_frame, fill_holes_in_ma
 
 from ...libs import log
 from ...libs.bbox import point_in_frame, supplied_boxes
+from ...libs.draw_rules import hidden_by_rules
 from ...libs.pose_data import PoseData
 # re-exported: the node loads the model through this module
 from ...models.sam3_1_multiplex.loader import load_sam3_1_multiplex
 from .config import TRACKER_FIELDS, SAM3_1MultiplexConfig, changed_fields
 from .pose import segment_by_pose
 from .prompt import PROMPT, segment_by_prompt, segment_by_prompt_multi
+from .prompt_pose import segment_by_prompt_pose
 
 
 MODE_PROMPT = "prompt"
 MODE_BOX_KEYPOINT = "box_keypoint"
-# prompt-only produces the better mask; box+keypoint is the v1 behaviour and the fallback
-MODES = (MODE_PROMPT, MODE_BOX_KEYPOINT)
+MODE_PROMPT_POSE = "prompt_pose"
+# prompt-only produces the better mask; box+keypoint is the v1 behaviour and the fallback;
+# prompt_pose is prompt mode with Meta's point refine where the pose shows a lost limb
+MODES = (MODE_PROMPT, MODE_BOX_KEYPOINT, MODE_PROMPT_POSE)
 
 
 # --- inputs --------------------------------------------------------------------------------
@@ -88,6 +92,30 @@ def pose_inputs(pose_data: PoseData, N):
     return bboxes, metas, pose_keypoint_conf(pose_data)
 
 
+# The Pose Config draw rules pose_data carries in its pose_config (libs/draw_rules.py).
+DRAW_RULE_FIELDS = ("forearm_limit", "limb_dedup", "back_view_face")
+
+
+def prompt_pose_inputs(pose_data: PoseData, N):
+    """(pose_metas, draw_threshold, hidden) from pose_data the way segment_by_prompt_pose reads
+    them: the `pose_metas_original` dicts, the threshold the pose images were drawn at, and per
+    frame the parts the pose_config's draw rules leave out of them (draw_rules.hidden_by_rules), so
+    the mask gets points only where the pose images draw them."""
+    if not isinstance(pose_data, dict) or "pose_metas_original" not in pose_data or "draw_threshold" not in pose_data:
+        found = sorted(pose_data) if isinstance(pose_data, dict) else type(pose_data).__name__
+        raise ValueError(f"prompt_pose mode needs pose_data with 'pose_metas_original' and 'draw_threshold', found "
+                         f"{found}; it must come from Pose Detection or WanAnimate Preprocess")
+    metas, threshold = pose_data["pose_metas_original"], pose_data["draw_threshold"]
+    if len(metas) != N:
+        raise ValueError(f"pose_data covers {len(metas)} pose frames, the images are {N} frames")
+    pose_config = pose_data.get("pose_config")
+    if not isinstance(pose_config, dict) or any(name not in pose_config for name in DRAW_RULE_FIELDS):
+        raise ValueError(f"pose_data has no pose_config with the draw rules {', '.join(DRAW_RULE_FIELDS)}; it must "
+                         f"come from Pose Detection or WanAnimate Preprocess")
+    *_, hidden = hidden_by_rules(metas, threshold, **{name: pose_config[name] for name in DRAW_RULE_FIELDS})
+    return metas, threshold, hidden
+
+
 # --- entry point ---------------------------------------------------------------------------
 
 # Set to a callable to receive every run's low-res logits (see `track`); the test dump sets it,
@@ -111,6 +139,11 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
       frame 0's prompt; a derived point of the opposite label near one is dropped (see
       HAND_POINT_CLEARANCE). `prompt`, `max_objects`, `object_index` and the [prompt] config
       fields are not used: one person, the one the pose describes.
+    - "prompt_pose": prompt mode's track of one person (the [prompt] and [prompt, max_objects 1]
+      fields), and where pose_data (required) shows the track lost a whole forearm-and-hand or
+      lower leg for one frame, that limb's drawn keypoints as positive points on that frame, then
+      the clip tracked again (segment_by_prompt_pose; its [prompt_pose] fields). `bboxes`, the
+      coords, `max_objects` and `object_index` are not used.
 
     `max_objects` is how many tracks may be born and kept. 1 is the single-person policy
     (`segment_by_prompt`); above 1, prompt mode only, `segment_by_prompt_multi` runs instead and
@@ -125,8 +158,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     `logits_sink` (or, when it is None, the module's LOGITS_SINK) is called once when the run is
     done, with `(logits, info)`: `logits` is a list of N [h, w] float16 CPU tensors - the low-res
     mask logits each output frame was cut from, None for a frame with no output - and `info` a
-    dict {"mode", "cut", "size", "threshold", "mask_threshold"}, in prompt mode also "raw" and
-    "fill_hole_area". "cut" says per frame how its mask came from its logits, so a threshold can
+    dict {"mode", "cut", "size", "threshold", "mask_threshold"}, in prompt and prompt_pose modes also
+    "raw" and "fill_hole_area". "cut" says per frame how its mask came from its logits, so a threshold can
     be swept offline:
     - "prompt": bilinear to `size` (H, W), then > threshold; where "raw" is true for the frame,
       the logits are the ones before the output's speck and pinhole cleaning, cleaned by
@@ -140,7 +173,11 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     one on "prompted" frames. In prompt mode with obj_ptr_token best_iou, "mask_index" is the mask
     the propagation decoder selected on each frame, the one its object pointer was built from
     (None on the birth frame and on frames without output). In prompt mode "anchors" lists every
-    re-anchor slot, fired or not, as prompt.AnchorLog records. Not collected with max_objects above 1."""
+    re-anchor slot, fired or not, as prompt.AnchorLog records. Not collected with max_objects above 1.
+    In prompt_pose mode the record is its first pass's, prompt mode's, with every frame the mode
+    refined or tracked again replaced: a "prompt" frame whose logits are the ones before the
+    cleaning ("raw" true), its "mask_index" the second pass's (None on a refined frame); "anchors"
+    are the first pass's slots."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, found {mode!r}")
     if not isinstance(max_objects, int) or max_objects < 1:
@@ -167,7 +204,7 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
         if mode == MODE_PROMPT:
             unused = [n for n, v in (("pose_data", pose_data), ("bboxes", bboxes), ("positive_coords", positive_coords),
                                      ("negative_coords", negative_coords)) if v is not None]
-            unused += [f"sam3_config.{n}" for n in changed_fields(config, "[box_keypoint]")]
+            unused += [f"sam3_config.{n}" for tag in ("[box_keypoint]", "[prompt_pose]") for n in changed_fields(config, tag)]
             if max_objects == 1:
                 unused += [f"sam3_config.{n} (max_objects 1)" for n in changed_fields(config, "[prompt, max_objects > 1]")]
             else:
@@ -183,6 +220,23 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
             else:
                 mask = segment_by_prompt_multi(model, clip, images, prompt, config, max_objects,
                                                object_index, result=result)
+        elif mode == MODE_PROMPT_POSE:
+            if pose_data is None:
+                raise ValueError("prompt_pose mode adds points from the pose; connect pose_data")
+            pose_metas, draw_threshold, hidden = prompt_pose_inputs(pose_data, N)
+            unused = [n for n, v in (("bboxes", bboxes), ("positive_coords", positive_coords),
+                                     ("negative_coords", negative_coords)) if v is not None]
+            unused += [f"{n} {v!r}" for n, v, default in (("max_objects", max_objects, 1), ("object_index", object_index, -1))
+                       if v != default]
+            unused += [f"sam3_config.{n}" for tag in ("[box_keypoint]", "[prompt, max_objects > 1]")
+                       for n in changed_fields(config, tag)]
+            if unused:
+                log.info(f"prompt_pose mode tracks the one person the prompt finds and adds points from the pose; "
+                         f"{', '.join(unused)} not used")
+            if not prompt or not prompt.strip():
+                raise ValueError("prompt_pose mode needs a text prompt, found an empty one")
+            mask = segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw_threshold, hidden,
+                                          result=result, **dump)
         else:
             if pose_data is None:
                 raise ValueError("box_keypoint mode prompts from the pose; connect pose_data")
@@ -191,7 +245,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
                                                          ("object_index", object_index, -1)) if v != default]
             if bboxes is not None:
                 unused.append("pose_data's person boxes (bboxes replace them)")
-            unused += [f"sam3_config.{n}" for tag in ("[prompt]", "[prompt, max_objects 1]", "[prompt, max_objects > 1]")
+            unused += [f"sam3_config.{n}" for tag in ("[prompt]", "[prompt, max_objects 1]", "[prompt, max_objects > 1]",
+                                                      "[prompt_pose]")
                        for n in changed_fields(config, tag)]
             if not config.temporal:
                 unused += [f"sam3_config.{n} (temporal off)" for n in changed_fields(config, names=TRACKER_FIELDS)]

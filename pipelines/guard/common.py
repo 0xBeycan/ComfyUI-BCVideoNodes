@@ -6,7 +6,7 @@ from typing import Optional, TypedDict
 
 import numpy as np
 
-from ...libs.keypoints import L_HIP, L_SHOULDER, LIMBS, NECK, R_HIP, R_SHOULDER
+from ...libs.keypoints import L_HIP, L_SHOULDER, LIMBS, NECK, R_HIP, R_SHOULDER, in_frame
 from ...libs.pose_data import Detection, PoseData, PoseMeta
 
 
@@ -314,10 +314,6 @@ def _thresholds(pose_data: Optional[PoseData], config):
     return {"draw_threshold": None if pose_data is None else _draw_threshold(pose_data), **asdict(config)}
 
 
-def _in_frame(kps, W, H):
-    return (kps[:, 0] >= 0) & (kps[:, 0] < W) & (kps[:, 1] >= 0) & (kps[:, 1] < H)
-
-
 def box_sides(x1, y1, x2, y2):
     """The width and height of a box, at least one pixel each."""
     return max(x2 - x1, 1.0), max(y2 - y1, 1.0)
@@ -350,7 +346,7 @@ def _frame_pose(meta: PoseMeta, det: Detection, W, H, draw_threshold):
     bw, bh = box_sides(x1, y1, x2, y2)
     diag = float(np.hypot(bw, bh))
     kps, drawn = _body(meta, W, H, draw_threshold)
-    return bw, bh, diag, kps, drawn, drawn & _in_frame(kps, W, H)
+    return bw, bh, diag, kps, drawn, drawn & in_frame(kps, W, H)
 
 
 def body_scale(kps, drawn):

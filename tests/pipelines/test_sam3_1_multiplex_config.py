@@ -70,7 +70,8 @@ def test_config_fields_carry_a_mode_tagged_tooltip_and_a_range():
     for f in dataclasses.fields(sam3.SAM3Config):
         tip = f.metadata["tooltip"]
         tag = tip[:tip.index("]") + 1]
-        assert tag in ("[prompt]", "[prompt, max_objects 1]", "[prompt, max_objects > 1]", "[box_keypoint]"), f.name
+        assert tag in ("[prompt]", "[prompt, max_objects 1]", "[prompt, max_objects > 1]", "[box_keypoint]",
+                       "[prompt_pose]"), f.name
         tags.setdefault(tag, []).append(f.name)
         if isinstance(f.default, str):
             assert f.default in f.metadata["choices"], f.name
@@ -84,6 +85,7 @@ def test_config_fields_carry_a_mode_tagged_tooltip_and_a_range():
                                                  "occlusion_iou", "shrink_keep"]
     assert tags["[prompt, max_objects 1]"] == ["anchor_output", "clear_on_anchor", "anchor_mask", "max_conditioning_frames",
                                                "keep_birth_frame", "anchor_track_score", "memory_selection"]
+    assert tags["[prompt_pose]"] == ["pose_point_distance", "pose_refine_with_mask"]
 
 
 def test_config_ab_switches_default_to_ours_and_reject_other_values():
@@ -112,7 +114,7 @@ def test_config_run_switches_default_to_meta_s_side_and_reject_other_values():
             sam3.SAM3Config(**{name: "meta"})
     # after anchor_output: the widgets of saved workflows keep their positions
     names = [f.name for f in dataclasses.fields(sam3.SAM3Config)]
-    assert names[-10:-6] == ["anchor_output", "input_range", "obj_ptr_token", "memory_mask"]
+    assert names[-12:-8] == ["anchor_output", "input_range", "obj_ptr_token", "memory_mask"]
 
 
 def test_config_anchor_policy_switches_default_to_easy_sam3_s():
@@ -124,5 +126,5 @@ def test_config_anchor_policy_switches_default_to_easy_sam3_s():
         sam3.SAM3Config(anchor_mask="tracker")
     # last: the widgets of saved workflows keep their positions
     names = [f.name for f in dataclasses.fields(sam3.SAM3Config)]
-    assert names[-6:] == ["clear_on_anchor", "anchor_mask", "max_conditioning_frames", "keep_birth_frame",
-                          "anchor_track_score", "memory_selection"]
+    assert names[-8:-2] == ["clear_on_anchor", "anchor_mask", "max_conditioning_frames", "keep_birth_frame",
+                            "anchor_track_score", "memory_selection"]

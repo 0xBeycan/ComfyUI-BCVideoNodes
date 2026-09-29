@@ -15,8 +15,7 @@ import torch
 
 from ..libs import log
 from ..libs.bbox import box_corners, point_in_frame, supplied_boxes, whole_frame_box, widen_over_time
-from ..libs.draw_rules import (HIDDEN, RULES, Hidden, back_view_faces, duplicate_hands, hidden_parts, mirrored_arms,
-                                overlong_forearms)
+from ..libs.draw_rules import HIDDEN, RULES, Hidden, hidden_by_rules
 from ..libs.pose_data import PoseData
 from ..libs.video import as_numpy
 from ..models.common.pose_input import pose_crop
@@ -267,12 +266,8 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
     pose_images = []
     result = {}
     with log.step(f"drawing {len(pose_metas)} pose images", result):
-        originals = pose_data["pose_metas_original"]
-        duplicates = duplicate_hands(originals, draw_threshold) if limb_dedup else {}
-        mirrored = mirrored_arms(originals, draw_threshold) if limb_dedup else {}
-        overlong = overlong_forearms(originals, draw_threshold, forearm_limit)
-        back_view = back_view_faces(originals, draw_threshold) if back_view_face else []
-        hidden = hidden_parts(len(pose_metas), duplicates, mirrored, overlong, back_view)
+        duplicates, mirrored, overlong, back_view, hidden = hidden_by_rules(
+            pose_data["pose_metas_original"], draw_threshold, forearm_limit, limb_dedup, back_view_face)
         for i, (meta, parts) in enumerate(tqdm(zip(pose_metas, hidden), total=len(pose_metas),
                                                desc="Drawing pose images")):
             canvas = np.zeros((meta.height, meta.width, 3), dtype=np.uint8)

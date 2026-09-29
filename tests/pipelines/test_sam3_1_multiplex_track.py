@@ -96,8 +96,8 @@ def pose_data_2():
     kps = kps20()
     kps[0] = [0.5, 0.2, 0.9]
     return {"pose_metas_original": [{"keypoints_body": kps}] * 2, "pose_metas": [],
-            "pose_config": {"min_keypoint_conf": 0.3},
-            "detections": [{"bbox": [1.0, 1.0, 7.0, 7.0], "score": 0.9, "persons": 1}] * 2}
+            "pose_config": {"min_keypoint_conf": 0.3, "forearm_limit": 0.0, "limb_dedup": False, "back_view_face": False},
+            "detections": [{"bbox": [1.0, 1.0, 7.0, 7.0], "score": 0.9, "persons": 1}] * 2, "draw_threshold": 0.5}
 
 
 @pytest.fixture
@@ -113,8 +113,13 @@ def fake_segment(monkeypatch):
         calls.append(("prompt", prompt))
         return torch.zeros(images.shape[:3])
 
+    def by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw_threshold, hidden, result=None):
+        calls.append(("prompt_pose", prompt))
+        return torch.zeros(images.shape[:3])
+
     monkeypatch.setattr(sam3, "segment_by_pose", by_pose)
     monkeypatch.setattr(sam3, "segment_by_prompt", by_prompt)
+    monkeypatch.setattr(sam3, "segment_by_prompt_pose", by_prompt_pose)
     return calls
 
 
@@ -161,7 +166,7 @@ def test_prompt_mode_ignores_the_box_keypoint_inputs_in_one_line(fake_segment, c
 
 @pytest.mark.parametrize("mode", list(sam3.MODES))
 def test_the_default_wiring_ignores_nothing(fake_segment, caplog, mode):
-    pose_data = pose_data_2() if mode == sam3.MODE_BOX_KEYPOINT else None
+    pose_data = pose_data_2() if mode != sam3.MODE_PROMPT else None
     with caplog.at_level("INFO"):
         sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=pose_data, mode=mode)
     assert not_used_lines(caplog) == []
