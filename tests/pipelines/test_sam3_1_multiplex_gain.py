@@ -20,7 +20,8 @@ cli_args.args.disable_xformers = True
 from sam3_1_multiplex_fakes import sam3  # noqa: E402
 from test_sam3_1_multiplex_ab import (H, N, W, FakeTracker, PointerTracker, box, config, reproduce,  # noqa: E402,F401
                                       rig)
-from test_sam3_1_multiplex_prompt_pose import pp_rig, prompt_run, right_hand, tracked  # noqa: E402,F401
+from test_sam3_1_multiplex_prompt_pose import (meta, pp_rig, prompt_run, refined_box,  # noqa: E402,F401
+                                              right_hand, shown, tracked)
 
 
 # --- the rule on hand-written masks -------------------------------------------------------------
@@ -236,3 +237,25 @@ def test_prompt_pose_starts_its_second_pass_at_the_gain(pp_rig):
     assert torch.equal(out.masks[:18], out.prompt[:18])
     assert torch.equal(out.prompt[:18], shows(arm=True).expand(18, H, W))
     assert out.result["kept from the first pass"] == 18 and "demoted" not in out.result
+
+
+# three right-hand keypoints below the still person, 5 px under the mask with the arm (frame rows 7-24)
+HAND_BELOW = {right_hand(j): (12.5 + 2 * j, 29.5) for j in range(3)}
+
+
+@pytest.mark.parametrize("refined", [18, 30])
+def test_the_rule_can_refine_the_gain_frame_from_its_raw_logits(pp_rig, refined):
+    """Born on 2, the gain on 18, the hand drawn below the person on one frame only: prompt_pose's own
+    rule refines that frame. On 18, the capture's birth and no conditioning frame, the refine gets its
+    raw logits as it does on 30: pass 1 propagated both, the box and the arm. The second pass tracks
+    from 18, and frames 0-17 keep pass 1's masks, the backward pass's from the gain."""
+    metas = [meta(HAND_BELOW if f == refined else {}, W, H) for f in range(N)]
+    out = pp_rig(config(), metas=metas, make=lambda: RegainsTheArm(18), detections=still_person(2))
+    (refine,) = out.refines
+    assert refine["frame"] == refined and refine["previous"].device.type == "cpu"
+    assert torch.equal(refine["previous"], person(arm=True))
+    assert list(tracked(out.second)) == [f for f in range(18, N) if f != refined]
+    assert torch.equal(out.masks[:18], out.prompt[:18])
+    assert torch.equal(out.prompt[:18], shows(arm=True).expand(18, H, W))
+    assert torch.equal(out.masks[refined], shown(refined_box(refined), config()))
+    assert out.result["refined frames"] == 1 and out.result["points"] == 3 and "demoted" not in out.result

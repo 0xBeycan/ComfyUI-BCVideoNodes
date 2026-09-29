@@ -317,7 +317,7 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
             points = [tuple(p) for p in (xy[g, keypoints] * SAM3_1_MULTIPLEX_SIZE).tolist()]
             output, info = refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision_pos,
                                               feat_sizes, points, mux,
-                                              capture["cond"][g]["pred_masks"] if g == birth else capture["raw"][g])
+                                              capture["raw"][g] if g in capture["raw"] else capture["cond"][g]["pred_masks"])
             refined[g] = output
             put(g, clean_channel_logits(output["pred_masks"], c.fill_hole_area), output["pred_masks"])
             counts["refined frames"] += 1
