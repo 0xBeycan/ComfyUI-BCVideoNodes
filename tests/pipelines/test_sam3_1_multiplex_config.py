@@ -85,7 +85,7 @@ def test_config_fields_carry_a_mode_tagged_tooltip_and_a_range():
                                                  "occlusion_iou", "shrink_keep"]
     assert tags["[prompt, max_objects 1]"] == ["anchor_output", "clear_on_anchor", "anchor_mask", "max_conditioning_frames",
                                                "keep_birth_frame", "anchor_track_score", "memory_selection"]
-    assert tags["[prompt_pose]"] == ["pose_point_distance", "pose_refine_with_mask"]
+    assert tags["[prompt_pose]"] == ["pose_point_distance"]
 
 
 def test_config_ab_switches_default_to_ours_and_reject_other_values():
@@ -114,7 +114,7 @@ def test_config_run_switches_default_to_meta_s_side_and_reject_other_values():
             sam3.SAM3Config(**{name: "meta"})
     # after anchor_output: the widgets of saved workflows keep their positions
     names = [f.name for f in dataclasses.fields(sam3.SAM3Config)]
-    assert names[-12:-8] == ["anchor_output", "input_range", "obj_ptr_token", "memory_mask"]
+    assert names[-11:-7] == ["anchor_output", "input_range", "obj_ptr_token", "memory_mask"]
 
 
 def test_config_anchor_policy_switches_default_to_easy_sam3_s():
@@ -126,5 +126,5 @@ def test_config_anchor_policy_switches_default_to_easy_sam3_s():
         sam3.SAM3Config(anchor_mask="tracker")
     # last: the widgets of saved workflows keep their positions
     names = [f.name for f in dataclasses.fields(sam3.SAM3Config)]
-    assert names[-8:-2] == ["clear_on_anchor", "anchor_mask", "max_conditioning_frames", "keep_birth_frame",
+    assert names[-7:-1] == ["clear_on_anchor", "anchor_mask", "max_conditioning_frames", "keep_birth_frame",
                             "anchor_track_score", "memory_selection"]

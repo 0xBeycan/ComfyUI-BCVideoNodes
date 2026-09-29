@@ -211,7 +211,7 @@ PREVIOUS_LOGITS_CLAMP = 32.0
 
 
 def refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux,
-                       previous=None):
+                       previous):
     """A conditioning output for one frame from positive `points` on the tracked object: Meta's
     point refine, as its video predictor runs it after the text pass (add_new_points on the
     existing object, use_prev_mem_frame off), on core's primitives. Returns (output, info).
@@ -222,7 +222,7 @@ def refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision
     backbone_frame's, `vision_feats` / `vision_pos` / `feat_sizes` its propagation features.
     `points` are (x, y) in the tracker's 1008x1008 space, in the order to send them; past
     MAX_REFINE_POINTS the first half and the last half are kept. `previous`, the frame's earlier
-    [1, 1, 288, 288] mask logits or None, is the dense prompt, clamped to +/-PREVIOUS_LOGITS_CLAMP.
+    [1, 1, 288, 288] mask logits, is the dense prompt, clamped to +/-PREVIOUS_LOGITS_CLAMP.
     One point decodes three masks and keeps the best-IoU one; two or more decode token 0's single
     mask, and where its stability is under STABILITY_THRESHOLD, the best-IoU of the three instead,
     the object pointer staying token 0's (core's decoder has no such fallback, so it takes a second
@@ -251,7 +251,7 @@ def refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision
     device = pix.device
     point_inputs = {"point_coords": torch.tensor([points], device=device, dtype=torch.float32),
                     "point_labels": torch.ones(1, len(points), dtype=torch.int32, device=device)}
-    mask_inputs = None if previous is None else previous.to(device).clamp(-PREVIOUS_LOGITS_CLAMP, PREVIOUS_LOGITS_CLAMP)
+    mask_inputs = previous.to(device).clamp(-PREVIOUS_LOGITS_CLAMP, PREVIOUS_LOGITS_CLAMP)
 
     def heads(multimask):
         return tracker._forward_sam_heads(backbone_features=pix, point_inputs=point_inputs, mask_inputs=mask_inputs,

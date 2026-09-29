@@ -143,11 +143,12 @@ connected, so the behaviour can be switched without rewiring:
 - `prompt_pose`: `prompt` mode's track of one person, and where the pose
   (`pose_data`, required) shows the track lost a whole forearm-and-hand or
   lower leg for one frame, far outside the mask, that limb's drawn keypoints
-  go onto that frame as positive points: Meta's point refine on the same
-  object, followed by Meta's tracker-only re-propagation of the clip. A clip
-  where no frame needs points gets `prompt` mode's mask exactly. Nothing is
-  removed on pose grounds: there are no negative points. Limits: as `prompt`;
-  only such one-frame whole-limb drops are recovered.
+  go onto that frame as positive points together with the mask the tracker
+  had on that frame: Meta's point refine on the same object, followed by
+  Meta's tracker-only re-propagation of the clip. A clip where no frame needs
+  points gets `prompt` mode's mask exactly. Nothing is removed on pose
+  grounds: there are no negative points. Limits: as `prompt`; only such
+  one-frame whole-limb drops are recovered.
 
 How `prompt_pose` works, in Meta's order (SAM 3's video predictor, as
 easy-sam3 vendors it: the text prompt with its full pass, points on the
@@ -168,11 +169,14 @@ existing object, then the re-propagation its action history asks for):
    one-frame jump), with at least 90% of their distal part outside. Head,
    neck, shoulders and hips never trigger.
 3. Each such frame is refined from its points (in pose order, capped at 16:
-   the first 8 and the last 8) on the interactive decoder with no memory, with
-   Meta's stability fallback, and becomes a conditioning frame. By default the
-   refine decodes from the points alone, as Meta does on the first refine of a
-   frame; `pose_refine_with_mask` (experimental) adds pass 1's raw mask of the
-   frame as the dense prompt.
+   the first 8 and the last 8) together with the mask the tracker had on that
+   frame (pass 1's raw decoder logits, clamped to +/-32, as the dense prompt),
+   on the interactive decoder with no memory, with Meta's stability fallback,
+   and becomes a conditioning frame. The points without the mask, as Meta
+   decodes the first refine of a frame, kept the forearms and hands but
+   dropped the head, torso and dress on the test clips' refined frame, and the
+   re-tracked frames after it lost a forearm and hand; with the mask the
+   refine adds the lost hand, keeps the body and adds no background.
 4. Pass 1's conditioning frames (the birth and the fired re-anchors) within 16
    frames of a refined frame are demoted to ordinary frames, and the tracker
    alone tracks the clip again from the birth: no detection, no re-anchor, no
@@ -223,14 +227,13 @@ What changed, and why:
   `0.50`): easy-sam3's values.
 - `memory_mask` stays `cleaned` (easy-sam3's side; `raw` is Meta's).
 
-The two `[prompt_pose]` fields come last. `pose_point_distance` (0.07 of the
+The `[prompt_pose]` field comes last. `pose_point_distance` (0.07 of the
 frame's shorter side, 50 px at 720) is how far outside the mask a drawn limb
 keypoint must lie to become a point: on the test clips every keypoint the pose
 drew on a label, toy, cabinet or floor lay within 46 px of the mask, and the
-one hand the mask lost 68-126 px out. `pose_refine_with_mask` (experimental,
-off) decodes a refined frame from its points plus pass 1's mask of it instead
-of its points alone. `prompt_pose` also reads every `[prompt]` and
-`[prompt, max_objects 1]` field: its first pass is `prompt` mode.
+one hand the mask lost 68-126 px out. `prompt_pose` also reads every
+`[prompt]` and `[prompt, max_objects 1]` field: its first pass is `prompt`
+mode.
 
 The six re-anchor and memory fields (`clear_on_anchor` to `memory_selection`)
 are read at `max_objects` 1 only. With `max_objects` above 1 the shared

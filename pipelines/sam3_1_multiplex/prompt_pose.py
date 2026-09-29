@@ -9,11 +9,12 @@ on the existing object, then the tracker-only re-propagation its action history 
    images draw (`refine_points`), once pass 1 is done: the rule reads the frame after.
 3. No frame chosen: pass 1's masks are the result, prompt mode's bit for bit. Meta does not
    propagate again without a new prompt.
-4. Otherwise each chosen frame is refined (Meta's point refine, `refine_with_points`) and becomes a
-   conditioning frame; pass 1's conditioning frames (the birth and the fired anchors) within
-   DEMOTION_WINDOW of a refined frame are demoted to ordinary frames; and the tracker alone tracks
-   the clip again from the birth: no detection, no re-anchor, no probation, every frame but the
-   conditioning ones re-decoded, each reading the conditioning frames closest to it on both sides.
+4. Otherwise each chosen frame is refined (Meta's point refine, `refine_with_points`, with pass 1's
+   raw mask logits of the frame as the dense prompt) and becomes a conditioning frame; pass 1's
+   conditioning frames (the birth and the fired anchors) within DEMOTION_WINDOW of a refined frame
+   are demoted to ordinary frames; and the tracker alone tracks the clip again from the birth: no
+   detection, no re-anchor, no probation, every frame but the conditioning ones re-decoded, each
+   reading the conditioning frames closest to it on both sides.
 
 The result: pass 1's backward fill before the birth, pass 1's mask on the kept conditioning frames,
 the refine on the refined frames and the second pass on every other frame. Nothing is removed on
@@ -243,17 +244,17 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     frame keeps pass 1's entry.
 
     Pass 1 reads every [prompt] and [prompt, max_objects 1] field. A refine decodes from its
-    points alone, or with `pose_refine_with_mask` from its points and pass 1's raw logits of the
-    frame. The second pass reads input_range, fill_hole_area, obj_ptr_token, memory_selection and
-    max_conditioning_frames, and encodes its frames' memory from the decoder's raw logits whatever
-    memory_mask says, as Meta's re-propagation does."""
+    points and pass 1's raw logits of the frame. The second pass reads input_range,
+    fill_hole_area, obj_ptr_token, memory_selection and max_conditioning_frames, and encodes its
+    frames' memory from the decoder's raw logits whatever memory_mask says, as Meta's
+    re-propagation does."""
     from comfy import model_management as mm
     from comfy.utils import ProgressBar
     c = config
     N, H, W, _ = images.shape
     xy, drawn = drawn_keypoints(pose_metas, draw_threshold, hidden, H, W)
     device = mm.get_torch_device()
-    capture: PromptCapture = {"raw": {} if c.pose_refine_with_mask else None}
+    capture: PromptCapture = {"raw": {}}
     counts: PromptPoseCounts = {"refined frames": 0, "points": 0, "stability fallbacks": 0, "demoted": 0,
                                 "re-tracked": 0}
 
@@ -285,7 +286,9 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
             if "mask_index" in logits:
                 logits["mask_index"][f] = index
 
-    # the refines: one round, on pass 1's frames
+    # the refines: one round, on pass 1's frames, each from its points and pass 1's raw logits of the
+    # frame. From the points without that mask (Meta's first refine of a frame) the test clips'
+    # refined frame kept the forearms and hands but lost the head, torso and dress.
     refined = {}
     start = _clock(device)
     with torch.inference_mode():
@@ -293,9 +296,8 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
             frame, vision_feats, vision_pos, feat_sizes, _, trunk_out = backbone_frame(
                 tracker, backbone_fn, frames, g, device, dtype, size, signed)
             points = [tuple(p) for p in (xy[g, keypoints] * SAM3_1_MULTIPLEX_SIZE).tolist()]
-            previous = None if capture["raw"] is None else capture["raw"][g]
             output, info = refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision_pos,
-                                              feat_sizes, points, mux, previous)
+                                              feat_sizes, points, mux, capture["raw"][g])
             refined[g] = output
             put(g, clean_channel_logits(output["pred_masks"], c.fill_hole_area), output["pred_masks"])
             counts["refined frames"] += 1
@@ -305,8 +307,7 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
             stable = "-" if info["stability"] is None else f"{info['stability']:.3f}"
             limbs = [name for name, limb in LIMBS.items() if set(limb) & set(keypoints)]
             log.info(f"prompt_pose: frame {g} refined from {sent if sent == len(points) else f'{sent} of {len(points)}'} "
-                     f"point(s) on the {' and '.join(limbs)}, "
-                     f"{'with the first pass mask' if previous is not None else 'from the points alone'}; object score "
+                     f"point(s) on the {' and '.join(limbs)}, with the first pass mask; object score "
                      f"{float(output['object_score_logits'].float().flatten()[0]):.2f}, token-0 stability {stable}"
                      f"{', the best-IoU mask taken' if info['fallback'] else ''}")
     refines = _clock(device) - start

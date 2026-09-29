@@ -19,8 +19,8 @@ cli_args = pytest.importorskip("comfy.cli_args")
 cli_args.args.disable_xformers = True
 
 from sam3_1_multiplex_fakes import sam3  # noqa: E402
-from test_sam3_1_multiplex_ab import (PROBATION, DefaultsTracker, FakeModel, FakeTracker, box,  # noqa: E402,F401
-                                      config, pointers, position, range_prep, reproduce, rig)
+from test_sam3_1_multiplex_ab import (PROBATION, SPECK, DefaultsTracker, FakeModel, FakeTracker,  # noqa: E402,F401
+                                      box, config, pointers, position, range_prep, reproduce, rig)
 from test_sam3_1_multiplex_ab import H as RIG_H  # noqa: E402
 from test_sam3_1_multiplex_ab import N as RIG_N  # noqa: E402
 from test_sam3_1_multiplex_ab import W as RIG_W  # noqa: E402
@@ -305,7 +305,7 @@ def prompt_run(rig, monkeypatch, cfg, make=FakeTracker, capture=None, logits=Non
 def test_the_capture_changes_nothing_segment_by_prompt_does(rig, monkeypatch):
     cfg = config()
     base, base_log, base_result = rig(cfg, ring=2, speck=True)
-    for capture, dump in (({"raw": {}}, None), ({"raw": None}, None), ({"raw": {}}, {}), (None, {})):
+    for capture, dump in (({"raw": {}}, None), ({"raw": {}}, {}), (None, {})):
         masks, log, result = prompt_run(rig, monkeypatch, cfg, lambda: FakeTracker(ring=2, speck=True), capture, dump)
         assert torch.equal(masks, base) and log == base_log and result == base_result
 
@@ -321,9 +321,6 @@ def test_the_capture_holds_the_track_s_birth_its_conditioning_frames_as_created_
     assert sorted(capture["raw"]) == list(range(3, RIG_N))     # every propagated frame, anchors included
     for f, raw in capture["raw"].items():
         assert raw.device.type == "cpu" and dump["raw"][f] and torch.equal(raw[0, 0].to(torch.float16), dump["logits"][f])
-    capture = {"raw": None}
-    prompt_run(rig, monkeypatch, cfg, capture=capture)
-    assert capture["raw"] is None and capture["birth"] == 2
 
 
 def test_a_false_start_resets_the_capture(rig, monkeypatch):
@@ -369,8 +366,7 @@ def pp_rig(rig, monkeypatch):
         monkeypatch.setattr(sam3, "detect_person", lambda *a: out.detected.append(a[2]) or detect(*a))
         out.refines = []
 
-        def refine(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux,
-                   previous=None):
+        def refine(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux, previous):
             real = vision_feats[0]
             out.refines.append({"frame": real, "points": points, "previous": previous, "log": len(tracker.log)})
             logits_ = refined_box(real)
@@ -429,7 +425,7 @@ def test_the_second_pass_tracks_again_from_the_birth_around_the_kept_and_refined
     cfg = sam3.SAM3Config() if defaults else config()
     rig_kwargs = at_defaults(speck=True, best={20: 2}) if defaults else dict(speck=True)
     out = pp_rig(cfg, chosen={36: [right_hand(0)]}, **rig_kwargs)
-    assert [r["frame"] for r in out.refines] == [36] and out.refines[0]["previous"] is None
+    assert [r["frame"] for r in out.refines] == [36]
     retracked = [f for f in range(3, RIG_N) if f not in (16, 36)]
     reads = tracked(out.second)
     assert list(reads) == retracked
@@ -467,15 +463,23 @@ def test_refined_frames_stay_conditioning_frames_whatever_their_distance(pp_rig)
     assert out.result["refined frames"] == 2 and out.result["demoted"] == 2   # 16 and 32
 
 
-def test_pose_refine_with_mask_gives_the_refine_the_first_pass_s_raw_logits_of_the_frame(pp_rig, rig):
+@pytest.mark.parametrize("defaults", [False, True])
+def test_every_refine_gets_the_first_pass_s_raw_logits_of_its_frame(pp_rig, rig, defaults):
+    """No switch: prompt_pose's capture keeps pass 1's raw logits, and each refine is handed those
+    of its own frame, a CPU copy of the decoder's logits before the cleaning (the tracker's 2x2
+    speck still in them). The refine clamps them to +/-32 (tests/models/test_sam3_1_multiplex_refine.py)."""
+    cfg = sam3.SAM3Config() if defaults else config()
+    kwargs = at_defaults(speck=True) if defaults else {}
+    make = kwargs.pop("make", lambda: FakeTracker(speck=True))
     dump = {}
-    rig(config(), logits=dump)
-    out = pp_rig(config(pose_refine_with_mask=True), chosen={36: [right_hand(0)]})
-    previous = out.refines[0]["previous"]
-    assert previous.device.type == "cpu" and dump["raw"][36]
-    assert torch.equal(previous[0, 0].to(torch.float16), dump["logits"][36])
-    out = pp_rig(config(), chosen={36: [right_hand(0)]})
-    assert out.refines[0]["previous"] is None                             # the default: the points alone
+    rig(cfg, logits=dump, tracker=make(), **kwargs)
+    out = pp_rig(cfg, chosen={20: [right_hand(0)], 36: [right_hand(0)]}, make=make, **kwargs)
+    assert [r["frame"] for r in out.refines] == [20, 36]
+    for refine in out.refines:
+        g, previous = refine["frame"], refine["previous"]
+        assert previous.device.type == "cpu" and previous.shape == (1, 1, 16, 16) and dump["raw"][g]
+        assert torch.equal(previous[0, 0].to(torch.float16), dump["logits"][g])
+        assert (previous[0, 0][SPECK] == 5.0).all()                        # before the cleaning
 
 
 class LosesTheArm(FakeTracker):
@@ -578,7 +582,7 @@ def test_prompt_pose_needs_pose_data_and_a_prompt(stub):
 
 def test_prompt_pose_reads_the_pose_and_the_prompt_and_ignores_the_rest_in_one_line(stub, caplog):
     cfg = sam3.SAM3Config(birth_threshold=0.6, clear_on_anchor=True, reseed_interval=5, assoc_iou=0.2,
-                          pose_point_distance=0.1, pose_refine_with_mask=True)
+                          pose_point_distance=0.1)
     data = two_frames(forearm_limit=2.0)
     with caplog.at_level("INFO"):
         sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=data, bboxes=[2, 2, 6, 6],
@@ -588,7 +592,7 @@ def test_prompt_pose_reads_the_pose_and_the_prompt_and_ignores_the_rest_in_one_l
     for name in ("bboxes", "positive_coords", "negative_coords", "max_objects 3", "object_index 2",
                  "sam3_config.reseed_interval", "sam3_config.assoc_iou"):
         assert name in line, name
-    for read in ("birth_threshold", "clear_on_anchor", "pose_point_distance", "pose_refine_with_mask", "prompt 'a dog'"):
+    for read in ("birth_threshold", "clear_on_anchor", "pose_point_distance", "prompt 'a dog'"):
         assert read not in line, read
     ((kind, prompt, metas, threshold, hidden),) = stub
     assert (kind, prompt, threshold) == ("prompt_pose", "a dog", 0.4) and metas is data["pose_metas_original"]
@@ -597,21 +601,19 @@ def test_prompt_pose_reads_the_pose_and_the_prompt_and_ignores_the_rest_in_one_l
 
 @pytest.mark.parametrize("mode", ["prompt", "box_keypoint"])
 def test_the_other_modes_name_a_changed_prompt_pose_field(stub, caplog, mode):
-    cfg = sam3.SAM3Config(pose_point_distance=0.1, pose_refine_with_mask=True)
+    cfg = sam3.SAM3Config(pose_point_distance=0.1)
     with caplog.at_level("INFO"):
         sam3.track((None, None), torch.zeros(2, 8, 8, 3), pose_data=two_frames() if mode == "box_keypoint" else None,
                    mode=mode, config=cfg)
     (line,) = not_used(caplog)
-    assert "sam3_config.pose_point_distance" in line and "sam3_config.pose_refine_with_mask" in line
+    assert "sam3_config.pose_point_distance" in line
 
 
-def test_the_prompt_pose_fields_come_last_and_leave_every_other_default():
+def test_the_prompt_pose_field_comes_last_and_leaves_every_other_default():
     fields = dataclasses.fields(sam3.SAM3Config)
-    assert [f.name for f in fields][-2:] == ["pose_point_distance", "pose_refine_with_mask"]
-    distance, with_mask = fields[-2], fields[-1]
+    assert [f.name for f in fields if f.metadata["tooltip"].startswith("[prompt_pose] ")] == ["pose_point_distance"]
+    distance = fields[-1]
+    assert distance.name == "pose_point_distance" and "experimental" not in distance.metadata
     assert (distance.default, distance.metadata["min"], distance.metadata["max"], distance.metadata["step"]) == \
         (0.07, 0.0, 0.5, 0.005)
-    assert with_mask.default is False and with_mask.metadata["experimental"].startswith("off by default")
-    assert distance.metadata["tooltip"].startswith("[prompt_pose] ")
-    assert with_mask.metadata["tooltip"].startswith("[prompt_pose] ")
     assert sam3.MODES == ("prompt", "box_keypoint", "prompt_pose") and sam3.MODE_PROMPT_POSE == "prompt_pose"

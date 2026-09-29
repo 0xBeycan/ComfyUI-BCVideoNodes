@@ -26,24 +26,16 @@ def _choice(default, choices, doc):
     return field(default=default, metadata={"choices": tuple(choices), "tooltip": doc})
 
 
-# Why pose_refine_with_mask is experimental: Meta decodes the first refine of a frame from its points
-# alone (SAM 3.1 by design; SAM 3.0 wherever its per-object clear has emptied the frame's previous
-# mask), so the first pass's mask as the refine's dense prompt is this port's variant, kept for a
-# comparison on real clips. SAM 3.1 Multiplex Config shows it as "pose_refine_with_mask
-# (experimental)" with this in its tooltip (libs/config_widgets.py).
-EXPERIMENTAL_REFINE_MASK = ("off by default; Meta decodes the first refine of a frame from its points alone, and this "
-                            "variant is not yet compared on real clips")
-
-
 @dataclass
 class SAM3_1MultiplexConfig:
     """The tunables of the three modes. Each tooltip starts with the mode it affects, and a field is
     read in that mode only: a field changed from its default that the run does not read (another
     mode's, the multi-object ones at max_objects 1, the tracker ones with `temporal` off in
     box_keypoint mode) is named in one console line, never raised on. prompt_pose runs prompt mode
-    first, so it also reads the `[prompt]` and `[prompt, max_objects 1]` fields; its second pass
-    reads input_range, fill_hole_area, obj_ptr_token, memory_selection and max_conditioning_frames,
-    and encodes its memory from the raw logits whatever memory_mask says (Meta's re-propagation).
+    first, so it also reads the `[prompt]` and `[prompt, max_objects 1]` fields. Whatever
+    memory_mask says, its refine's dense prompt is pass 1's raw logits of the frame, and its second
+    pass encodes its memory from the raw logits (Meta's re-propagation); that pass reads
+    input_range, fill_hole_area, obj_ptr_token, memory_selection and max_conditioning_frames.
 
     The `[prompt]` defaults are easy-sam3's set (its thresholds, its re-anchor and memory policy)
     on SAM 3.1 fed the input range it was trained on: the set validated on the eight test clips
@@ -213,7 +205,6 @@ class SAM3_1MultiplexConfig:
     # Last, so the widgets of saved workflows keep their positions. A share of the shorter side, so
     # the default keeps its meaning at other generation sizes (the test clips are all 720x1280).
     pose_point_distance: float = _field(0.07, 0.0, 0.5, 0.005, "[prompt_pose] how far outside the tracked mask a drawn keypoint of a forearm-and-hand or lower leg must lie to become a positive point, as a share of the frame's shorter side; the limb must also be inside the mask on the frames before and after, not jump, lie at least 90% outside, and have 3 such keypoints. 0.07 (default, 50 px at 720): on the test clips every keypoint the pose drew on a label, toy, cabinet or floor lay within 46 px of the mask, and the one hand the mask lost 68-126 px out")
-    pose_refine_with_mask: bool = field(default=False, metadata={"experimental": EXPERIMENTAL_REFINE_MASK, "tooltip": "[prompt_pose] what a frame given points is decoded from. off (default): the points alone, as Meta does on the first refine of a frame (SAM 3.1's fresh segmentation from points); on: the points plus the mask the first pass had on that frame (its raw decoder logits, clamped to +/-32) as the dense prompt, SAM 3.0's refine of a previous mask"})
 
     def __post_init__(self):
         for f in fields(self):

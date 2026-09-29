@@ -321,10 +321,9 @@ PromptCounts = TypedDict("PromptCounts", {"false starts": int, "reconditioned": 
 # reads it): the live track's birth frame (no key while no track is born, -1 after a false start),
 # its multiplex state, its conditioning outputs as they were created - the birth and every fired
 # anchor, those prune_conditioning dropped later included - without their 1008x1008 high-res mask,
-# and, when the caller put a dict under "raw" (None: not kept), each propagated frame's decoder
-# logits before the cleaning, a CPU copy. It only reads the run: the masks are the same with it.
-PromptCapture = TypedDict("PromptCapture", {"raw": Optional[dict], "birth": int, "mux": object, "cond": dict},
-                          total=False)
+# and, in the dict the caller put under "raw", each propagated frame's decoder logits before the
+# cleaning, a CPU copy. It only reads the run: the masks are the same with it.
+PromptCapture = TypedDict("PromptCapture", {"raw": dict, "birth": int, "mux": object, "cond": dict}, total=False)
 
 
 def _conditioning_copy(output):
@@ -336,7 +335,8 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     """[N, H, W] float masks of the person in `images` [N, H, W, 3], from the text prompt
     alone. `result`, if given, is filled with what happened for the log; `logits`, if given, a
     dict, receives each output frame's low-res logits (see `logits_record`); `capture`, if given,
-    a dict with a "raw" key, receives what the run hands over to prompt_pose (see PromptCapture).
+    a dict with an empty dict under "raw", receives what the run hands over to prompt_pose (see
+    PromptCapture).
 
     The [prompt] A/B switches of `config` pick ours or Meta's side of a policy step (A6, A7); at
     their defaults this is the policy described in the module docstring. `anchor_output` picks
@@ -412,7 +412,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                     index = int(current["mask_index"][0])
                 if selection:
                     current["memory_score"] = memory_score(current)
-                if capture is not None and capture["raw"] is not None:
+                if capture is not None:
                     capture["raw"][f] = raw.to("cpu", copy=True)
 
                 overlap = iou(det_masks, current["pred_masks"][:, 0])[:, 0] if det_masks.shape[0] else None
@@ -429,7 +429,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                         if record is not None:   # the dropped track's slots
                             record["anchors"] = [a for a in record["anchors"] if a["frame"] < birth]
                         if capture is not None:
-                            capture.update(birth=-1, mux=None, cond={}, raw=None if capture["raw"] is None else {})
+                            capture.update(birth=-1, mux=None, cond={}, raw={})
                         output_dict = new_output_dict()
                         mux, birth, pending = None, -1, []
                         pbar.update(1)

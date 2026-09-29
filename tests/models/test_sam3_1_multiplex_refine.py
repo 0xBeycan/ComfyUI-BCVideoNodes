@@ -1,9 +1,10 @@
 """prompt_pose's refine, `refine_with_points`, on a scripted stand-in for core's tracker: the decode
 reads no memory (the interactive neck on the cached trunk plus interactivity_no_mem_embed), the
-points are Meta's (capped at 16: the first 8 and the last 8), the dense prompt is the previous mask
-clamped to +/-32 or nothing, one point decodes three masks, two or more take token 0 unless Meta's
-stability fallback picks the best-IoU mask (the pointer staying token 0's), and the frame's memory
-is a conditioning memory from the 1008 mask. No model is loaded.
+points are Meta's (capped at 16: the first 8 and the last 8), the dense prompt is always the
+previous mask clamped to +/-32 (there is no points-only decode), one point decodes three masks,
+two or more take token 0 unless Meta's stability fallback picks the best-IoU mask (the pointer
+staying token 0's), and the frame's memory is a conditioning memory from the 1008 mask. No model
+is loaded.
 
 The adapter imports ComfyUI's tracker helpers when called, so this runs where ComfyUI is
 importable (the ComfyUI root on PYTHONPATH):
@@ -83,7 +84,11 @@ class Heads:
         return "memory", ["position"]
 
 
-def refine(tracker, points, previous=None, backbone=None):
+# The frame's earlier mask logits, the dense prompt every refine is given: -100..100, so the clamp shows.
+PREVIOUS = torch.linspace(-100.0, 100.0, LOW * LOW).view(1, 1, LOW, LOW)
+
+
+def refine(tracker, points, previous=PREVIOUS, backbone=None):
     backbone = backbone or Backbone()
     vision_feats = [torch.randn(1, SIDE * SIDE, C)]                    # [1, HW, C], the propagation features
     vision_pos = [torch.randn(1, SIDE * SIDE, C)]
@@ -125,17 +130,25 @@ def test_the_points_are_positives_as_given_and_capped_at_the_first_8_and_the_las
     assert info["points"] == POINTS and tracker.heads[0]["points"]["point_coords"].tolist() == [[list(p) for p in POINTS]]
 
 
-def test_the_dense_prompt_is_nothing_or_the_previous_mask_clamped_to_32():
-    tracker = Heads(STABLE, MULTI)
-    refine(tracker, POINTS)
-    assert tracker.heads[0]["mask"] is None                  # pose_refine_with_mask off: the points alone
-    previous = torch.linspace(-100.0, 100.0, LOW * LOW).view(1, 1, LOW, LOW)
+@pytest.mark.parametrize("points", [POINTS[:1], POINTS])
+def test_the_dense_prompt_is_the_previous_mask_clamped_to_32(points):
     tracker = Heads(UNSTABLE, MULTI)
-    refine(tracker, POINTS, previous=previous)
-    assert len(tracker.heads) == 2                           # the fallback decodes with the same prompt
+    refine(tracker, points)
+    assert len(tracker.heads) == (1 if len(points) == 1 else 2)   # the fallback decodes with the same prompt
     for call in tracker.heads:
-        assert torch.equal(call["mask"], previous.clamp(-32.0, 32.0))
+        assert torch.equal(call["mask"], PREVIOUS.clamp(-32.0, 32.0))
         assert call["mask"].min() == -32.0 and call["mask"].max() == 32.0
+    inside = torch.full((1, 1, LOW, LOW), 7.5)
+    tracker = Heads(STABLE, MULTI)
+    refine(tracker, points, previous=inside)
+    assert torch.equal(tracker.heads[0]["mask"], inside)            # within +/-32: as given
+
+
+def test_there_is_no_points_only_refine():
+    with pytest.raises(TypeError, match="previous"):
+        sam3.refine_with_points(Heads(STABLE, MULTI), Backbone(), "frame", "trunk", [torch.randn(1, SIDE * SIDE, C)],
+                                [torch.randn(1, SIDE * SIDE, C)], [(SIDE, SIDE)], POINTS,
+                                sam3.MultiplexState(1, 16, CPU, torch.float32))
 
 
 def test_one_point_decodes_three_masks_and_keeps_the_best():
