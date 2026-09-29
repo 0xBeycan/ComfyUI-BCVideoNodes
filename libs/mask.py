@@ -1,6 +1,6 @@
-"""Masks at a frame's resolution: mask logits resized to the frame and cut, a person's binary
-mask cleaned of small enclosed holes and of islands far smaller than the body, and a mask
-rendered as a colored image."""
+"""Masks at a frame's resolution: mask logits resized to the frame and cut, the largest piece of a
+binary mask, a person's binary mask cleaned of small enclosed holes and of islands far smaller
+than the body, and a mask rendered as a colored image."""
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,6 +16,16 @@ def to_frame_size(low_res, H, W, threshold=0.0):
 def count_masked_frames(masks):
     """How many of the [N, H, W] masks have at least one pixel set."""
     return int((masks.flatten(1).any(dim=1)).sum())
+
+
+def largest_piece(mask):
+    """The largest 4-connected piece of the [H, W] bool array `mask` as a bool array (of pieces of
+    equal size, the first in scan order), or None when `mask` is empty."""
+    from scipy import ndimage
+    labels, count = ndimage.label(mask)
+    if not count:
+        return None
+    return labels == int(np.bincount(labels.ravel())[1:].argmax()) + 1
 
 
 def drop_islands(mask, min_fraction):

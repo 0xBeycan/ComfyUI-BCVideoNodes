@@ -134,7 +134,11 @@ connected, so the behaviour can be switched without rewiring:
 - `prompt` (default): SAM finds the person from the text `prompt` alone
   (`main person in the foreground`); nothing else goes in. `max_objects`
   lets more than one track be born; `object_index` -1 is the union of every
-  tracked object, `k` is object `k`.
+  tracked object, `k` is object `k`. With one track, when the mask gains a
+  large piece that lasts within 16 frames of the birth (15% of the mask or
+  more, 80% of it still there on each of the next 5 frames: a limb the birth
+  detection missed and the tracker found again), every frame before it is
+  tracked again backwards from that frame, so the limb reaches them too.
 - `box_keypoint`: the person is described by `pose_data`'s box and body
   keypoints (required), with `bboxes` replacing the boxes and the coords
   adding hand-placed points on frame 0. `max_objects` applies to `prompt`
@@ -157,7 +161,8 @@ How `prompt_pose` works, in Meta's order (SAM 3's video predictor, as
 easy-sam3 vendors it: the text prompt with its full pass, points on the
 existing object, then the re-propagation its action history asks for):
 
-1. Pass 1 is `prompt` mode, unchanged.
+1. Pass 1 is `prompt` mode, unchanged. Where it tracked the frames before a
+   gain again, the gain frame counts as the birth below.
 2. The frames to refine are chosen from pass 1's masks and the keypoints the
    pose images draw: body and hand keypoints at `pose_data`'s
    `draw_threshold`, on the canvas (one off it is dropped, not clamped), a

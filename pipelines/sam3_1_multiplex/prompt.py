@@ -21,6 +21,10 @@ there. This is Meta's own SAM 3 video policy, run over core's weight-carrying pr
   in SAM3_1MultiplexConfig
 - the tracker only moves forwards, so once the clip is done the frames before the birth are
   filled by propagating over them in a mirrored index space (see `propagate_backwards`)
+- a track that gains a large piece that stays, within its first GAIN_WINDOW frames, had a birth
+  detection that missed it - a limb the tracker found again on its own. The one backward pass
+  then starts from that frame instead of the birth, and tracks the frames before it again, so the
+  piece reaches them too (see `gain_frame`)
 
 With `max_objects` above 1 the earlier single-track policy runs once per track, on the shared
 defaults (input range, pointer token, memory_gap, thresholds), and Meta's multi-object rules
@@ -28,11 +32,10 @@ decide between the tracks (`segment_by_prompt_multi`); at 1 none of that code ru
 """
 from typing import Optional, TypedDict
 
-import numpy as np
 import torch
 
 from ...libs import log
-from ...libs.mask import count_masked_frames, to_frame_size
+from ...libs.mask import count_masked_frames, largest_piece, to_frame_size
 from ...models.sam3_1_multiplex.adapter import (DEFAULT_SAM3_1_MULTIPLEX, backbone_frame, clear_memory,
                                                 condition_on_mask, encode_memory_into, encode_prompt,
                                                 forget_older, memory_lookback, multiplex_parts, new_memory, new_mux,
@@ -58,6 +61,18 @@ MAX_CONDITIONING_FRAMES = 2
 # easy-sam3's memory selection (memory_selection): a propagated frame counts as memory only
 # when its memory_score is above this (its mf_threshold).
 MEMORY_SELECTION_SCORE = 0.01
+
+# The gain rule's constants (gain_frame): they define the rule, so they are no config fields. A frame
+# up to GAIN_WINDOW frames after the birth gained a piece when the largest piece of its mask that the
+# frame before lacks is GAIN_SHARE of its mask or more, and at least KEPT_TENTHS in ten of that piece
+# lies inside the mask on each of the KEPT_FRAMES frames after it. On the output masks of 22 test runs
+# it fired once, on the frame where the tracker regained a forearm and hand the birth detection had
+# missed (0.245 of the mask, 0.84 kept); the next best frame anywhere had 0.114 (0.19 kept), and
+# within 16 frames of a birth 0.067.
+GAIN_SHARE = 0.15
+KEPT_TENTHS = 8
+KEPT_FRAMES = 5
+GAIN_WINDOW = 16
 
 
 def iou(masks_a, masks_b):
@@ -240,26 +255,55 @@ def anchor_log(f, anchor, blocked, det_masks, det_scores, overlap, track, logit,
     missed = ((to_frame_size(track["pred_masks"], H, W) > 0) & ~detected).numpy()
     entry.update(det_score=round(float(det_scores[d]), 4), iou=round(float(overlap[d]), 4), missed_px=int(missed.sum()))
     if missed.any():
-        labels, n = ndimage.label(missed)
-        sizes = np.bincount(labels.ravel())[1:]
-        largest = labels == int(sizes.argmax()) + 1
-        entry.update(missed_largest_px=int(sizes.max()),
+        largest = largest_piece(missed)
+        entry.update(missed_largest_px=int(largest.sum()),
                      missed_radius=round(float(ndimage.distance_transform_edt(largest).max()), 1))
     return entry
 
 
-def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, config):
-    """Fill in the frames before `birth` by tracking backwards from the detection that
-    started the track: `emit(frame, output, raw)` is called with the tracker's output for every
-    frame from birth - 1 down to 0, and the logits it had before they were cleaned.
+def gain_frame(masks, birth):
+    """(g, share) for the frame g on which the track gained a piece it keeps, or None. `masks`
+    [N, H, W] are the output masks of a track born on frame `birth` (-1: none), before the frames
+    before the birth are filled.
+
+    Of the frames from birth + 1 to birth + GAIN_WINDOW that have KEPT_FRAMES frames after them,
+    the last one where the largest 4-connected piece of the mask that the frame before lacks is
+    GAIN_SHARE of the mask or more (`share`), and lies at least KEPT_TENTHS in ten inside the mask
+    on each of those KEPT_FRAMES frames. It reads the masks alone, no pose: a piece that large and
+    lasting, so soon after the birth, is one the birth detection missed and the tracker found
+    again on its own (a limb reaching toward the camera). Of several such frames the last is
+    taken: the backward pass from it reaches every frame the earlier ones would."""
+    if birth < 0:
+        return None
+    last = min(birth + GAIN_WINDOW, masks.shape[0] - 1 - KEPT_FRAMES)
+    on = {f: (masks[f] > 0).numpy() for f in range(birth, last + KEPT_FRAMES + 1)}
+    found = None
+    for g in range(birth + 1, last + 1):
+        area = int(on[g].sum())
+        new = on[g] & ~on[g - 1]
+        if not area or int(new.sum()) < GAIN_SHARE * area:   # no piece of it can be large enough
+            continue
+        piece = largest_piece(new)
+        size = int(piece.sum())
+        if size >= GAIN_SHARE * area and all(10 * int((piece & on[g + j]).sum()) >= KEPT_TENTHS * size
+                                             for j in range(1, KEPT_FRAMES + 1)):
+            found = (g, size / area)
+    return found
+
+
+def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, start, emit, device, dtype, config):
+    """Track the frames before `start` backwards from the mask logits `seed` on it - the
+    detection that started the track, or the mask of the frame that gained a piece (gain_frame):
+    `emit(frame, output, raw)` is called with the tracker's output for every frame from
+    start - 1 down to 0, and the logits it had before they were cleaned.
 
     Core's memory lookups only run forwards - `collect_memory_tokens` asks for frame_idx - 1,
     frame_idx - 2 and so on - so the frames go in mirrored: frame t is tracked under the
     index MIRROR - t, which turns "the frame before" into the real frame after it, the one
     already tracked. Nothing else in the tracker is direction-aware, because every position
     encoding it builds from those indices is relative. This pass propagates and nothing
-    else: no detection, no reconditioning, no probation. It is filling a gap at the head of
-    the clip from a track that has already proved itself, not deciding anything."""
+    else: no detection, no reconditioning, no probation. It is filling the head of the clip
+    from a track that has already proved itself, not deciding anything."""
     N = frames.shape[0]
     mirror = 2 * N
     size = tracker.image_size
@@ -267,13 +311,13 @@ def propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emi
 
     signed = config.input_range == SIGNED_RANGE
     frame, vision_feats, vision_pos, feat_sizes, high_res, trunk_out = backbone_frame(
-        tracker, backbone_fn, frames, birth, device, dtype, size, signed)
-    condition_on_mask(tracker, seed, mirror - birth, vision_feats, vision_pos, feat_sizes,
+        tracker, backbone_fn, frames, start, device, dtype, size, signed)
+    condition_on_mask(tracker, seed, mirror - start, vision_feats, vision_pos, feat_sizes,
                       high_res, output_dict, N, mux, backbone, frame, trunk_out)
 
     selection = config.memory_selection
     count = min(N, tracker.max_obj_ptrs_in_encoder) - 1
-    for f in range(birth - 1, -1, -1):
+    for f in range(start - 1, -1, -1):
         frame, vision_feats, vision_pos, feat_sizes, high_res, _ = backbone_frame(
             tracker, backbone_fn, frames, f, device, dtype, size, signed)
         current, raw = track_and_clean(tracker, mirror - f, vision_feats, vision_pos, feat_sizes,
@@ -312,9 +356,11 @@ def _prompt_setup(model, clip, images, prompt, config):
 
 
 # The counts segment_by_prompt reports, keyed by the label the log shows, in the order they are
-# added; "tracked backwards" only when the frames before the birth were filled.
-PromptCounts = TypedDict("PromptCounts", {"false starts": int, "reconditioned": int, "tracked backwards": int,
-                                          "frames segmented": int, "tracked from frame": int}, total=False)
+# added; "gained on frame" only when the backward pass started from a gain (gain_frame), "tracked
+# backwards" only when frames were tracked backwards: those before the birth, or before the gain.
+PromptCounts = TypedDict("PromptCounts", {"false starts": int, "reconditioned": int, "gained on frame": int,
+                                          "tracked backwards": int, "frames segmented": int,
+                                          "tracked from frame": int}, total=False)
 
 
 # What segment_by_prompt hands over when it is given a `capture` dict (prompt_pose's second pass
@@ -322,7 +368,9 @@ PromptCounts = TypedDict("PromptCounts", {"false starts": int, "reconditioned": 
 # its multiplex state, its conditioning outputs as they were created - the birth and every fired
 # anchor, those prune_conditioning dropped later included - without their 1008x1008 high-res mask,
 # and, in the dict the caller put under "raw", each propagated frame's decoder logits before the
-# cleaning, a CPU copy. It only reads the run: the masks are the same with it.
+# cleaning, a CPU copy. When a gain (gain_frame) re-tracked the frames before it, they are handed
+# over as the frames before a birth are: "birth" is the gain frame, and "cond" and "raw" hold
+# nothing before it. It only reads the run: the masks are the same with it.
 PromptCapture = TypedDict("PromptCapture", {"raw": dict, "birth": int, "mux": object, "cond": dict}, total=False)
 
 
@@ -344,7 +392,9 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     tracking is the same either way. `input_range`, `obj_ptr_token` and `memory_mask` pick our
     side or Meta's of how SAM 3.1 Multiplex is run; with obj_ptr_token best_iou the logits record
     also gets "mask_index", the mask the decoder selected on each output frame it propagated (None
-    on the birth frame and on frames without output). `clear_on_anchor`, `anchor_mask`,
+    on the birth frame and on frames without output). The frames the backward pass tracks, those
+    before the birth or before a gain (gain_frame), are "prompt" frames with "raw" true and their
+    "mask_index" in the logits record, the birth and anchor frames among them. `clear_on_anchor`, `anchor_mask`,
     `max_conditioning_frames`, `keep_birth_frame`, `anchor_track_score` and `memory_selection`
     pick ours or easy-sam3's side of the re-anchor and memory policy. The logits record also gets
     "anchors", one AnchorLog per re-anchor slot."""
@@ -368,14 +418,15 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     unmatched = 0         # frames of the probation window the track went unmatched
     quiet_until = -1      # no non-conditioning memory is kept up to here, after an anchor
     pending = []          # (frame, mask, logits, raw, how, index) produced by a track still on probation
-    picked = []           # with best_iou, the mask index the decoder selected on each output frame
+    picked = {}           # with best_iou, the mask index the decoder selected on each output frame, by frame
+    early = {}            # the logits frames birth + 1 to birth + GAIN_WINDOW show: a gain's seed (gain_frame)
     counts: PromptCounts = {"false starts": 0, "reconditioned": 0}
     pbar = ProgressBar(N)
 
     def put(f, mask, low, raw, how="prompt", index=None):
         masks[f] = mask
         if index is not None:
-            picked.append(index)
+            picked[f] = index
         if record is not None:
             record["logits"][f], record["cut"][f], record["raw"][f] = low, how, raw
             if best_iou:
@@ -431,7 +482,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                         if capture is not None:
                             capture.update(birth=-1, mux=None, cond={}, raw={})
                         output_dict = new_output_dict()
-                        mux, birth, pending = None, -1, []
+                        mux, birth, pending, early = None, -1, [], {}
                         pbar.update(1)
                         continue
 
@@ -479,6 +530,8 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                         capture["cond"][f] = _conditioning_copy(current)
                     prune_conditioning(output_dict["cond_frame_outputs"], c.max_conditioning_frames, c.keep_birth_frame)
 
+            if 0 < f - birth <= GAIN_WINDOW:
+                early[f] = shown
             mask = to_frame_size(shown, H, W)
             low = low_res_logits(shown if dumped is None else dumped) if record is not None else None
             if f - birth >= c.hotstart_frames:
@@ -492,13 +545,27 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
 
         for held in pending:
             put(*held)
-        if birth > 0:
+        # the backward pass starts from the birth, or from a gain: then the frames before it are
+        # tracked again from the mask it shows, and the capture hands them over as frames before a birth
+        start, start_seed = birth, seed
+        gain = gain_frame(masks, birth)
+        if gain is not None:
+            start, share = gain
+            start_seed = early[start]
+            log.info(f"prompt: frames 0-{start - 1} tracked backwards from frame {start} (the track was born on "
+                     f"frame {birth}): it gained a piece frame {start - 1} lacked ({share:.2f} of its mask)")
+            counts["gained on frame"] = start
+            if capture is not None:
+                capture.update(birth=start, cond={t: out for t, out in capture["cond"].items() if t >= start},
+                               raw={t: out for t, out in capture["raw"].items() if t >= start})
+        elif birth > 0:
             log.info(f"the track starts on frame {birth}; tracking backwards to fill frames 0-{birth - 1}")
+        if start > 0:
             def emit(f, current, raw):
                 put(f, to_frame_size(current["pred_masks"], H, W), low_res_logits(raw) if record is not None else None,
                     True, index=int(current["mask_index"][0]) if best_iou else None)
-            propagate_backwards(tracker, backbone, backbone_fn, frames, seed, birth, emit, device, dtype, c)
-            counts["tracked backwards"] = birth
+            propagate_backwards(tracker, backbone, backbone_fn, frames, start_seed, start, emit, device, dtype, c)
+            counts["tracked backwards"] = start
 
     segmented = count_masked_frames(masks)
     if segmented == 0:
@@ -508,7 +575,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
                  + (f", reconditioned {counts['reconditioned']} time(s)" if counts["reconditioned"] else ""))
     if best_iou:
         log.info(f"obj_ptr_token best_iou: the decoder selected a mask other than token 0 on "
-                 f"{sum(i != 0 for i in picked)} of {len(picked)} propagated frame(s)")
+                 f"{sum(i != 0 for i in picked.values())} of {len(picked)} propagated frame(s)")
     counts["frames segmented"] = segmented
     counts["tracked from frame"] = birth if segmented else 0
     report_counts(result, counts)

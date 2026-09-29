@@ -10,7 +10,8 @@ sam3 = Names("sam3", {
            "UNIT_RANGE", "SIGNED_RANGE", "TOKEN_0", "BEST_IOU", "CLEANED", "RAW"),
     **refs("pipelines.sam3_1_multiplex.prompt",
            "PROMPT", "anchor_detections", "non_overlapping", "suppress_recently_occluded", "suppress_shrunk",
-           "keep_memory", "memory_score", "memory_view", "selected_frames"),
+           "keep_memory", "memory_score", "memory_view", "selected_frames", "GAIN_SHARE", "GAIN_WINDOW", "KEPT_FRAMES",
+           "KEPT_TENTHS"),
     **refs("pipelines.sam3_1_multiplex.pose",
            "_clear_of_hand_points", "annexed_points", "background_points", "body_points", "box_bounds", "prompt_for",
            "remember_annexed", "spread_points"),
@@ -37,7 +38,7 @@ sam3 = Names("sam3", {
                              Ref("pipelines.sam3_1_multiplex.prompt_pose", "multiplex_parts")),
     # prompt_pose's rule and the adapter's refine, read and patched where prompt_pose reads them
     **seams("pipelines.sam3_1_multiplex.prompt_pose", "refine_points", "refine_with_points"),
-    **seams("pipelines.sam3_1_multiplex.prompt", "detect_person", "encode_prompt"),
+    **seams("pipelines.sam3_1_multiplex.prompt", "detect_person", "encode_prompt", "gain_frame"),
     **seams("pipelines.sam3_1_multiplex.pose", "decode", "is_anchor", "keypoint_recall", "propagate"),
     **seams("pipelines.sam3_1_multiplex.track",
             "LOGITS_SINK", "segment_by_pose", "segment_by_prompt_multi", "segment_by_prompt_pose", "track"),
@@ -48,7 +49,7 @@ sam3 = Names("sam3", {
     "SAM3_SIZE": Ref("models.sam3_1_multiplex.adapter", "SAM3_1_MULTIPLEX_SIZE"),
     **refs("libs.keypoints", "L_HIP", "L_SHOULDER", "R_ANKLE", "R_FOOT", "R_HIP", "R_SHOULDER", "L_ELBOW", "L_WRIST",
            "NOSE", "R_ELBOW", "R_KNEE", "R_WRIST"),
-    **refs("libs.mask", "clean_mask", "drop_islands", "fill_holes", "to_frame_size"),
+    **refs("libs.mask", "clean_mask", "drop_islands", "fill_holes", "largest_piece", "to_frame_size"),
     # core names the functions import when called: ProgressBar is patched where they import it from
     "ProgressBar": Seam(Ref("comfy.utils", "ProgressBar")), "mm": Ref("comfy.model_management")})
 

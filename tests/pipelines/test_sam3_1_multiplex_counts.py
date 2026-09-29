@@ -23,7 +23,8 @@ from bcvideonodes.pipelines.sam3_1_multiplex import pose, prompt, prompt_pose  #
 
 COUNTS = {
     "PromptCounts": (prompt, "segment_by_prompt",
-                     ("false starts", "reconditioned", "tracked backwards", "frames segmented", "tracked from frame")),
+                     ("false starts", "reconditioned", "gained on frame", "tracked backwards", "frames segmented",
+                      "tracked from frame")),
     "MultiCounts": (prompt, "segment_by_prompt_multi",
                     ("false starts", "duplicates", "reconditioned", "suppressed", "objects tracked",
                      "frames segmented")),

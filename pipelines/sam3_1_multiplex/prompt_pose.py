@@ -5,6 +5,8 @@ object on that frame. The sequence is Meta's SAM 3 video API chained as its pred
 the existing object, then the tracker-only re-propagation its action history asks for.
 
 1. Pass 1 is `segment_by_prompt`, unchanged; it only hands over what the rest reads (its capture).
+   Where it tracked the frames before a gain again (prompt.gain_frame), the capture's birth is the
+   gain frame, so below "the birth" is that frame and the frames before it are pass 1's backward fill.
 2. The frames to refine and their points are chosen from pass 1's masks and the keypoints the pose
    images draw (`refine_points`), once pass 1 is done, each frame on its own.
 3. No frame chosen: pass 1's masks are the result, prompt mode's bit for bit. Meta does not

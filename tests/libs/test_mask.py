@@ -1,5 +1,5 @@
-"""The mask helpers of libs/mask.py - hole capping and island handling - on synthetic masks. No
-model is loaded.
+"""The mask helpers of libs/mask.py - hole capping, island handling and the largest piece - on
+synthetic masks. No model is loaded.
 
 libs/mask.py imports without ComfyUI, but this file imports comfy.cli_args first, so it runs
 where ComfyUI is importable (the pod, with the ComfyUI root on PYTHONPATH) and is skipped
@@ -82,3 +82,19 @@ def test_clean_mask_fills_then_drops():
     out = sam3.clean_mask(mask, C)
     assert out.dtype == np.uint8
     assert out[60:62, 60:62].all() and not out[180:182, 180:182].any()
+
+
+# --- the largest piece ---------------------------------------------------------------------
+
+def test_largest_piece_is_4_connected_and_the_first_of_a_tie():
+    mask = np.zeros((10, 10), bool)
+    mask[0:3, 0:3] = True           # 9 px
+    mask[3:5, 3:5] = True           # 4 px touching it at one corner only: another piece
+    mask[6:10, 6:9] = True          # 12 px
+    assert np.array_equal(sam3.largest_piece(mask), np.pad(np.ones((4, 3), bool), ((6, 0), (6, 1))))
+    mask[3, 2] = True               # an edge joins the first two: 14 px
+    assert sam3.largest_piece(mask).sum() == 14 and sam3.largest_piece(mask)[4, 4]
+    tie = np.zeros((4, 9), bool)
+    tie[:, 0:2] = tie[:, 7:9] = True
+    assert np.array_equal(sam3.largest_piece(tie), np.pad(np.ones((4, 2), bool), ((0, 0), (0, 7))))
+    assert sam3.largest_piece(np.zeros((4, 4), bool)) is None

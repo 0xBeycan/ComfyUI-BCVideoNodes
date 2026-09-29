@@ -131,7 +131,9 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
 
     `mode` picks how the person is described to SAM:
     - "prompt": the text `prompt` alone, under the tracking policy in `config` (SAM3_1MultiplexConfig).
-      pose_data, bboxes and the coords are not used.
+      The frames before the birth are tracked backwards from it, or, when the track gains a large
+      piece that lasts within 16 frames of its birth, every frame before that gain from the gain
+      frame (prompt.gain_frame). pose_data, bboxes and the coords are not used.
     - "box_keypoint": pose_data (required) gives every frame's box and body keypoints; the
       positive points are computed from them frame by frame and the negatives from the running
       mask. `bboxes`, when given, replace pose_data's detection boxes. `positive_coords` /
@@ -167,7 +169,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
       the logits are the ones before the output's speck and pinhole cleaning, cleaned by
       `clean_logits(logits, fill_hole_area)` first
     - "birth" / "anchor": the same as "prompt", on the frame the track was born on and on the
-      frames it was re-anchored on (where "raw" is false, the logits are the conditioning mask)
+      frames it was re-anchored on (where "raw" is false, the logits are the conditioning mask);
+      a birth or anchor frame the backward pass tracked again after a gain is a "prompt" frame
     - "prompted" (box_keypoint): bilinear to `size`, > threshold, then clean_mask
     - "propagated" (box_keypoint): bilinear to the tracker's 1008 x 1008, > threshold, bilinear
       to `size` as 0/1, > 0.5, then clean_mask
