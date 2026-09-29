@@ -15,10 +15,14 @@ on the existing object, then the tracker-only re-propagation its action history 
    are demoted to ordinary frames; and the tracker alone tracks the clip again from the birth: no
    detection, no re-anchor, no probation, every frame but the conditioning ones re-decoded, each
    reading the conditioning frames closest to it on both sides.
+5. The frames of the second pass before the first one the refine can reach (first_influenced) show
+   pass 1's mask: the refine cannot change them, so all the second pass would add there is its
+   drift from pass 1, tracking without the detector and with raw-logit memory.
 
-The result: pass 1's backward fill before the birth, pass 1's mask on the kept conditioning frames,
-the refine on the refined frames and the second pass on every other frame. Nothing is removed on
-pose grounds: there are no negative points.
+The result: pass 1's backward fill before the birth, pass 1's mask on the kept conditioning frames
+and on every frame before the first one the refine can reach, the refine on the refined frames and
+the second pass on every other frame. Nothing is removed on pose grounds: there are no negative
+points.
 """
 import dataclasses
 import time
@@ -217,6 +221,25 @@ def pass_two_view(conditioning, stored, frame_idx, keep, count, selection):
     return {"cond_frame_outputs": selected, "non_cond_frame_outputs": {**earlier, **stored}}
 
 
+def first_influenced(conditioning, baseline, refined, birth, N, keep, count, selection):
+    """The first frame from `birth` on that the refine action (the refined frames `refined` and the
+    demotions) can influence in the second pass, N if none: the first whose view (pass_two_view,
+    both slots, before the pass stores a frame) holds a refined frame, or other conditioning frames
+    than it holds with pass 1's `baseline` in place of the second pass's `conditioning`, none
+    demoted and none refined. Every frame after it is influenced too, as the pass runs forwards and
+    each frame's ordinary memory comes from the frames before it; every frame before it is tracked
+    as it would be with no refine action at all."""
+    def held(cond, f):
+        view = pass_two_view(cond, {}, f, keep, count, selection)
+        return {slot: sorted(outputs) for slot, outputs in view.items()}
+
+    for f in range(birth, N):
+        view = held(conditioning, f)
+        if any(t in refined for frames in view.values() for t in frames) or view != held(baseline, f):
+            return f
+    return N
+
+
 # --- the mode ------------------------------------------------------------------------------------
 
 def _clock(device):
@@ -229,7 +252,8 @@ def _clock(device):
 # The counts segment_by_prompt_pose adds to pass 1's for the log, keyed by the label the log
 # shows, in the order they are added; "frames segmented" replaces pass 1's with the result's.
 PromptPoseCounts = TypedDict("PromptPoseCounts", {"refined frames": int, "points": int, "stability fallbacks": int,
-                                                  "demoted": int, "re-tracked": int, "frames segmented": int},
+                                                  "demoted": int, "re-tracked": int, "kept from the first pass": int,
+                                                  "frames segmented": int},
                              total=False)
 
 
@@ -239,9 +263,9 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     point refine where the pose shows a limb the track lost (see the module docstring).
     `pose_metas`, `draw_threshold` and `hidden` are pose_data's keypoints, the threshold its images
     are drawn at and what its draw rules leave out of them (track.prompt_pose_inputs). `result`
-    and `logits` are segment_by_prompt's; in the logits record the refined and re-decoded frames
-    are "prompt" frames whose logits are the ones before the cleaning ("raw" true), and every other
-    frame keeps pass 1's entry.
+    and `logits` are segment_by_prompt's; in the logits record the refined frames and the
+    re-decoded frames the result shows are "prompt" frames whose logits are the ones before the
+    cleaning ("raw" true), and every other frame keeps pass 1's entry.
 
     Pass 1 reads every [prompt] and [prompt, max_objects 1] field. A refine decodes from its
     points and pass 1's raw logits of the frame. The second pass reads input_range,
@@ -321,6 +345,13 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     counts["re-tracked"] = len(retracked)
     selection = c.memory_selection
     count = min(N, tracker.max_obj_ptrs_in_encoder) - 1   # the frames memory selection gathers
+    # the frames before the first one the refine can reach keep pass 1's mask; the pass still tracks
+    # them, from the birth, for its memory
+    first = first_influenced(conditioning, capture["cond"], refined, birth, N, c.max_conditioning_frames, count,
+                             selection)
+    counts["kept from the first pass"] = first
+    log.info(f"prompt_pose: frames {log.frame_ranges(range(first))} keep the first pass: the refine cannot reach them"
+             if first else "prompt_pose: the refine can reach every frame")
     lookback = memory_lookback(tracker)
     raw_memory = dataclasses.replace(c, memory_mask=RAW)
     stored = {}
@@ -348,7 +379,8 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
                 encode_frame_memory(tracker, current, raw, vision_feats, feat_sizes, mux, device, raw_memory)
                 stored[f] = current
                 keep_memory(stored, f, lookback, count, selection)
-                put(f, current["pred_masks"], raw, int(current["mask_index"][0]) if best_iou else None)
+                if f >= first:
+                    put(f, current["pred_masks"], raw, int(current["mask_index"][0]) if best_iou else None)
                 pbar.update(1)
     finally:
         for hook in hooks:

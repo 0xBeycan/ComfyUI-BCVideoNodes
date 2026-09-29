@@ -31,7 +31,7 @@ COUNTS = {
                    ("prompted", "propagated", "re-seeded early", "kept at low recall", "no prompt", "empty prompt")),
     "PromptPoseCounts": (prompt_pose, "segment_by_prompt_pose",
                          ("refined frames", "points", "stability fallbacks", "demoted", "re-tracked",
-                          "frames segmented")),
+                          "kept from the first pass", "frames segmented")),
 }
 
 

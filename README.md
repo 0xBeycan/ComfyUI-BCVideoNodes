@@ -145,8 +145,9 @@ connected, so the behaviour can be switched without rewiring:
   lower leg for one frame, far outside the mask, that limb's drawn keypoints
   go onto that frame as positive points together with the mask the tracker
   had on that frame: Meta's point refine on the same object, followed by
-  Meta's tracker-only re-propagation of the clip. A clip where no frame needs
-  points gets `prompt` mode's mask exactly. Nothing is removed on pose
+  Meta's tracker-only re-propagation. The frames the refine can reach are
+  tracked again; the rest keep `prompt` mode's mask. A clip where no frame
+  needs points gets `prompt` mode's mask exactly. Nothing is removed on pose
   grounds: there are no negative points. Limits: as `prompt`; only such
   one-frame whole-limb drops are recovered.
 
@@ -184,15 +185,22 @@ existing object, then the re-propagation its action history asks for):
    frames closest to it on both sides, and its memory is encoded from the
    decoder's raw logits (Meta's re-propagation; `memory_mask` is read in pass
    1 only).
+5. The refine reaches a frame of the second pass when the conditioning frames
+   it reads include a refined frame or differ from those it would read with
+   no refine and no demotion, and it reaches every frame after that one,
+   whose memory comes from the frames before it. The frames before the first
+   one it reaches show pass 1's mask: there the second pass could only drift
+   from pass 1 (no detector, raw-logit memory). The second pass still tracks
+   them from the birth, for its memory.
 
-The result: the frames before the birth and the kept conditioning frames are
-pass 1's, the refined frames the refine, every other frame the second pass.
-On a clip with a refined frame, every frame but those can differ from `prompt`
-mode's, because the second pass tracks the whole clip again. The console line
-names the refined frames with their points, the stability fallback, the
-object score, the demoted and kept conditioning frames and the seconds of
-each pass. `pose_data`'s `draw_head` and stick widths are node widgets, not in
-`pose_data`, so a part a stick width of 0 leaves out still counts as drawn.
+The result: the frames before the birth, the kept conditioning frames and the
+frames the refine cannot reach are pass 1's, `prompt` mode's bit for bit; the
+refined frames show the refine and every other frame the second pass. The
+console lines name the refined frames with their points, the stability
+fallback, the object score, the frames that keep the first pass, the demoted
+and kept conditioning frames and the seconds of each pass. `pose_data`'s
+`draw_head` and stick widths are node widgets, not in `pose_data`, so a part a
+stick width of 0 leaves out still counts as drawn.
 
 ### SAM 3.1 Multiplex Config
 

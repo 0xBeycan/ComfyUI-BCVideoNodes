@@ -142,7 +142,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     - "prompt_pose": prompt mode's track of one person (the [prompt] and [prompt, max_objects 1]
       fields), and where pose_data (required) shows the track lost a whole forearm-and-hand or
       lower leg for one frame, that limb's drawn keypoints as positive points on that frame, then
-      the clip tracked again (segment_by_prompt_pose; its [prompt_pose] fields). `bboxes`, the
+      the frames that refine can reach tracked again, the rest keeping prompt mode's mask
+      (segment_by_prompt_pose; its [prompt_pose] fields). `bboxes`, the
       coords, `max_objects` and `object_index` are not used.
 
     `max_objects` is how many tracks may be born and kept. 1 is the single-person policy
@@ -175,9 +176,9 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     (None on the birth frame and on frames without output). In prompt mode "anchors" lists every
     re-anchor slot, fired or not, as prompt.AnchorLog records. Not collected with max_objects above 1.
     In prompt_pose mode the record is its first pass's, prompt mode's, with every frame the mode
-    refined or tracked again replaced: a "prompt" frame whose logits are the ones before the
-    cleaning ("raw" true), its "mask_index" the second pass's (None on a refined frame); "anchors"
-    are the first pass's slots."""
+    refined or shows from its second pass replaced: a "prompt" frame whose logits are the ones
+    before the cleaning ("raw" true), its "mask_index" the second pass's (None on a refined frame);
+    "anchors" are the first pass's slots."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, found {mode!r}")
     if not isinstance(max_objects, int) or max_objects < 1:

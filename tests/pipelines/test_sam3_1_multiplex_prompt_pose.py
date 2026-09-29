@@ -1,8 +1,9 @@
 """SAM 3.1 Multiplex prompt_pose mode: the keypoints it reads (those the pose images draw), the rule
 that picks the frames it refines and their points (C1-C5 on synthetic masks and keypoints), the
-demotion and the two-sided memory of its second pass, the capture segment_by_prompt hands over, and
-the whole mode on the scripted tracker of test_sam3_1_multiplex_ab (the refine stood in for; its
-own tests are in tests/models/test_sam3_1_multiplex_refine.py). No model is loaded.
+demotion and the two-sided memory of its second pass, the first frame the refine can reach, the
+capture segment_by_prompt hands over, and the whole mode on the scripted tracker of
+test_sam3_1_multiplex_ab (the refine stood in for; its own tests are in
+tests/models/test_sam3_1_multiplex_refine.py). No model is loaded.
 
 Needs ComfyUI importable (the ComfyUI root on PYTHONPATH), like the other SAM 3.1 Multiplex tests:
 
@@ -278,6 +279,41 @@ def test_the_second_pass_view_reads_an_unselected_conditioning_frame_as_ordinary
     assert sorted(view["cond_frame_outputs"]) == [10, 12] and view["non_cond_frame_outputs"] == stored
 
 
+def outputs(*frames):
+    return {t: f"out {t}" for t in frames}
+
+
+@pytest.mark.parametrize("selection", [False, True])
+@pytest.mark.parametrize("keep, first", [(2, 31), (3, 26)])
+def test_the_first_influenced_frame_is_the_first_whose_conditioning_frames_change(selection, keep, first):
+    """Pass 1's conditioning frames 0, 10, 30 and 50, frame 66 refined: 50 lies 16 from it and is
+    demoted. Keeping 2, frames 11-30 read 10 and 30 either way, and 31 is the first to read 66 (30
+    before it, 66 after). Keeping 3, the third is the nearest of the rest: 0 up to frame 25 either
+    way (on 25, 0 and 50 tie and the earlier wins), but on 26 pass 1's 50 (24 away) beats 0 (26
+    away), while without 50 the view keeps 0 (66 is 40 away): the demotion changes frame 26's view
+    five frames before any frame reads 66. The unselected conditioning frames before a frame, read
+    as ordinary memory without memory selection, move neither."""
+    baseline = outputs(0, 10, 30, 50)
+    conditioning = {**outputs(0, 10, 30), 66: "refined"}
+    assert sam3.first_influenced(conditioning, baseline, {66: "refined"}, 0, 80, keep, 15, selection) == first
+
+
+@pytest.mark.parametrize("selection", [False, True])
+def test_a_refined_frame_pass_1_conditioned_on_counts_although_the_frames_are_the_same(selection):
+    """Frame 30 refined, a conditioning frame of pass 1 too, nothing within 16 of it: frames 11-30
+    read 10 and 30 in both passes, and 11 is the first of them, reading 30's refine."""
+    baseline = outputs(0, 10, 30, 50)
+    conditioning = {**outputs(0, 10, 50), 30: "refined"}
+    assert sam3.first_influenced(conditioning, baseline, {30: "refined"}, 0, 80, 2, 15, selection) == 11
+
+
+def test_the_first_influenced_frame_is_never_before_the_birth():
+    # the birth (5) and the anchor on 20 lie within 16 of frame 12, both demoted: the birth reads 12
+    assert sam3.first_influenced({12: "refined"}, outputs(5, 20), {12: "refined"}, 5, 40, 2, 15, False) == 5
+    # nothing changes: none
+    assert sam3.first_influenced(outputs(5, 20), outputs(5, 20), {}, 5, 40, 2, 15, False) == 40
+
+
 def test_the_second_pass_reads_its_own_frames_as_prompt_mode_reads_its_propagated_ones():
     stored = stored_outputs({1: 0.5, 3: 0.5, 5: 0.0, 6: 0.5, 7: 0.0, 8: 0.5})
     cond = {2: "c2", 4: "c4", 20: "c20"}
@@ -405,9 +441,13 @@ def shown(logits_, cfg):
 
 
 @pytest.mark.parametrize("defaults", [False, True])
-def test_with_no_frame_to_refine_the_result_is_prompt_mode_s_tensor(pp_rig, caplog, defaults):
+def test_with_no_frame_to_refine_the_result_is_prompt_mode_s_tensor(pp_rig, caplog, monkeypatch, defaults):
+    returned = []
+    by_prompt = sam3.segment_by_prompt
+    monkeypatch.setattr(sam3, "segment_by_prompt", lambda *a, **k: returned.append(by_prompt(*a, **k)) or returned[-1])
     with caplog.at_level("INFO"):
         out = pp_rig(sam3.SAM3Config() if defaults else config(), **(at_defaults() if defaults else {}))
+    assert out.masks is returned[-1]                                     # pass 1's tensor itself
     assert torch.equal(out.masks, out.prompt) and out.log == out.prompt_log and out.result == out.prompt_result
     assert out.refines == [] and out.detected == list(range(RIG_N))      # no refine, no second pass
     assert "prompt_pose: no frame needed points; the mask is prompt mode's" in caplog.text
@@ -447,6 +487,55 @@ def test_the_second_pass_tracks_again_from_the_birth_around_the_kept_and_refined
     assert not torch.equal(out.masks[36], out.prompt[36])
     assert out.result["refined frames"] == 1 and out.result["demoted"] == 1 and out.result["re-tracked"] == 35
     assert out.result["frames segmented"] == RIG_N
+
+
+class Drifts(FakeTracker):
+    """The scripted tracker, whose mask on a frame it tracks a second time, the second pass's, is
+    the person's box one column to the right (drifted): the second pass's drift from the first."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.visited = set()
+
+    def track_step(self, frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs):
+        out = super().track_step(frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs)
+        real = current_vision_feats[0]
+        if real in self.visited:
+            out["pred_masks"] = out["pred_masks_high_res"] = drifted(real)
+        self.visited.add(real)
+        return out
+
+
+def drifted(real):
+    y, x = position(real)
+    return box(y, x + 1, ring=1)[None, None]
+
+
+def test_the_frames_the_refine_cannot_reach_keep_the_first_pass(pp_rig, caplog):
+    """Frame 36 refined, max_conditioning_frames 2: the anchor on 32 is demoted, frames 2-16 read
+    the birth and the anchor on 16 as they would with no refine, and 17 is the first to read 36 (16
+    before it, 36 after). The second pass still tracks from the birth, but on a tracker whose second
+    pass drifts, frames 0-16 show pass 1's masks bit for bit, and from 17 on every frame but the
+    refined one shows the second pass."""
+    cfg = config()
+    with caplog.at_level("INFO"):
+        out = pp_rig(cfg, chosen={36: [right_hand(0)]}, make=Drifts)
+    assert list(tracked(out.second)) == [f for f in range(3, RIG_N) if f not in (16, 36)]
+    for f in range(17):
+        assert torch.equal(out.masks[f], out.prompt[f]), f
+    for f in range(17, RIG_N):
+        expected = shown(refined_box(36) if f == 36 else drifted(f), cfg)
+        assert torch.equal(out.masks[f], expected) and not torch.equal(out.masks[f], out.prompt[f]), f
+    assert out.result["kept from the first pass"] == 17
+    assert "prompt_pose: frames 0-16 keep the first pass: the refine cannot reach them" in caplog.text
+
+
+def test_a_refine_every_frame_reads_keeps_only_the_frames_before_the_birth(pp_rig, caplog):
+    """At the defaults' max_conditioning_frames 4 the birth, the anchor on 16 and the refine on 36
+    are all read from the birth on: only frames 0 and 1, tracked backwards, keep the first pass."""
+    with caplog.at_level("INFO"):
+        out = pp_rig(sam3.SAM3Config(), chosen={36: [right_hand(0)]}, **at_defaults())
+    assert out.result["kept from the first pass"] == 2
+    assert "prompt_pose: frames 0-1 keep the first pass: the refine cannot reach them" in caplog.text
 
 
 def test_a_demoted_anchor_pass_1_had_let_go_is_tracked_again(pp_rig):
