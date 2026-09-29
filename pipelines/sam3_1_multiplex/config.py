@@ -204,7 +204,7 @@ class SAM3_1MultiplexConfig:
     # --- [prompt_pose]: prompt mode's track plus the pose's points (prompt_pose.py) ---
     # Last, so the widgets of saved workflows keep their positions. A share of the shorter side, so
     # the default keeps its meaning at other generation sizes (the test clips are all 720x1280).
-    pose_point_distance: float = _field(0.07, 0.0, 0.5, 0.005, "[prompt_pose] how far outside the tracked mask a drawn keypoint of a forearm-and-hand or lower leg must lie to become a positive point, as a share of the frame's shorter side; the limb must also be inside the mask on the frames before and after, not jump, lie at least 90% outside, and have 3 such keypoints. 0.07 (default, 50 px at 720): on the test clips every keypoint the pose drew on a label, toy, cabinet or floor lay within 46 px of the mask, and the one hand the mask lost 68-126 px out")
+    pose_point_distance: float = _field(0.07, 0.0, 0.5, 0.005, "[prompt_pose] how far outside the tracked mask a drawn keypoint of a forearm-and-hand or lower leg must lie to become a positive point, as a share of the frame's shorter side; the limb must also lie at least 90% outside and have 3 such keypoints, judged on each frame on its own. 0.07 (default, 50 px at 720): on the test clips every keypoint the pose drew on a label, toy, cabinet or floor lay within 46 px of the mask, and the one hand the mask lost 68-126 px out")
 
     def __post_init__(self):
         for f in fields(self):

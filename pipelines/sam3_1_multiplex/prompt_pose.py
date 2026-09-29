@@ -1,20 +1,22 @@
-"""`prompt_pose` - prompt mode's track, and where the pose shows the track lost a whole
-forearm-and-hand or lower leg for one frame, that limb's drawn keypoints as positive points on the
-tracked object on that frame. The sequence is Meta's SAM 3 video API chained as its predictor runs
-it (easy-sam3 @ 88fe578 vendors it): the text prompt with its full detector-and-tracker pass, points
-on the existing object, then the tracker-only re-propagation its action history asks for.
+"""`prompt_pose` - prompt mode's track, and on every frame where the pose shows the track lost a
+whole forearm-and-hand or lower leg, that limb's drawn keypoints as positive points on the tracked
+object on that frame. The sequence is Meta's SAM 3 video API chained as its predictor runs it
+(easy-sam3 @ 88fe578 vendors it): the text prompt with its full detector-and-tracker pass, points on
+the existing object, then the tracker-only re-propagation its action history asks for.
 
 1. Pass 1 is `segment_by_prompt`, unchanged; it only hands over what the rest reads (its capture).
 2. The frames to refine and their points are chosen from pass 1's masks and the keypoints the pose
-   images draw (`refine_points`), once pass 1 is done: the rule reads the frame after.
+   images draw (`refine_points`), once pass 1 is done, each frame on its own.
 3. No frame chosen: pass 1's masks are the result, prompt mode's bit for bit. Meta does not
    propagate again without a new prompt.
 4. Otherwise each chosen frame is refined (Meta's point refine, `refine_with_points`, with pass 1's
-   raw mask logits of the frame as the dense prompt) and becomes a conditioning frame; pass 1's
-   conditioning frames (the birth and the fired anchors) within DEMOTION_WINDOW of a refined frame
-   are demoted to ordinary frames; and the tracker alone tracks the clip again from the birth: no
-   detection, no re-anchor, no probation, every frame but the conditioning ones re-decoded, each
-   reading the conditioning frames closest to it on both sides.
+   mask logits of the frame as the dense prompt: the raw ones where pass 1 propagated the frame, the
+   conditioning output's on the birth, as Meta's lookup finds them) and becomes a conditioning
+   frame, a refine on the birth or an anchor replacing that conditioning; pass 1's conditioning
+   frames (the birth and the fired anchors) within DEMOTION_WINDOW of a refined frame and not
+   refined themselves are demoted to ordinary frames; and the tracker alone tracks the clip again
+   from the birth: no detection, no re-anchor, no probation, every frame but the conditioning ones
+   re-decoded, each reading the conditioning frames closest to it on both sides.
 5. The frames of the second pass before the first one the refine can reach (first_influenced) show
    pass 1's mask: the refine cannot change them, so all the second pass would add there is its
    drift from pass 1, tracking without the detector and with raw-logit memory.
@@ -83,12 +85,9 @@ def _distal_parts():
 DISTAL = _distal_parts()
 # The rule's constants: they define the rule, so they are no config fields. A limb fires with
 # LIMB_POINTS qualifying keypoints or more (C4); a keypoint's distal part must lie at least
-# OUTSIDE_TENTHS in ten outside the mask (C5); a keypoint that lies off the midpoint of where it was
-# on the frames before and after by as much as the distance between those two, or SPIKE_SHARE of
-# the frame's shorter side if that is more (10 px at 720), jumped for one frame (C3).
+# OUTSIDE_TENTHS in ten outside the mask (C5).
 LIMB_POINTS = 3
 OUTSIDE_TENTHS = 9
-SPIKE_SHARE = 0.014
 # Meta's refinement_detector_cond_frame_removal_window (easy-sam3 sam3_video_inference.py): the
 # detector's conditioning frames this close to a refined frame are demoted to ordinary frames.
 DEMOTION_WINDOW = 16
@@ -127,16 +126,14 @@ def refine_points(masks, xy, drawn, birth, distance):
     keypoints it sends as positive points on each, in pose order. `masks` [N, H, W] are pass 1's,
     whose track was born on frame `birth` (-1: none); `xy` and `drawn` are drawn_keypoints'.
 
-    A frame f from birth + 1 to N - 2 whose mask is not empty is refined when one of the LIMBS has
-    LIMB_POINTS or more keypoints that each
+    Each frame f from the birth to the last whose mask is not empty is judged on its own: it is
+    refined when one of the LIMBS has LIMB_POINTS or more keypoints (C4) that each
     - (C1) lie outside the mask on f, `distance` pixels or more from its nearest pixel;
-    - (C2) are drawn on f - 1 and on f + 1, and lie inside their masks there: a one-frame loss;
-    - (C3) did not jump: they lie off the midpoint of where they were on f - 1 and f + 1 by less
-      than the distance between those two, or than SPIKE_SHARE of the frame's shorter side;
     - (C5) have their distal part at least OUTSIDE_TENTHS in ten outside the mask on f, counting
       its keypoints drawn on f: a whole limb lost, not a fingertip past the edge.
-    Every such keypoint of every limb that fires goes onto the frame. The birth frame, the frames
-    before it, the last frame and a frame whose mask is empty are never refined: the rule is for a
+    Every such keypoint of every limb that fires goes onto the frame, so a loss that lasts several
+    frames refines each frame it qualifies on, the birth included. The frames before the birth
+    (pass 1's backward fill) and a frame whose mask is empty are never refined: the rule is for a
     limb lost from a tracked body."""
     import cv2
     N, H, W = masks.shape
@@ -150,17 +147,11 @@ def refine_points(masks, xy, drawn, birth, distance):
     present = masks.flatten(1).any(dim=1).numpy()
     limb_keypoints = np.zeros(KEYPOINT_COUNT, dtype=bool)
     limb_keypoints[[k for limb in LIMBS.values() for k in limb]] = True
-    tolerance = SPIKE_SHARE * min(H, W)
-    for f in range(birth + 1, N - 1):
+    for f in range(birth, N):
         if not present[f]:
             continue
         outside = drawn[f] & ~inside[f]
-        qualified = limb_keypoints & outside & inside[f - 1] & inside[f + 1]                          # C2
-        if not qualified.any():
-            continue
-        before, after = pixels[f - 1], pixels[f + 1]
-        off = np.hypot(*(pixels[f] - (before + after) / 2).T)
-        qualified &= off < np.maximum(np.hypot(*(before - after).T), tolerance)                        # C3
+        qualified = limb_keypoints & outside
         qualified &= 10 * (DISTAL @ outside.astype(np.int64)) >= OUTSIDE_TENTHS * (DISTAL @ drawn[f].astype(np.int64))  # C5
         if not any(qualified[list(limb)].sum() >= LIMB_POINTS for limb in LIMBS.values()):
             continue
@@ -268,10 +259,10 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     cleaning ("raw" true), and every other frame keeps pass 1's entry.
 
     Pass 1 reads every [prompt] and [prompt, max_objects 1] field. A refine decodes from its
-    points and pass 1's raw logits of the frame. The second pass reads input_range,
-    fill_hole_area, obj_ptr_token, memory_selection and max_conditioning_frames, and encodes its
-    frames' memory from the decoder's raw logits whatever memory_mask says, as Meta's
-    re-propagation does."""
+    points and pass 1's logits of the frame (raw, or on the birth its conditioning output's). The
+    second pass reads input_range, fill_hole_area, obj_ptr_token, memory_selection and
+    max_conditioning_frames, and encodes its frames' memory from the decoder's raw logits whatever
+    memory_mask says, as Meta's re-propagation does."""
     from comfy import model_management as mm
     from comfy.utils import ProgressBar
     c = config
@@ -310,9 +301,11 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
             if "mask_index" in logits:
                 logits["mask_index"][f] = index
 
-    # the refines: one round, on pass 1's frames, each from its points and pass 1's raw logits of the
-    # frame. From the points without that mask (Meta's first refine of a frame) the test clips'
-    # refined frame kept the forearms and hands but lost the head, torso and dress.
+    # the refines: one round, on pass 1's frames, each from its points and pass 1's logits of the
+    # frame: the raw ones where pass 1 propagated it; on the birth, which it did not, its conditioning
+    # output's, the previous output Meta's refine looks up there. From the points without that mask
+    # (Meta's first refine of a frame) the test clips' refined frame kept the forearms and hands but
+    # lost the head, torso and dress.
     refined = {}
     start = _clock(device)
     with torch.inference_mode():
@@ -321,7 +314,8 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
                 tracker, backbone_fn, frames, g, device, dtype, size, signed)
             points = [tuple(p) for p in (xy[g, keypoints] * SAM3_1_MULTIPLEX_SIZE).tolist()]
             output, info = refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision_pos,
-                                              feat_sizes, points, mux, capture["raw"][g])
+                                              feat_sizes, points, mux,
+                                              capture["cond"][g]["pred_masks"] if g == birth else capture["raw"][g])
             refined[g] = output
             put(g, clean_channel_logits(output["pred_masks"], c.fill_hole_area), output["pred_masks"])
             counts["refined frames"] += 1

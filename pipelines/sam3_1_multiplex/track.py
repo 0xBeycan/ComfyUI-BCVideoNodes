@@ -140,9 +140,10 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
       HAND_POINT_CLEARANCE). `prompt`, `max_objects`, `object_index` and the [prompt] config
       fields are not used: one person, the one the pose describes.
     - "prompt_pose": prompt mode's track of one person (the [prompt] and [prompt, max_objects 1]
-      fields), and where pose_data (required) shows the track lost a whole forearm-and-hand or
-      lower leg for one frame, that limb's drawn keypoints as positive points on that frame, then
-      the frames that refine can reach tracked again, the rest keeping prompt mode's mask
+      fields), and on every frame from the birth on where pose_data (required) shows the track
+      lost a whole forearm-and-hand or lower leg, each frame judged on its own, that limb's drawn
+      keypoints as positive points on that frame, then the frames those refines can reach tracked
+      again, the rest keeping prompt mode's mask
       (segment_by_prompt_pose; its [prompt_pose] fields). `bboxes`, the
       coords, `max_objects` and `object_index` are not used.
 

@@ -1,5 +1,6 @@
 """SAM 3.1 Multiplex prompt_pose mode: the keypoints it reads (those the pose images draw), the rule
-that picks the frames it refines and their points (C1-C5 on synthetic masks and keypoints), the
+that picks the frames it refines and their points (C1, C4 and C5, each frame on its own, on
+synthetic masks and keypoints), the
 demotion and the two-sided memory of its second pass, the first frame the refine can reach, the
 capture segment_by_prompt hands over, and the whole mode on the scripted tracker of
 test_sam3_1_multiplex_ab (the refine stood in for; its own tests are in
@@ -108,20 +109,29 @@ def test_c1_the_distance_is_a_share_of_the_shorter_side():
     assert fired(wide, still(HAND), share=0.195) == {LOST: sorted(HAND)}    # 58.5 px
 
 
-def test_c2_a_limb_outside_on_the_frame_after_too_is_no_one_frame_loss():
-    assert fired(masks_of(lost=(LOST, LOST + 1)), still(HAND)) == {}
+def test_a_limb_lost_over_several_frames_refines_each_frame_it_qualifies_on():
+    assert fired(masks_of(lost=(1, 2, 3)), still(HAND)) == {1: sorted(HAND), 2: sorted(HAND), 3: sorted(HAND)}
+    # each frame is judged on its own: not drawn on 2, and 6 px from the mask on 3 (under D, 14 px)
     frames = still(HAND)
-    frames[LOST - 1] = {}                     # not drawn on the frame before
-    assert fired(masks_of(), frames) == {}
+    frames[2] = {}
+    frames[3] = {k: (65.5, y) for k, (x, y) in HAND.items()}
+    assert fired(masks_of(lost=(1, 2, 3)), frames) == {1: sorted(HAND)}
+    # nor do the frames around a loss decide it: not drawn on the frame before, the hand is refined
+    frames = still(HAND)
+    frames[LOST - 1] = {}
+    assert fired(masks_of(), frames) == {LOST: sorted(HAND)}
 
 
-def test_c3_a_keypoint_that_jumped_for_one_frame_is_no_loss_and_a_moving_one_is():
+def test_a_keypoint_is_judged_where_it_lies_on_the_frame_however_far_it_moved():
     frames = still(HAND)
     frames[LOST] = {k: (179.5, y) for k, (x, y) in HAND.items()}           # 60 px off where it was before and after
-    assert fired(masks_of(), frames) == {}
-    moving = [{k: (x + 15 * (f - LOST), y) for k, (x, y) in HAND.items()} for f in range(FRAMES)]
-    moving[0] = moving[4] = HAND                                           # 104.5 on f-1, 134.5 on f+1: no jump
-    assert fired(masks_of(), moving) == {LOST: sorted(HAND)}
+    assert fired(masks_of(), frames) == {LOST: sorted(HAND)}
+
+
+def test_a_loss_from_the_birth_on_refines_the_birth_frame():
+    assert fired(masks_of(lost=(0, 1)), still(HAND), birth=0) == {0: sorted(HAND), 1: sorted(HAND)}
+    # born on 1: frame 0, before the birth (pass 1's backward fill), is not refined
+    assert fired(masks_of(lost=(0, 1, 2)), still(HAND), birth=1) == {1: sorted(HAND), 2: sorted(HAND)}
 
 
 def test_c4_a_limb_needs_three_qualifying_keypoints():
@@ -186,20 +196,20 @@ def test_a_forearm_the_forearm_limit_draw_rule_hides_is_no_candidate():
     arm = {sam3.R_ELBOW: (50.5, 100.5), sam3.R_WRIST: (70.5, 100.5)}
     frames = still({**arm, **HAND})
     frames[LOST] = {**arm, sam3.R_WRIST: (110.5, 100.5), **HAND}
-    assert fired(masks_of(), frames) == {LOST: sorted(HAND)}   # the wrist jumped (C3); the hand is refined
+    assert fired(masks_of(), frames) == {LOST: sorted([sam3.R_WRIST, *HAND])}   # the wrist 51 px out, with the hand
     assert fired(masks_of(), frames, forearm_limit=2.0) == {}
 
 
 @pytest.mark.parametrize("birth, lost, empty, refined", [
     (1, (2,), (), {2}),          # the frame after the birth can be refined
-    (2, (2,), (), set()),        # the birth frame never is
-    (3, (2,), (), set()),        # nor a frame before the birth
-    (0, (4,), (), set()),        # nor the last frame
+    (2, (2,), (), {2}),          # the birth frame too
+    (3, (2,), (), set()),        # never a frame before the birth
+    (0, (4,), (), {4}),          # the last frame can be
     (0, (3,), (), {3}),
-    (0, (2,), (2,), set()),      # nor a frame whose mask is empty
+    (0, (2,), (2,), set()),      # never a frame whose mask is empty
     (-1, (2,), (), set()),       # no track, nothing
 ])
-def test_where_the_rule_never_refines(birth, lost, empty, refined):
+def test_which_frames_the_rule_can_refine(birth, lost, empty, refined):
     assert set(fired(masks_of(lost=lost, empty=empty), still(HAND), birth=birth)) == refined
 
 
@@ -312,6 +322,56 @@ def test_the_first_influenced_frame_is_never_before_the_birth():
     assert sam3.first_influenced({12: "refined"}, outputs(5, 20), {12: "refined"}, 5, 40, 2, 15, False) == 5
     # nothing changes: none
     assert sam3.first_influenced(outputs(5, 20), outputs(5, 20), {}, 5, 40, 2, 15, False) == 40
+
+
+@pytest.mark.parametrize("refined, kept, demoted", [
+    ((44, 45, 46), (0, 10, 80), [40, 60]),     # 40 is 4 from 44, 60 14 from 46
+    ((58, 59, 60), (0, 10, 40, 80), []),       # 40 is 18 from 58, 80 20 from 60; the anchor on 60 is refined
+    ((0, 1, 2), (40, 60, 80), [10]),           # from the birth on: 10 is 8 from 2; the birth is refined
+])
+def test_adjacent_refined_frames_demote_what_lies_within_16_of_any_of_them(refined, kept, demoted):
+    conditioning = outputs(0, 10, 40, 60, 80)          # pass 1's: the birth on 0 and four anchors
+    got_kept, got_demoted = sam3.demote(conditioning, {g: "refined" for g in refined})
+    assert got_kept == outputs(*kept) and got_demoted == demoted
+
+
+def test_between_adjacent_refined_frames_the_view_takes_the_closest_on_both_sides():
+    cond = {t: t for t in (0, 20, 21, 22, 60)}
+    selected, unselected = sam3.closest_conditioning(cond, 30, 4)
+    assert sorted(selected) == [20, 21, 22, 60] and unselected == {0: 0}     # 22 before, 60 after, then 21, 20
+    selected, unselected = sam3.closest_conditioning(cond, 10, 4)
+    assert sorted(selected) == [0, 20, 21, 22] and unselected == {60: 60}    # 0 before, 20 after, then 21, 22
+    # keeping 2: 22 before, 60 after however far; 0, 20 and 21, before the frame, are ordinary memory
+    view = sam3.pass_two_view(cond, {}, 23, 2, 5, selection=False)
+    assert sorted(view["cond_frame_outputs"]) == [22, 60] and sorted(view["non_cond_frame_outputs"]) == [0, 20, 21]
+
+
+@pytest.mark.parametrize("selection", [False, True])
+@pytest.mark.parametrize("keep, first", [(2, 21), (3, 21), (4, 0)])
+def test_the_first_influenced_frame_with_adjacent_refined_frames(selection, keep, first):
+    """Pass 1's conditioning frames 0, 10, 20, 70 and 90, frames 74-76 refined: 70 and 90 lie within
+    16 of them and are demoted. Keeping 2 or 3, frames up to 20 read 0, 10 and 20 either way, and 21
+    is the first to read 74 (20 before it, 74 after, where pass 1 had 70). Keeping 4, frame 0 reads
+    74 in place of pass 1's 70 already."""
+    baseline = outputs(0, 10, 20, 70, 90)
+    refined = {g: "refined" for g in (74, 75, 76)}
+    kept, demoted = sam3.demote(baseline, refined)
+    assert demoted == [70, 90]
+    conditioning = dict(sorted({**kept, **refined}.items()))
+    assert sam3.first_influenced(conditioning, baseline, refined, 0, 100, keep, 15, selection) == first
+
+
+@pytest.mark.parametrize("selection", [False, True])
+@pytest.mark.parametrize("keep", [2, 4])
+def test_a_refined_birth_is_the_first_influenced_frame(selection, keep):
+    """Born on 5, frames 5 and 6 refined: the anchor on 20 lies 14 from 6 and is demoted, 50 is kept.
+    The birth reads its own refine, so the second pass's output covers every frame from it on."""
+    baseline = outputs(5, 20, 50)
+    refined = {5: "refined", 6: "refined"}
+    kept, demoted = sam3.demote(baseline, refined)
+    assert kept == outputs(50) and demoted == [20]
+    conditioning = dict(sorted({**kept, **refined}.items()))
+    assert sam3.first_influenced(conditioning, baseline, refined, 5, 60, keep, 15, selection) == 5
 
 
 def test_the_second_pass_reads_its_own_frames_as_prompt_mode_reads_its_propagated_ones():
@@ -552,6 +612,63 @@ def test_refined_frames_stay_conditioning_frames_whatever_their_distance(pp_rig)
     assert out.result["refined frames"] == 2 and out.result["demoted"] == 2   # 16 and 32
 
 
+def test_adjacent_refined_frames_are_each_refined_and_read_as_conditioning_frames(pp_rig, rig):
+    """Frames 20, 21 and 22 refined, each from its own points (the cap is per refine) and pass 1's
+    raw logits of its frame: the anchors on 16 and 32 lie within 16 of them and are demoted, the
+    birth (2) is kept. Keeping 2, the frames before 20 read the birth and 20, those after 22 read 21
+    and 22; the birth already reads 20, so every frame from it on shows the second pass."""
+    cfg = config()
+    dump = {}
+    rig(cfg, logits=dump)
+    chosen = {20: [right_hand(j) for j in range(20)], 21: [right_hand(j) for j in range(3)], 22: [right_hand(0)]}
+    out = pp_rig(cfg, chosen=chosen)
+    assert [(r["frame"], len(r["points"])) for r in out.refines] == [(20, 20), (21, 3), (22, 1)]
+    for refine in out.refines:
+        assert torch.equal(refine["previous"][0, 0].to(torch.float16), dump["logits"][refine["frame"]])
+    retracked = [f for f in range(3, RIG_N) if f not in (20, 21, 22)]
+    reads = tracked(out.second)
+    assert list(reads) == retracked
+    assert {reads[f] for f in range(3, 20)} == {(2, 20)} and {reads[f] for f in range(23, RIG_N)} == {(21, 22)}
+    for g in (20, 21, 22):
+        assert torch.equal(out.masks[g], shown(refined_box(g), cfg))
+    assert (out.result["refined frames"], out.result["points"], out.result["demoted"], out.result["re-tracked"],
+            out.result["kept from the first pass"]) == (3, 16 + 3 + 1, 2, 34, 2)
+
+
+def test_a_refine_on_the_birth_starts_from_the_mask_pass_1_conditioned_it_with(pp_rig, rig, caplog):
+    """Frame 2, the birth, refined: pass 1 did not propagate it, so the refine gets the birth's
+    conditioning logits, the mask pass 1 shows there (Meta's refine looks the frame's conditioning
+    output up). The refine replaces the birth's conditioning; the anchor on 16, 14 frames away, is
+    demoted, 32 is kept. The birth reads its own refine: on a tracker whose second pass drifts,
+    frames 0 and 1 (tracked backwards) keep pass 1's mask, the birth shows the refine, the anchor
+    on 32 pass 1's mask and every other frame the second pass."""
+    cfg = config()
+    dump = {}
+    rig(cfg, logits=dump)
+    record = {}
+    with caplog.at_level("INFO"):
+        out = pp_rig(cfg, chosen={2: [right_hand(0)]}, make=Drifts, logits=record)
+    (refine,) = out.refines
+    assert refine["frame"] == 2 and not dump["raw"][2]
+    assert torch.equal(refine["previous"][0, 0].to(torch.float16), dump["logits"][2])
+    assert set(refine["previous"].unique().tolist()) == {-10.0, 10.0}
+    reads = tracked(out.second)
+    assert list(reads) == [f for f in range(3, RIG_N) if f != 32] and set(reads.values()) == {(2, 32)}
+    for f in (0, 1, 32):
+        assert torch.equal(out.masks[f], out.prompt[f]), f
+    assert torch.equal(out.masks[2], shown(refined_box(2), cfg)) and not torch.equal(out.masks[2], out.prompt[2])
+    for f in (f for f in range(3, RIG_N) if f != 32):
+        assert torch.equal(out.masks[f], shown(drifted(f), cfg)), f
+    assert (out.result["refined frames"], out.result["demoted"], out.result["re-tracked"],
+            out.result["kept from the first pass"]) == (1, 1, 36, 2)
+    assert "prompt_pose: frames 0-1 keep the first pass: the refine cannot reach them" in caplog.text
+    assert "conditioning frames demoted 16, kept 32" in caplog.text
+    assert record["cut"][2] == "prompt" and record["raw"][2]
+    for f in range(RIG_N):
+        again = reproduce(record["logits"][f], "prompt", RIG_H, RIG_W, 0.0, None, 0, cfg, record["raw"][f])
+        assert torch.equal(again, out.masks[f]), f
+
+
 @pytest.mark.parametrize("defaults", [False, True])
 def test_every_refine_gets_the_first_pass_s_raw_logits_of_its_frame(pp_rig, rig, defaults):
     """No switch: prompt_pose's capture keeps pass 1's raw logits, and each refine is handed those
@@ -571,19 +688,21 @@ def test_every_refine_gets_the_first_pass_s_raw_logits_of_its_frame(pp_rig, rig,
         assert (previous[0, 0][SPECK] == 5.0).all()                        # before the cleaning
 
 
+LOSES = 20
+
+
 class LosesTheArm(FakeTracker):
-    """The scripted tracker, whose mask on frame LOSES drops the right part of the person (the low-res
-    columns from x + 5 on, where the three right-hand keypoints below lie)."""
+    """The scripted tracker, whose mask on the frames `losing` (LOSES) drops the right part of the
+    person (the low-res columns from x + 5 on, where the three right-hand keypoints below lie)."""
+    losing = (LOSES,)
+
     def track_step(self, frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs):
         out = super().track_step(frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs)
         real = current_vision_feats[0]
-        if real == LOSES:
+        if real in self.losing:
             _, x = position(real)
             out["pred_masks"][0, 0, :, x + 5:] = -10.0
         return out
-
-
-LOSES = 20
 
 
 def hand_on_the_person(real):
@@ -603,6 +722,33 @@ def test_the_rule_on_a_tracked_clip_refines_the_one_frame_that_lost_the_hand(pp_
     assert refine["points"] == pytest.approx([(x / RIG_W * 1008, y / RIG_H * 1008) for x, y in points.values()])
     assert (out.result["refined frames"], out.result["points"], out.result["demoted"], out.result["re-tracked"]) == \
         (1, 3, 2, 36)
+
+
+class LosesTheArmForThreeFrames(LosesTheArm):
+    losing = (20, 21, 22)
+
+
+def test_the_rule_on_a_tracked_clip_refines_each_frame_of_a_loss_over_several(pp_rig):
+    metas = [meta(hand_on_the_person(f), RIG_W, RIG_H) for f in range(RIG_N)]
+    out = pp_rig(config(), metas=metas, make=LosesTheArmForThreeFrames)
+    assert [r["frame"] for r in out.refines] == [20, 21, 22]
+    for refine in out.refines:
+        points = hand_on_the_person(refine["frame"]).values()
+        assert refine["points"] == pytest.approx([(x / RIG_W * 1008, y / RIG_H * 1008) for x, y in points])
+    assert (out.result["refined frames"], out.result["points"], out.result["demoted"], out.result["re-tracked"]) == \
+        (3, 9, 2, 34)
+
+
+def test_a_pose_the_mask_holds_on_every_frame_refines_nothing(pp_rig, monkeypatch):
+    """The rule itself, on a pose whose hand the mask holds on every frame from the birth to the
+    last: no frame is refined, and the result is pass 1's tensor itself."""
+    returned = []
+    by_prompt = sam3.segment_by_prompt
+    monkeypatch.setattr(sam3, "segment_by_prompt", lambda *a, **k: returned.append(by_prompt(*a, **k)) or returned[-1])
+    metas = [meta(hand_on_the_person(f), RIG_W, RIG_H) for f in range(RIG_N)]
+    out = pp_rig(config(), metas=metas)
+    assert out.refines == [] and out.masks is returned[-1] and torch.equal(out.masks, out.prompt)
+    assert out.log == out.prompt_log and out.result == out.prompt_result
 
 
 def test_the_logits_record_reproduces_prompt_pose_s_masks(pp_rig):
