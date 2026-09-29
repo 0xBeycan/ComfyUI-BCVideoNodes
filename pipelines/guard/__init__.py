@@ -64,26 +64,42 @@ Mask checks, per frame, from the mask against `pose_data`:
                       person's own drawn keypoints - body, hands or face - is that same
                       person, a hand the frame edge cut away from the body, and counts as
                       neither; without pose_data so is a piece that runs off a side of the
-                      frame the largest region also runs off (the edge cut it away)
+                      frame the largest region also runs off (the edge cut it away). So is a
+                      speck-sized piece most of which her part holds on two of the frames
+                      around (a hair tip or a shoe the mask split off; an object beside her
+                      joins her for a frame at most)
   mask_missing_keypoints
                       fewer than `min_keypoint_recall` of the drawn keypoints inside the
                       frame fall inside the mask; the report names them (warning)
+  mask_head_out       the head outside the mask: the drawn nose, or `head_out_eyes_ears` or more
+                      of the drawn eyes and ears, inside the frame and outside the mask - a head
+                      the model redraws from nothing. Fails in place of mask_missing_keypoints on
+                      its frame; the report names the keypoints. A keypoint-mask defect (a
+                      correct mask shows none); the SCAIL-2 guard does not run it
   mask_missed_limb    a drawn elbow, wrist, knee, ankle or foot the mask lost: a visible limb
-                      end outside the mask, not a pose error, a notch or fast motion
-                      (mask.lost_limb_end; warning)
+                      end outside the mask, not a pose error, a notch, fast motion or a limb
+                      leaving the shot on the frame border (mask.lost_limb_end; warning)
   body_not_drawn      more than `max_body_not_drawn` of the person's mask lies away from the
                       drawn skeleton and the limbs that run out of the shot: the mask shows a
                       body the pose image does not draw (warning)
   mask_unstable       mask IoU with the previous frame below `min_mask_iou` while the box
                       IoU is above 0.7 (the mask changed, the person did not; warning)
   mask_loss           the mask drops a region for a run of 1 to 8 frames and holds it on the
-                      frames before and after, and no limb moved away to account for it:
+                      frames before and after, and no limb moved away to account for it; the
+                      region is hers - the pose has the body in it next to the run, or the mask
+                      holds it beyond the frames next to the run on both sides - not
+                      background that blinks off between two frames that took it in:
                       thicker than `max_mask_loss` on a single frame, twice that over a longer
                       run, half that where the drawn skeleton crosses it on at least half the
                       frames of the run. No model reads the raw mask: the Wan Animate workflow
                       grows it into the final mask (GrowMaskWithBlur expand 10, BlockifyMask 32)
                       first, so only the part the final of every frame of the run leaves out
                       counts (warning)
+  mask_loss_large     a mask_loss dropout that drops `large_loss_area` of the person's mask or
+                      more (mask_loss_area): a hand or a leg the models cannot restore. Fails in
+                      place of mask_loss on the frames of its run; a frame whose mask is
+                      empty is mask_empty's. A keypoint-mask defect (a correct mask shows
+                      none); the SCAIL-2 guard does not run it
 
 The WanAnimate Preprocess Guard judges the final mask the sampler gets, the preprocess mask grown
 (GrowMaskWithBlur expand 10) and cut into 32 px blocks (BlockifyMask), whose grid is laid from
@@ -93,8 +109,8 @@ block, body_not_drawn and the detached pieces allow for the padding, and mask_lo
 region holding a drawn keypoint on every frame of its run.
 
 Without pose_data the Mask Guard runs only the checks that do not read it: mask_fragmented and
-mask_specks (the largest region, and the pieces the frame edge cut from it, are the person) and
-mask_loss.
+mask_specks (the largest region, and the pieces the frame edge cut from it, are the person),
+mask_loss and mask_loss_large.
 
 Each group is switched on separately. Everything measured is always reported and plotted; a
 failed check of an enabled group stops the workflow, since sampling on a wrong mask or pose is
@@ -102,12 +118,13 @@ wasted. Thresholds were measured on the test clips; run with the switches off on
 be good and bad and read `metrics` before changing them.
 
 SCAIL-2 has its own guard, `scail2.check_scail2`, on the colored masks its sampler reads, with
-an optional pose (see pipelines/guard/scail2.py). It is imported from its module, not from here:
+an optional pose (see pipelines/guard/scail2.py); it runs the Mask Guard's checks but
+mask_head_out and mask_loss_large. It is imported from its module, not from here:
 it reads the colored-mask conventions of models/scail2, which the pose and mask guards do not need.
 """
 from .combine import combine_guards  # noqa: F401
 from .common import (MASK_CHECKS, MASK_ROW, POSE_CHECKS, POSE_FREE_MASK_CHECKS, POSE_ROW, PREPROCESS_ROW,  # noqa: F401
                      SCAIL2_CHECKS, SCAIL2_ROW, TORSO, WARNINGS, GuardFailed)
-from .config import MaskGuardConfig, PoseGuardConfig, SCAIL2GuardConfig  # noqa: F401
+from .config import MaskChecksConfig, MaskGuardConfig, PoseGuardConfig, SCAIL2GuardConfig  # noqa: F401
 from .mask import check_mask  # noqa: F401
 from .pose import check_pose  # noqa: F401

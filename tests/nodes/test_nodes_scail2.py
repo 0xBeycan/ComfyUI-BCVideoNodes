@@ -92,14 +92,14 @@ def test_the_guard_node_passes_the_masks_through_and_is_the_pipeline(with_pose):
 
     masks, pose_data = clip()
     pose_video_mask, reference_image_mask = scail2.colored_masks(masks, False, masks[:1])
-    guard_values, mask_values = widget_defaults(scail2.SCAIL2GuardConfig), widget_defaults(scail2.MaskGuardConfig)
+    guard_values, mask_values = widget_defaults(scail2.SCAIL2GuardConfig), widget_defaults(scail2.MaskChecksConfig)
     pose_data = pose_data if with_pose else None
     out = nodes.BCVSCAIL2PreprocessGuard().check(pose_video_mask, reference_image_mask, True, pose_data=pose_data,
                                                  **guard_values, **mask_values)
     assert len(out) == len(nodes.BCVSCAIL2PreprocessGuard.RETURN_NAMES)
     assert out[0] is pose_video_mask and out[1] is reference_image_mask
     expected = scail2.check_scail2(pose_video_mask, reference_image_mask, scail2.SCAIL2GuardConfig(**guard_values),
-                                   pose_data=pose_data, mask_config=scail2.MaskGuardConfig(**mask_values))
+                                   pose_data=pose_data, mask_config=scail2.MaskChecksConfig(**mask_values))
     assert out[2:4] == expected[2:4] and same(out[4], expected[4])
 
 
@@ -107,12 +107,14 @@ def test_the_guard_node_widgets():
     spec = nodes.BCVSCAIL2PreprocessGuard.INPUT_TYPES()
     required = spec["required"]
     assert list(required) == ["pose_video_mask", "reference_image_mask", "scail2_guard", "min_reference_iou",
-                              *widget_defaults(scail2.MaskGuardConfig)]
+                              *widget_defaults(scail2.MaskChecksConfig)]
+    # the SCAIL-2 guard does not run the Mask Guard's two keypoint-mask fails, so it shows no widget for them
+    assert not {"head_out_eyes_ears", "large_loss_area"} & set(required)
     assert required["scail2_guard"][1]["default"] is True
     assert "Uncalibrated" in required["min_reference_iou"][1]["tooltip"]
     # mask_loss is judged on the sampler's latent grid, and its tooltip says so; the widget is the Mask
     # Guard's (type, range) with a hand-sized default: on the latent grid motion empties whole cells
-    ours, mask_guard = required["max_mask_loss"], nodes._config_inputs(scail2.MaskGuardConfig)["max_mask_loss"]
+    ours, mask_guard = required["max_mask_loss"], nodes._config_inputs(scail2.MaskChecksConfig)["max_mask_loss"]
     assert ours[0] == mask_guard[0] and "latent grid" in ours[1]["tooltip"]
     assert ours[1]["default"] == 0.05 and mask_guard[1]["default"] == 0.0185
     assert {**ours[1], "tooltip": None, "default": None} == {**mask_guard[1], "tooltip": None, "default": None}

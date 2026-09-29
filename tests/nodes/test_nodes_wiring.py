@@ -26,7 +26,7 @@ from sam3_1_multiplex_fakes import sam3  # noqa: E402
 
 from guard_fakes import MASK as MASK_THRESHOLDS  # noqa: E402
 from guard_fakes import POSE as POSE_THRESHOLDS  # noqa: E402
-from guard_fakes import clip  # noqa: E402
+from guard_fakes import clip, origin, place_keypoints  # noqa: E402
 from pose_fakes import FakeDetector, FakePose, frames, loader, pose  # noqa: E402
 
 
@@ -95,6 +95,18 @@ def test_the_guard_widgets_are_the_guard_configs():
     assert set(both) == set(spec("BCVPoseGuard")["required"]) | set(spec("BCVMaskGuard")["required"])
 
 
+def test_the_keypoint_mask_fail_widgets_come_last():
+    # added after the thresholds saved workflows hold, so those keep their widget positions
+    for key in ("BCVMaskGuard", "BCVWanAnimatePreprocessGuard"):
+        required = spec(key)["required"]
+        assert list(required)[-2:] == ["head_out_eyes_ears", "large_loss_area"], key
+        count, share = required["head_out_eyes_ears"], required["large_loss_area"]
+        assert count[0] == "INT" and {**count[1], "tooltip": None} == {"default": 2, "min": 1, "max": 4, "step": 1, "tooltip": None}
+        assert share[0] == "FLOAT" and {**share[1], "tooltip": None} == {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01,
+                                                                         "tooltip": None}
+        assert count[1]["tooltip"].startswith("mask_head_out (fail)") and share[1]["tooltip"].startswith("mask_loss_large (fail)")
+
+
 def test_the_guard_wrapper_says_it_takes_the_final_mask():
     # its mask checks are measured on the final mask, and its tooltips say so; the widget itself
     # (type, default, range) is the Mask Guard's
@@ -128,6 +140,26 @@ def test_the_guard_wrapper_reads_the_spike_threshold_of_its_pose_guard():
         values = {**thresholds(POSE_THRESHOLDS), "max_limb_spike": spike, **thresholds(MASK_THRESHOLDS)}
         flags = json.loads(nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, True, True, **values)[3])["flags"]
         assert list(flags) == [flagged], flags
+
+
+@pytest.mark.parametrize("key", ["BCVMaskGuard", "BCVWanAnimatePreprocessGuard"])
+def test_the_guard_nodes_read_the_keypoint_mask_fail_widgets(key):
+    # her right ear drawn 60 px left of her rectangle from frame 20 on, beyond the final mask too:
+    # one ear alone is no check at the default head_out_eyes_ears 2 (19 of 20 drawn keypoints
+    # inside), and fails at 1
+    masks, pose_data = clip()
+    for i in range(20, masks.shape[0]):
+        x1, y1 = origin(i)
+        place_keypoints(pose_data, [i], 16, x1 - 60, y1 + 18)
+    for count, flags in ((2, {}), (1, {"mask_head_out": list(range(20, masks.shape[0]))})):
+        values = {**thresholds(MASK_THRESHOLDS), "head_out_eyes_ears": count}
+        if key == "BCVMaskGuard":
+            metrics = nodes.BCVMaskGuard().check(masks, False, pose_data=pose_data, **values)[2]
+        else:
+            metrics = nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, False, False,
+                                                                 **thresholds(POSE_THRESHOLDS), **values)[3]
+        record = json.loads(metrics)
+        assert record["flags"] == flags and record["thresholds"]["head_out_eyes_ears"] == count, (count, record["flags"])
 
 
 @pytest.mark.parametrize("switches", [(True, True), (False, True), (True, False), (False, False)])

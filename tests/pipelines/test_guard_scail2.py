@@ -12,7 +12,7 @@ import json
 import pytest
 import torch
 
-from guard_fakes import MASK, H, N, W, clip, drop_keypoints, origin, place_keypoints
+from guard_fakes import MASK, H, N, W, arm, clip, drop_keypoints, origin, place_keypoints
 from scail2_fakes import scail2
 
 
@@ -163,7 +163,10 @@ def test_the_metrics_record():
     _, _, _, _, record = guard_run(*rendered(True))
     assert list(record) == ["guard", "thresholds", "enabled", "flags", "reference", "frames"]
     assert record["guard"] == "scail2"
-    assert record["thresholds"] == {"min_reference_iou": 0.4, "draw_threshold": None, **dataclasses.asdict(MASK)}
+    # the Mask Guard's thresholds but those of its two keypoint-mask fails, which this guard does not run
+    shared = {f.name: getattr(MASK, f.name) for f in dataclasses.fields(scail2.MaskChecksConfig)}
+    assert record["thresholds"] == {"min_reference_iou": 0.4, "draw_threshold": None, **shared}
+    assert not {"head_out_eyes_ears", "large_loss_area"} & set(record["thresholds"])
     assert record["enabled"] == sorted(scail2.SCAIL2_CHECKS)
     assert tuple(record["reference"]) == scail2.SCAIL2_REFERENCE
     assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"]) and len(record["frames"]) == N
@@ -241,6 +244,25 @@ def test_a_keypoint_in_a_cell_the_latent_grid_reads_as_her_is_inside_the_mask(re
     passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks), pose_data=pose_data)
     assert passed and flags == {}, report
     assert all(record["frames"][i]["missed_limbs"] == [] for i in range(8, 13))
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_the_wan_animate_mask_s_fails_are_not_scail2_checks(replacement_mode):
+    # an arm held out from her side (40 x 50 px) gone on frame 20 - 5.6% of her, a large loss for
+    # the Mask Guard (test_guard.test_a_dropout_of_a_twentieth_of_her_or_more_fails) - and her nose
+    # drawn 20 px left of her head from frame 10 on: the Mask Guard fails both; the SCAIL-2 guard
+    # keeps the dropout a warning and runs no head check, and its record keeps its own row and checks
+    masks, pose_data = clip()
+    arm(masks, [i for i in range(N) if i != 20], (60, 110), 40)
+    for i in range(10, N):
+        x1, y1 = origin(i)
+        place_keypoints(pose_data, [i], 0, x1 - 20, y1 + 20)
+    raw = json.loads(scail2.check_mask(masks, pose_data, MASK, stop_on_fail=False)[2])["flags"]
+    assert raw == {"mask_head_out": list(range(10, N)), "mask_loss_large": [20]}, raw
+    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks), pose_data=pose_data)
+    assert passed and flags == {"mask_loss": [20]}, report
+    assert record["enabled"] == sorted(scail2.SCAIL2_CHECKS) and not {"mask_head_out", "mask_loss_large"} & set(record["enabled"])
+    assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"])
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])

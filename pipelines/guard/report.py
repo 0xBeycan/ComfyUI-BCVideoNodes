@@ -26,7 +26,8 @@ def _kind(name, enabled):
 
 # The per-frame list a check's report line counts the names of.
 REPORT_NAMES = {"pose_incomplete": "lost_limbs", "pose_spike": "limb_spikes", "pose_limb_gap": "limb_gaps",
-                "mask_missing_keypoints": "missed_keypoints", "mask_missed_limb": "missed_limbs"}
+                "mask_missing_keypoints": "missed_keypoints", "mask_head_out": "missed_keypoints",
+                "mask_missed_limb": "missed_limbs"}
 
 
 def write_report(title, rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow], list[Scail2Row]], flags, enabled):

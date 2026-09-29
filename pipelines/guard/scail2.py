@@ -60,7 +60,7 @@ from ...libs import log
 from ...models.scail2.adapter import ON, REPLACEMENT, mask_convention
 from .common import (FRAGMENT_FRACTION, LATENT_READ, MASK_CHECKS, POSE_FREE_MASK_CHECKS, SCAIL2_CHECKS,
                      SCAIL2_DRIVING_CHECKS, SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
-from .config import MaskGuardConfig, SCAIL2GuardConfig, _config
+from .config import MaskChecksConfig, SCAIL2GuardConfig, _config
 from .mask import _iou, mask_flags, mask_frame_metrics, mask_regions, pose_of
 from .report import _kind, _stop, write_report
 from .timeline import SCAIL2_PANELS, timeline_image
@@ -167,7 +167,8 @@ def scail2_flags(rows: list[Scail2Row], t):
             _flag(flags, "driving_empty", m["frame"])
         if any(f >= FRAGMENT_FRACTION for f in m["fragments"]):
             _flag(flags, "driving_fragmented", m["frame"])
-    borrowed = {name: frames for name, frames in mask_flags(rows, t).items() if name in SCAIL2_DRIVING_CHECKS}
+    borrowed = {name: frames for name, frames in mask_flags(rows, t, checks=SCAIL2_DRIVING_CHECKS).items()
+                if name in SCAIL2_DRIVING_CHECKS}
     both = {**flags, **borrowed}
     return {name: both[name] for name in sorted(both, key=lambda name: (both[name][0], SCAIL2_DRIVING_CHECKS.index(name)))}
 
@@ -248,7 +249,9 @@ def check_scail2(pose_video_mask, reference_image_mask, config=None, enabled=Tru
     render them, and with `pose_data` (Pose Detection on the same driving frames at the same
     size) the Mask Guard's pose-based checks on the driving mask.
 
-    `config` is a SCAIL2GuardConfig and `mask_config` a MaskGuardConfig (None = defaults).
+    `config` is a SCAIL2GuardConfig and `mask_config` a MaskChecksConfig (None = defaults): the
+    Mask Guard's thresholds without those of its two keypoint-mask fails, which this guard does
+    not run.
     `enabled` False still measures and reports every check but marks them off, so none can fail.
     With `stop_on_fail` a failed enabled check raises GuardFailed with the report.
 
@@ -257,7 +260,7 @@ def check_scail2(pose_video_mask, reference_image_mask, config=None, enabled=Tru
     driving-frame checks, name -> frames), "reference" (the reference record, its checks in its
     "flags"), "frames"}."""
     config = _config(config, SCAIL2GuardConfig)
-    mask_config = _config(mask_config, MaskGuardConfig)
+    mask_config = _config(mask_config, MaskChecksConfig)
     _colored("pose_video_mask", pose_video_mask)
     _colored("reference_image_mask", reference_image_mask)
     if reference_image_mask.shape[0] == 0:

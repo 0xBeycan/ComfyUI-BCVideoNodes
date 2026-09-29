@@ -22,9 +22,10 @@ HANDS = {R_ARM: "keypoints_right_hand", L_ARM: "keypoints_left_hand"}
 # The keypoint sets of pose_metas_original beside the body; a piece of mask holding any of
 # them belongs to the person.
 WHOLE_BODY = ("keypoints_body", "keypoints_left_hand", "keypoints_right_hand", "keypoints_face")
-# Only damage diffusion cannot absorb stops: an empty, leaking or split mask, a torso jump, a
-# subject switch; for SCAIL-2 no person to drive and no character on the reference. Every other
-# check is a warning: reported, never stops.
+# Only damage diffusion cannot absorb stops: an empty, leaking or split mask, the head outside
+# the mask, a large region dropped from it, a torso jump, a subject switch; for SCAIL-2 no person
+# to drive and no character on the reference. Every other check is a warning: reported, never
+# stops.
 WARNINGS = {"pose_incomplete", "pose_spike", "pose_limb_gap", "mask_attached_leak", "mask_specks",
             "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable", "mask_loss",
             "driving_empty", "driving_fragmented", "reference_fragmented", "reference_misaligned"}
@@ -32,14 +33,16 @@ WARNINGS = {"pose_incomplete", "pose_spike", "pose_limb_gap", "mask_attached_lea
 # they first fired, and this order breaks the tie between two that first fire on one frame.
 POSE_CHECKS = ("pose_incomplete", "pose_jump", "pose_spike", "pose_limb_gap", "subject_switch")
 MASK_CHECKS = ("mask_empty", "mask_leak", "mask_attached_leak", "mask_fragmented", "mask_specks",
-               "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable", "mask_loss")
+               "mask_missing_keypoints", "mask_head_out", "mask_missed_limb", "body_not_drawn", "mask_unstable",
+               "mask_loss", "mask_loss_large")
 # The mask checks that read nothing from pose_data; the others need it.
-POSE_FREE_MASK_CHECKS = ("mask_fragmented", "mask_specks", "mask_loss")
+POSE_FREE_MASK_CHECKS = ("mask_fragmented", "mask_specks", "mask_loss", "mask_loss_large")
 # The SCAIL-2 guard's: the driving-frame checks - its own, then the Mask Guard's (mask_loss
 # always, the rest with pose_data; driving_fragmented stands for mask_fragmented and mask_specks,
-# a split-up driving mask being normal on SCAIL-2's material) - then the reference checks.
+# a split-up driving mask being normal on SCAIL-2's material; mask_head_out and mask_loss_large
+# are the Wan Animate mask's, set on its keypoint mask) - then the reference checks.
 SCAIL2_DRIVING_CHECKS = ("no_driving_person", "driving_empty", "driving_fragmented") + tuple(
-    name for name in MASK_CHECKS if name not in ("mask_fragmented", "mask_specks"))
+    name for name in MASK_CHECKS if name not in ("mask_fragmented", "mask_specks", "mask_head_out", "mask_loss_large"))
 SCAIL2_REFERENCE_CHECKS = ("reference_empty", "reference_fragmented", "reference_misaligned")
 SCAIL2_CHECKS = SCAIL2_DRIVING_CHECKS + SCAIL2_REFERENCE_CHECKS
 BOX_MARGIN = 0.10
@@ -70,7 +73,8 @@ SKELETON_REACH = 0.5
 # either side, grown by 2% of the person's size, and leaves out LEAK_REACH body scales around
 # the drawn skeleton: a limb in motion falls inside one or the other, a patch of background
 # that joins the mask for a frame does not. The full SKELETON_REACH would excuse background
-# taken in against the body as well.
+# taken in against the body as well. The same frames tell a piece of her the mask split off (her
+# part holds it on two of them) from a leak island (mask.mask_regions).
 LEAK_WINDOW = 2
 LEAK_REACH = 0.25
 # A limb's width, in body scales. A joint closer to the frame edge than that is cut by it; the
@@ -82,7 +86,10 @@ LIMB_WIDTH = 0.25
 # that moved away over the run and came back leaves the same trace, but it is somewhere while it
 # is away: mask the ends do not hold turns up within LOSS_REACH of the shorter side per frame of
 # the run (up to LOSS_REACH_FRAMES frames) around the region, at least LOSS_GAIN of its area on
-# average; a dropped part is nowhere. A run of two frames or more has to be LOSS_RUN times as
+# average; a dropped part is nowhere. Background that joins the mask on the frames around a run
+# and is gone beyond them blinks off the same way: the region counts when the pose has the body in
+# it on a frame next to the run, or the mask holds it on another frame within LOSS_WINDOW on both
+# sides. A run of two frames or more has to be LOSS_RUN times as
 # thick as max_mask_loss: over several frames the mask's own changes leave out-and-back traces
 # too (a limb moving inside the area both ends hold, background both ends take in between the
 # legs). When the drawn skeleton crosses the region on at least LOSS_ON_BODY of the frames of the
@@ -96,6 +103,11 @@ LOSS_GAIN = 0.25
 LOSS_RUN = 2.0
 LOSS_DRAWN = 0.5
 LOSS_ON_BODY = 0.5
+# mask_head_out: the head outside the mask - the drawn nose, or at least `head_out_eyes_ears` of
+# the drawn eyes and ears (MaskGuardConfig, where the default's reasons are), inside the frame and
+# outside the (slightly grown) mask - fails.
+HEAD_OUT_KEYPOINT = "nose"
+HEAD_OUT_SIDES = ("r_eye", "l_eye", "r_ear", "l_ear")
 # The final mask the Wan Animate workflow feeds the sampler: the raw mask grown by
 # GrowMaskWithBlur (expand FINAL_GROW, tapered) and cut into BlockifyMask's blocks of FINAL_BLOCK
 # px. The Mask Guard's mask_loss counts on the raw mask only what that final leaves out (above);
@@ -148,12 +160,12 @@ POSE_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints", "dra
             "box_iou_prev", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
 MASK_ROW = ("frame", "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak",
             "fragments", "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn",
-            "box_iou_prev", "mask_iou_prev", "mask_loss", "mask_loss_run", "mask_loss_drawn")
+            "box_iou_prev", "mask_iou_prev", "mask_loss", "mask_loss_run", "mask_loss_drawn", "mask_loss_area")
 PREPROCESS_ROW = ("frame", "detected", "persons", "pose_conf", "drawn_keypoints", "drawn_limbs",
                   "mask_area", "mask_to_box", "box_reliable", "mask_outside_box", "attached_leak", "fragments",
                   "keypoint_recall", "missed_keypoints", "missed_limbs", "body_not_drawn", "box_iou_prev",
-                  "mask_iou_prev", "mask_loss", "mask_loss_run", "mask_loss_drawn", "torso_jump", "pose_completeness", "lost_limbs", "limb_spikes",
-                  "limb_gaps")
+                  "mask_iou_prev", "mask_loss", "mask_loss_run", "mask_loss_drawn", "mask_loss_area", "torso_jump",
+                  "pose_completeness", "lost_limbs", "limb_spikes", "limb_gaps")
 
 # The SCAIL-2 guard's per-frame measurements of the colored driving mask: its own, then the
 # mask row's (the pose-based ones None without pose_data).
@@ -198,6 +210,7 @@ class MaskRow(TypedDict):
     mask_loss: Optional[float]
     mask_loss_run: Optional[float]
     mask_loss_drawn: Optional[float]
+    mask_loss_area: Optional[float]
 
 
 class PreprocessRow(TypedDict):
@@ -222,6 +235,7 @@ class PreprocessRow(TypedDict):
     mask_loss: Optional[float]
     mask_loss_run: Optional[float]
     mask_loss_drawn: Optional[float]
+    mask_loss_area: Optional[float]
     torso_jump: float
     pose_completeness: float
     lost_limbs: list[str]

@@ -9,8 +9,8 @@ def _guard_inputs(config_cls, switch, tooltip):
 
 
 POSE_GUARD_TOOLTIP = "Stop the workflow when a pose check fails (torso jump, subject switch). Warnings never stop. Off still measures and reports every check."
-MASK_GUARD_TOOLTIP = "Stop the workflow when a mask check fails (empty, leaking, fragmented). Warnings never stop. Off still measures and reports every check."
-POSE_DATA_TOOLTIP = "The drawn pose of the same frames at the same size (Pose Detection or WanAnimate Preprocess). Optional, but it gives the best result: without it the guard runs only its pose-free checks (a detached piece, a region dropped for one frame) and cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece inside the frame is the person."
+MASK_GUARD_TOOLTIP = "Stop the workflow when a mask check fails (empty, leaking, fragmented, the head outside the mask, a large region dropped). Warnings never stop. Off still measures and reports every check."
+POSE_DATA_TOOLTIP = "The drawn pose of the same frames at the same size (Pose Detection or WanAnimate Preprocess). Optional, but it gives the best result: without it the guard runs only its pose-free checks (a detached piece, a region dropped for a few frames) and cannot catch the head or a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece inside the frame is the person."
 
 
 class BCVPoseGuard:
@@ -44,7 +44,7 @@ class BCVMaskGuard:
     RETURN_NAMES = ("mask", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = PREPROCESS
-    DESCRIPTION = "Checks the mask frame by frame, against the drawn pose it belongs to when pose_data is connected. An empty, leaking (outside the box) or fragmented mask stops the workflow with the report when mask_guard is on; warnings never stop: small detached specks, background attached to the body, keypoints outside the mask, a limb end the mask lost, body the pose does not draw, an unstable mask, a region dropped for one frame. 'metrics' has every measurement per frame and 'timeline' plots them. The mask passes through."
+    DESCRIPTION = "Checks the mask frame by frame, against the drawn pose it belongs to when pose_data is connected. An empty, leaking (outside the box) or fragmented mask, the head outside the mask (the drawn nose, or head_out_eyes_ears of the drawn eyes and ears, default 2) or a region dropped for a few frames that is large_loss_area of the person or more (default 5%) stops the workflow with the report when mask_guard is on; warnings never stop: small detached specks, background attached to the body, keypoints outside the mask, a limb end the mask lost, body the pose does not draw, an unstable mask, a smaller region dropped for a few frames. 'metrics' has every measurement per frame and 'timeline' plots them. The mask passes through."
 
     def check(self, mask, mask_guard, pose_data=None, **thresholds):
         from ..pipelines import guard

@@ -6,8 +6,9 @@ from ...libs import log
 from ...libs.keypoints import BODY_NAMES, LIMBS
 from ...libs.pose_data import Detection, PoseData, PoseMeta
 from .common import (BOX_MARGIN, BOX_WINDOW, CARRIES, FINAL_BLOCK, FINAL_GROW, FINAL_ON_BODY, FINAL_PAD, FRAGMENT_FRACTION, HANDS,
-                     LEAK_REACH, LEAK_WINDOW, LIMB_ENDS, LIMB_WIDTH, LOSS_DRAWN, LOSS_GAIN, LOSS_ON_BODY, LOSS_REACH,
-                     LOSS_REACH_FRAMES, LOSS_RUN, LOSS_WINDOW, MASK_CHECKS,
+                     HEAD_OUT_KEYPOINT, HEAD_OUT_SIDES, LEAK_REACH, LEAK_WINDOW, LIMB_ENDS,
+                     LIMB_WIDTH, LOSS_DRAWN, LOSS_GAIN, LOSS_ON_BODY, LOSS_REACH, LOSS_REACH_FRAMES,
+                     LOSS_RUN, LOSS_WINDOW, MASK_CHECKS,
                      POSE_FREE_MASK_CHECKS, RELIABLE_CONF, RELIABLE_KEYPOINTS,
                      SKELETON_REACH, SPECK_FRACTION, WHOLE_BODY, MaskRow, _body, _box_iou_prev, _flag, _frame_pose,
                      _hand, _in_frame, _keypoint_rows, _pose_inputs, _thresholds, body_scale, box_sides,
@@ -94,7 +95,7 @@ def _sides(stats, i, H, W):
     return {side for side, on in (("left", x == 0), ("top", y == 0), ("right", x2 == W), ("bottom", y2 == H)) if on}
 
 
-def mask_regions(mask, person_kps, pad=0):
+def mask_regions(mask, person_kps, pad=0, around=()):
     """The person's part of `mask` and the regions detached from it, as fractions of its
     largest region, each region measured with `pad` px taken off its outline (the final mask's
     padding, FINAL_PAD; 0 on a raw mask).
@@ -102,15 +103,22 @@ def mask_regions(mask, person_kps, pad=0):
     The person is the largest region and every region holding one of her own drawn keypoints
     (`person_kps`, [K, 2+] pixels inside the frame): a piece the frame edge or a gap in the
     mask has split off - a hand that leaves the shot and comes back at the corner, a hand the
-    burned-in text cuts off the arm - is still her. Nothing else is excused. Asking only
-    whether a piece touches the frame border is not enough to say the border is what
-    separates it: on a clip where the body runs off the bottom of every frame, that excuses
-    anything at any edge, including the objects beside her that the decoder took in.
+    burned-in text cuts off the arm - is still her. Asking only whether a piece touches the
+    frame border is not enough to say the border is what separates it: on a clip where the body
+    runs off the bottom of every frame, that excuses anything at any edge, including the objects
+    beside her that the decoder took in.
 
-    Without a pose (`person_kps` None) nothing says which piece is hers but the frame edge: a
-    piece that runs off a side of the frame the largest region also runs off is a part of her
-    that side cut away (an arm that leaves the shot and comes back further along it). A piece
-    off the edges, or at a side she does not reach, is not."""
+    Without a pose (`person_kps` None) nothing on the frame itself says which piece is hers but
+    the frame edge: a piece that runs off a side of the frame the largest region also runs off is
+    a part of her that side cut away (an arm that leaves the shot and comes back further along
+    it). A piece off the edges, or at a side she does not reach, is not.
+
+    `around` holds the person's parts of the frames around this one (LEAK_WINDOW either side,
+    each by its own frame alone). A speck-sized piece (under FRAGMENT_FRACTION) most of which
+    the person's part holds on at least two of them is hers, split off on this frame: a hair tip
+    or a shoe the mask cut from the body. A leak island is not: an object beside her joins her
+    part for a frame at most before it is detached or gone. A bigger piece is the mask torn in
+    two, whoever it belongs to."""
     import cv2
 
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
@@ -129,7 +137,13 @@ def mask_regions(mask, person_kps, pad=0):
     if pad:
         core = cv2.erode(mask.astype(np.uint8), np.ones((2 * pad + 1, 2 * pad + 1), np.uint8)).astype(bool)
         areas = np.bincount(labels[core], minlength=count)[1:]
-    out = [round(float(areas[i - 1] / max(areas[main - 1], 1)), 4) for i in range(1, count) if i not in person]
+    fraction = {i: round(float(areas[i - 1] / max(areas[main - 1], 1)), 4) for i in range(1, count) if i not in person}
+    for i, f in fraction.items():
+        if SPECK_FRACTION <= f < FRAGMENT_FRACTION and around:
+            piece = labels == i
+            if sum(2 * int((piece & part).sum()) > stats[i, cv2.CC_STAT_AREA] for part in around) >= 2:
+                person.add(i)
+    out = [f for i, f in fraction.items() if i not in person]
     return np.isin(labels, list(person)), sorted((f for f in out if f >= SPECK_FRACTION), reverse=True)
 
 
@@ -266,14 +280,31 @@ def _run_evidence(masks, t, g, piece, corner, reach, on_body):
     return gain, float(np.mean([on_body(f, P, (y0, x0)) for f in range(t, t + g)]))
 
 
-def dropouts(masks, floor, on_body=None, share=LOSS_ON_BODY, reading=None):
+def _loss_warns(single, run, drawn, max_mask_loss, final):
+    """Whether dropout thicknesses reach the mask_loss warning: a single-frame one thicker than
+    `max_mask_loss`, a run of two frames or more LOSS_RUN times that, one the pose puts the body in
+    LOSS_DRAWN of it (each None where there is none). On the final mask (`final`) only the last
+    counts: its outline moves by a block with no change in the raw mask."""
+    return ((drawn is not None and drawn > LOSS_DRAWN * max_mask_loss)
+            or (not final and single is not None and single > max_mask_loss)
+            or (not final and run is not None and run > LOSS_RUN * max_mask_loss))
+
+
+def dropouts(masks, max_mask_loss, on_body=None, share=LOSS_ON_BODY, reading=None, final=False):
     """mask_loss: per frame, the thickest region the mask drops on a run of up to LOSS_WINDOW
     frames covering it while holding it on the frame before the run and the frame after it - a
     dropout, out and back, the mask's counterpart of pose_spike - that is not a limb which moved
-    away and came back (LOSS_GAIN). Thickness is the radius of the largest disc inside the
-    region, as a fraction of the frame's shorter side: a dropped hand or foot holds a disc of
-    its own width, the slivers a mask's outline jitters by are only a few pixels thick however
-    long they are. Regions thinner than `floor` (the same fraction) are not measured.
+    away and came back (LOSS_GAIN), and that is a part of her rather than background blinking
+    off: the pose puts the body in it on the frame before or the frame after the run, or the mask
+    holds most of it on another frame within LOSS_WINDOW before the run and on another within
+    LOSS_WINDOW after it (at the clip's first or last frame there is no frame beyond to ask).
+    Background that joins the mask on the frames around a run and is gone beyond them is a leak
+    blinking off, not a region the mask dropped; a hand that leaves the shot right after the run
+    is gone beyond it too, but the pose has it on the frame next to the run. Thickness is the
+    radius of the largest disc inside the region, as a fraction of the frame's shorter side: a
+    dropped hand or foot holds a disc of its own width, the slivers a mask's outline jitters by
+    are only a few pixels thick however long they are. Regions thinner than LOSS_DRAWN of
+    `max_mask_loss` (the same fraction) are not measured.
 
     `reading(f)`, when given, is what the model downstream reads of frame f's mask, [H, W]
     booleans: the final the Wan Animate workflow grows the raw mask into (`_final_mask`), or the
@@ -285,15 +316,19 @@ def dropouts(masks, floor, on_body=None, share=LOSS_ON_BODY, reading=None):
 
     `masks` is [N, H, W] booleans; `on_body(f, piece, origin)` says whether the pose puts the
     body in the piece on frame f (None without a pose): the drawn skeleton crosses it on a raw
-    mask, it holds a drawn keypoint on the final mask. Returns (loss, loss_run, loss_drawn), per
-    frame: the thickness of the single-frame dropout on it and of the thickest run of two frames
-    or more over it (0.0 without one, None on the first and the last frame), and the thickest
-    dropout over it the pose puts the body in on at least `share` of the frames of its run (None
-    without `on_body`)."""
+    mask, it holds a drawn keypoint on the final mask. `final` says `masks` are final masks
+    (`_loss_warns`). Returns (loss, loss_run, loss_drawn, loss_area), per frame: the thickness of
+    the single-frame dropout on it and of the thickest run of two frames or more over it (0.0
+    without one, None on the first and the last frame), the thickest dropout over it the pose puts
+    the body in on at least `share` of the frames of its run (None without `on_body`), and the
+    largest region a dropout over it that reaches the mask_loss warning drops, as a share of the
+    mask on the frame before its run (0.0 without one, None on the first and the last frame)."""
     N, H, W = masks.shape
     S = min(H, W)
+    floor = LOSS_DRAWN * max_mask_loss
     loss = [None if i in (0, N - 1) else 0.0 for i in range(N)]
     loss_run = list(loss)
+    loss_area = list(loss)
     loss_drawn = [None] * N if on_body is None else list(loss)
     min_area = np.pi * (floor * S) ** 2    # a region holding a disc of the floor's radius is at least this big
     views = {}                             # frame -> (what the mask and its reading both hold, what either holds)
@@ -304,8 +339,18 @@ def dropouts(masks, floor, on_body=None, share=LOSS_ON_BODY, reading=None):
             views[f] = (masks[f] & read, masks[f] | read)
         return views[f]
 
+    def held(f, piece, corner):
+        (py, px), (ph, pw) = corner, piece.shape
+        return 2 * int((view(f)[0][py:py + ph, px:px + pw] & piece).sum()) > int(piece.sum())
+
+    def hers(t, g, piece, corner):
+        if on_body is not None and any(on_body(f, piece, corner) for f in (t - 1, t + g)):
+            return True
+        beyond = (range(max(0, t - LOSS_WINDOW), t - 1), range(t + g + 1, min(N, t + g + LOSS_WINDOW)))
+        return all(any(held(f, piece, corner) for f in frames) for frames in beyond if len(frames))
+
     for t in range(1, N - 1):
-        for f in [f for f in views if f < t - 1]:
+        for f in [f for f in views if f < t - LOSS_WINDOW]:
             del views[f]
         before = view(t - 1)[0]
         gone = np.zeros((H, W), bool)
@@ -321,23 +366,34 @@ def dropouts(masks, floor, on_body=None, share=LOSS_ON_BODY, reading=None):
             radius, piece, corner = _thickest(lost)
             if radius < floor * S:
                 continue
+            if not hers(t, g, piece, corner):
+                continue                               # background blinking off
             gain, body = _run_evidence(masks, t, g, piece, corner, min(g, LOSS_REACH_FRAMES) * LOSS_REACH * S, on_body)
             if gain >= LOSS_GAIN:
                 continue                               # a limb that moved away and came back
+            thickness, drawn = radius / S, body is not None and body >= share
+            warns = _loss_warns(thickness if g == 1 else None, thickness if g > 1 else None,
+                                thickness if drawn else None, max_mask_loss, final)
+            area = int(piece.sum()) / max(int(masks[t - 1].sum()), 1)
             for f in range(t, t + g):
                 if g == 1:
-                    loss[f] = max(loss[f], radius / S)
+                    loss[f] = max(loss[f], thickness)
                 else:
-                    loss_run[f] = max(loss_run[f], radius / S)
-                if body is not None and body >= share:
-                    loss_drawn[f] = max(loss_drawn[f], radius / S)
-    return loss, loss_run, loss_drawn
+                    loss_run[f] = max(loss_run[f], thickness)
+                if drawn:
+                    loss_drawn[f] = max(loss_drawn[f], thickness)
+                if warns:
+                    loss_area[f] = max(loss_area[f], area)
+    return loss, loss_run, loss_drawn, loss_area
 
 
 def lost_limb_end(j, kps, drawn, mask, grown, meta: PoseMeta, draw_threshold, spikes, scale):
     """Whether the drawn limb end `j`, outside the grown mask, is a limb the mask lost - a
     visible limb end outside it (motion blur, a burned-in label over it) - and not one of:
 
+    - the limb leaving the shot: the keypoint lies on the frame's outermost row or column, where
+      the pose model places a joint at the edge of what it sees; the limb runs out of the frame
+      there and its end is beyond it;
     - a pose error: the pose checks call the keypoint a spike on this frame (`spikes`), or it
       is a wrist whose own drawn hand points back along the forearm, more than a right angle
       from it - no wrist bends that far, so the wrist keypoint is not where the hand's wrist is;
@@ -348,10 +404,10 @@ def lost_limb_end(j, kps, drawn, mask, grown, meta: PoseMeta, draw_threshold, sp
       limb beside the body, following the blur the mask leaves out, rather than out of it."""
     import cv2
 
-    if BODY_NAMES[j] in spikes:
-        return False
     H, W = mask.shape
     x, y = kps[j, :2]
+    if int(x) in (0, W - 1) or int(y) in (0, H - 1) or BODY_NAMES[j] in spikes:
+        return False
     arm = CARRIES[j]
     if j == arm[-1] and arm in HANDS and drawn[PARENT[j]]:
         fingers = _hand(meta, arm, W, H, draw_threshold, fingers_only=True)
@@ -383,7 +439,8 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
                        read_keypoints=False) -> list[MaskRow]:
     """One dict of raw mask measurements per frame (keys MASK_ROW); thresholds are applied
     afterwards, except where a measurement starts: `max_mask_loss` sets the thinnest dropout
-    measured (LOSS_DRAWN of it), and `max_limb_spike` is pose_spike's jump (a limb end the pose
+    measured (LOSS_DRAWN of it) and the dropouts whose area mask_loss_area measures (those that
+    reach the mask_loss warning), and `max_limb_spike` is pose_spike's jump (a limb end the pose
     checks call a spike is not a limb the mask lost). `masks` is [N, H, W] booleans on the
     frames the pose was found on; without a pose (`pose_metas` None) the pose-based
     measurements are None and the lists empty. `final` says the masks are the final masks of
@@ -412,7 +469,14 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
         on_body, share = _holds(lambda f: whole[f]), FINAL_ON_BODY
     else:
         on_body, share = _crosses(drawn_limbs), LOSS_ON_BODY
-    loss, loss_run, loss_drawn = dropouts(masks, LOSS_DRAWN * max_mask_loss, on_body, share, reading)
+    loss, loss_run, loss_drawn, loss_area = dropouts(masks, max_mask_loss, on_body, share, reading, final)
+    alone = {}                             # frame -> its mask_regions by that frame alone
+
+    def regions(f):
+        if f not in alone:
+            alone[f] = mask_regions(masks[f], whole[f] if posed else None, pad)
+        return alone[f]
+
     rows = []
     prev_mask = None
     for i in range(N):
@@ -420,8 +484,17 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
         area = int(areas[i])
         m = {"frame": i, "mask_area": area / (H * W), "mask_to_box": None, "box_reliable": False,
              "mask_outside_box": None, "attached_leak": None}
+        near = [j for j in range(max(0, i - LEAK_WINDOW), min(N, i + LEAK_WINDOW + 1)) if j != i]
+        for f in [f for f in alone if f < i - LEAK_WINDOW]:
+            del alone[f]
+
+        # the person's part of the mask and the regions detached from it; a speck-sized piece that
+        # is hers on the frames around it is hers on this one too
+        person, fragments = regions(i) if area else (mask, [])
+        if any(f < FRAGMENT_FRACTION for f in fragments):
+            person, fragments = mask_regions(mask, whole[i] if posed else None, pad, [regions(j)[0] for j in near])
+        m["fragments"] = fragments
         if not posed:
-            m["fragments"] = mask_regions(mask, None)[1] if area else []
             m.update({"keypoint_recall": None, "missed_keypoints": [], "missed_limbs": [], "body_not_drawn": None,
                       "box_iou_prev": None})
         else:
@@ -435,11 +508,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
             inside = int(mask[int(gy1):int(gy2), int(gx1):int(gx2)].sum())
             m["mask_outside_box"] = (area - inside) / area if area else 0.0
 
-            # the person's part of the mask and the regions detached from it
-            person, fragments = mask_regions(mask, whole[i], pad) if area else (mask, [])
-
             # the person's region grown where neither the neighbours' masks nor the skeleton are
-            near = [j for j in range(max(0, i - LEAK_WINDOW), min(N, i + LEAK_WINDOW + 1)) if j != i]
             if area and near:
                 reference = masks[near].any(axis=0)
                 grown = (_dilated(reference, 2 * FINAL_BLOCK + 1) if final
@@ -448,7 +517,6 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
                 m["attached_leak"] = float(excess.sum() / max(np.median(areas[near]), 1))
             else:
                 m["attached_leak"] = 0.0
-            m["fragments"] = fragments
 
             # drawn keypoints inside the (slightly grown) mask, or its reading; the limb ends outside
             # both the mask lost
@@ -477,16 +545,25 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
         # motion against the previous frame, and a region the mask drops on a run through this frame
         m["mask_iou_prev"] = _iou(mask, prev_mask) if prev_mask is not None else None
         m["mask_loss"], m["mask_loss_run"], m["mask_loss_drawn"] = loss[i], loss_run[i], loss_drawn[i]
+        m["mask_loss_area"] = loss_area[i]
         rows.append(m)
         prev_mask = mask
     return rows
 
 
-def mask_flags(rows: list[MaskRow], t, final=False):
+def mask_flags(rows: list[MaskRow], t, final=False, checks=MASK_CHECKS):
     """The mask checks: check name -> frames it fired on, in the order the checks first fired.
     A check whose measurement is None on a frame (no pose_data, no neighbour) does not run there.
     On the final mask (`final`) mask_loss counts only a dropout the pose puts the body in
-    (mask_loss_drawn): its outline moves by a block with no change in the raw mask."""
+    (mask_loss_drawn): its outline moves by a block with no change in the raw mask.
+
+    Two fails take the place of a warning on their frame, where the caller runs them (`checks`;
+    the SCAIL-2 guard does not, and its `t` has no thresholds for them): mask_head_out that of
+    mask_missing_keypoints - the drawn nose, or `head_out_eyes_ears` of the drawn eyes and ears,
+    outside the mask - and mask_loss_large that of mask_loss - the dropout drops
+    `large_loss_area` of the person or more (mask_loss_area). A frame
+    whose mask is empty is mask_empty's (a fail where the detector and the pose agree on the frame,
+    the pose's failure elsewhere), as it is mask_missing_keypoints'."""
     flags = {}
 
     for m in rows:
@@ -506,7 +583,11 @@ def mask_flags(rows: list[MaskRow], t, final=False):
             _flag(flags, "mask_fragmented", i)
         elif m["fragments"]:
             _flag(flags, "mask_specks", i)
-        if m["keypoint_recall"] is not None and m["keypoint_recall"] < t["min_keypoint_recall"] and m["mask_area"] > 0:
+        missed = set(m["missed_keypoints"])
+        if ("mask_head_out" in checks and m["mask_area"] > 0 and
+                (HEAD_OUT_KEYPOINT in missed or len(missed & set(HEAD_OUT_SIDES)) >= t["head_out_eyes_ears"])):
+            _flag(flags, "mask_head_out", i)
+        elif m["keypoint_recall"] is not None and m["keypoint_recall"] < t["min_keypoint_recall"] and m["mask_area"] > 0:
             _flag(flags, "mask_missing_keypoints", i)
         if m["missed_limbs"]:
             _flag(flags, "mask_missed_limb", i)
@@ -515,10 +596,9 @@ def mask_flags(rows: list[MaskRow], t, final=False):
         if (m["mask_iou_prev"] is not None and m["box_iou_prev"] is not None
                 and m["box_iou_prev"] > 0.7 and m["mask_iou_prev"] < t["min_mask_iou"]):
             _flag(flags, "mask_unstable", i)
-        if ((m["mask_loss_drawn"] is not None and m["mask_loss_drawn"] > LOSS_DRAWN * t["max_mask_loss"])
-                or (not final and m["mask_loss"] is not None and m["mask_loss"] > t["max_mask_loss"])
-                or (not final and m["mask_loss_run"] is not None and m["mask_loss_run"] > LOSS_RUN * t["max_mask_loss"])):
-            _flag(flags, "mask_loss", i)
+        if _loss_warns(m["mask_loss"], m["mask_loss_run"], m["mask_loss_drawn"], t["max_mask_loss"], final):
+            large = "mask_loss_large" in checks and m["mask_area"] > 0 and m["mask_loss_area"] >= t["large_loss_area"]
+            _flag(flags, "mask_loss_large" if large else "mask_loss", i)
     return flags
 
 

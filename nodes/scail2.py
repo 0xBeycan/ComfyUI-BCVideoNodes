@@ -76,7 +76,7 @@ class BCVSCAIL2Preprocess:
 
 
 SCAIL2_GUARD_TOOLTIP = "Stop the workflow when a SCAIL-2 check fails (no driving frame has the person, the reference mask has no character; with pose_data also an empty or leaking driving mask). Warnings never stop. Off still measures and reports every check."
-POSE_DATA_TOOLTIP = "Pose Detection on the driving frames, at the generation size (the frames SCAIL-2 Preprocess got). Optional, but it gives the best result: with it the driving mask also gets the Mask Guard's pose-based checks; without it the guard cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece is the person."
+POSE_DATA_TOOLTIP = "Pose Detection on the driving frames, at the generation size (the frames SCAIL-2 Preprocess got). Optional, but it gives the best result: with it the driving mask also gets the Mask Guard's pose-based checks, but not its two keypoint-mask fails (the head outside the mask, a large region dropped); without it the guard cannot catch a limb outside the mask, body the pose does not draw, background attached to the body, an empty, leaking or unstable mask (box-based), or tell whether a detached piece is the person."
 # SCAIL-2 reads the driving mask on a 16 x 16 px latent grid with 4 frames stacked per latent frame, so
 # motion (a limb that moved, an arm-body gap opening for a frame) empties whole cells on correct masks;
 # only a hand-sized loss separates from that (measured on the test clips: motion 13-25 px on a single
@@ -90,7 +90,7 @@ class BCVSCAIL2PreprocessGuard:
     def INPUT_TYPES(cls):
         from ..pipelines import guard
 
-        mask = config_inputs(guard.MaskGuardConfig)
+        mask = config_inputs(guard.MaskChecksConfig)
         kind, options = mask["max_mask_loss"]
         mask["max_mask_loss"] = (kind, {**options, "default": SCAIL2_MAX_MASK_LOSS, "tooltip": MASK_LOSS_TOOLTIP})
         return {
@@ -115,4 +115,4 @@ class BCVSCAIL2PreprocessGuard:
 
         return tuple(scail2.check_scail2(pose_video_mask, reference_image_mask, _config(guard.SCAIL2GuardConfig, thresholds),
                                          enabled=scail2_guard, pose_data=pose_data,
-                                         mask_config=_config(guard.MaskGuardConfig, thresholds)))
+                                         mask_config=_config(guard.MaskChecksConfig, thresholds)))

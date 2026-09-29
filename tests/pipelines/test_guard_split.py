@@ -57,7 +57,7 @@ def test_pose_guard_off_measures_but_never_stops():
 
 def test_only_damage_diffusion_cannot_absorb_stops():
     assert set(guard.POSE_CHECKS + guard.MASK_CHECKS) - guard.WARNINGS == {
-        "pose_jump", "subject_switch", "mask_empty", "mask_leak", "mask_fragmented"}
+        "pose_jump", "subject_switch", "mask_empty", "mask_leak", "mask_fragmented", "mask_head_out", "mask_loss_large"}
 
 
 def test_pose_guard_defaults_are_the_measured_ones():
@@ -196,7 +196,7 @@ def test_mask_guard_without_pose_data_runs_the_pose_free_checks():
     assert out is masks and record["flags"] == {"mask_loss": [20], "mask_fragmented": [30]}, report
     assert report.startswith("Mask guard: FAILED") and report.splitlines()[-1] == (
         "- without pose_data, not checked: mask_empty, mask_leak, mask_attached_leak, mask_missing_keypoints, "
-        "mask_missed_limb, body_not_drawn, mask_unstable")
+        "mask_head_out, mask_missed_limb, body_not_drawn, mask_unstable")
     assert record["thresholds"]["draw_threshold"] is None
     row = record["frames"][25]
     assert (row["keypoint_recall"], row["missed_keypoints"], row["body_not_drawn"], row["box_reliable"]) == (None, [], None, False)
