@@ -346,8 +346,14 @@ def reproduce(low, how, H, W, threshold, mask_threshold, tracker_size, cfg, raw=
     return torch.from_numpy(sam3.clean_mask(cut.numpy(), cfg)).float()
 
 
-@pytest.mark.parametrize("anchor_output, shows_conditioning", [("detection", [2, 16, 32]), ("propagated", [2])])
-def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch, anchor_output, shows_conditioning):
+# On the scripted clip at the EARLIER baseline the anchor on 32 holds every memory off to the clip's
+# end (clear_on_anchor, memory_gap 7), so the box stays a row short from 33 on: a piece of the mask
+# lost for good, which prompt mode tracks again from the frame before (prompt.lost_for_good). Where the
+# anchors show the detection, 32 itself already lacks the ring the tracker's masks have, so the frames
+# tracked again start there and 32 is a "prompt" frame.
+@pytest.mark.parametrize("anchor_output, shows_conditioning, cut_32", [("detection", [2, 16], "prompt"),
+                                                                       ("propagated", [2], "anchor")])
+def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch, anchor_output, shows_conditioning, cut_32):
     got = {}
     cfg = config(anchor_output=anchor_output)
     rig(cfg, ring=2, speck=True)   # installs the stand-ins
@@ -355,7 +361,7 @@ def test_the_logits_dump_reproduces_prompt_mode(rig, monkeypatch, anchor_output,
                        logits_sink=lambda logits, info: got.update(logits=logits, info=info))
     info = got["info"]
     assert info["mode"] == "prompt" and info["size"] == (H, W)
-    assert [info["cut"][f] for f in (2, 16, 32)] == ["birth", "anchor", "anchor"] and set(info["cut"]) == {"prompt", "birth", "anchor"}
+    assert [info["cut"][f] for f in (2, 16, 32)] == ["birth", "anchor", cut_32] and set(info["cut"]) == {"prompt", "birth", "anchor"}
     assert info["threshold"] == 0.0 and info["fill_hole_area"] == cfg.fill_hole_area
     # the logits before the output's cleaning, except where the frame shows the conditioning
     # mask itself: the birth frame, and the anchors unless they show the propagated mask
@@ -389,7 +395,7 @@ def test_the_logits_dump_reproduces_box_keypoint_mode(pose_rig):
 @pytest.fixture
 def fake_segments(monkeypatch):
     calls = []
-    monkeypatch.setattr(sam3, "segment_by_prompt", lambda *a, **k: calls.append("single") or torch.zeros(2, 8, 8))
+    monkeypatch.setattr(sam3, "segment_by_prompt_repaired", lambda *a, **k: calls.append("single") or torch.zeros(2, 8, 8))
     monkeypatch.setattr(sam3, "segment_by_prompt_multi", lambda *a, **k: calls.append("multi") or torch.zeros(2, 8, 8))
     return calls
 
@@ -607,15 +613,18 @@ def ringed_detections(real):
 
 
 def test_the_logits_dump_names_birth_and_anchor_frames(rig):
+    """The frames from the anchor on 32 on are tracked again (test_the_logits_dump_reproduces_prompt_mode):
+    the detection mask 32 shows lacks the ring the tracker's masks carry (256 px against 31's 324), so
+    they are "prompt" frames; the birth and the anchor on 16 show their conditioning masks."""
     got = {}
     cfg = config(anchor_output=sam3.DETECTION)   # the anchors show their conditioning mask
     rig(cfg, detections=ringed_detections, ring=2)
     masks = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=cfg,
                        logits_sink=lambda logits, info: got.update(logits=logits, info=info))
     info = got["info"]
-    assert info["cut"][2] == "birth" and info["cut"][16] == info["cut"][32] == "anchor"
-    assert {info["cut"][f] for f in range(N) if f not in (2, 16, 32)} == {"prompt"}
-    for f in (2, 16, 32):   # the conditioning mask
+    assert info["cut"][2] == "birth" and info["cut"][16] == "anchor"
+    assert {info["cut"][f] for f in range(N) if f not in (2, 16)} == {"prompt"} and info["raw"][32]
+    for f in (2, 16):   # the conditioning mask
         assert not info["raw"][f] and set(got["logits"][f].unique().tolist()) == {-10.0, 10.0}
     for f in range(N):
         again = reproduce(got["logits"][f], "prompt", H, W, info["threshold"], None, 0, cfg, info["raw"][f])
@@ -953,7 +962,7 @@ def test_the_anchor_log_names_every_slot_and_what_the_detection_misses(rig):
     fired = {"fired": True, "why": None, "det_score": 0.9, "iou": 0.875, "track_logit": 5.0, "missed_px": 32,
              "missed_largest_px": 32, "missed_radius": 1.0}
     assert info["anchors"] == [{"frame": 16, **fired}, {"frame": 32, **fired}]
-    plain, _, _ = rig(config(), detections=anchor_shorter, ring=0)
+    plain = sam3.track((FakeModel(), object()), torch.zeros(N, H, W, 3), config=config())
     assert torch.equal(masks, plain)   # the log changes nothing
 
 

@@ -139,12 +139,15 @@ connected, so the behaviour can be switched without rewiring:
   more, 80% of it still there on each of the next 5 frames: a limb the birth
   detection missed and the tracker found again), every frame before it is
   tracked again backwards from that frame, so the limb reaches them too.
+  With one track, the mask alone then decides two repairs (below); a clip
+  where neither is found gets the track's mask exactly.
 - `box_keypoint`: the person is described by `pose_data`'s box and body
   keypoints (required), with `bboxes` replacing the boxes and the coords
   adding hand-placed points on frame 0. `max_objects` applies to `prompt`
   mode only; `box_keypoint` mode tracks one person, ignores it and logs one
   line.
-- `prompt_pose`: `prompt` mode's track of one person, and on every frame
+- `prompt_pose`: `prompt` mode's track of one person, without its repairs,
+  and on every frame
   where the pose (`pose_data`, required) shows the track lost a whole
   forearm-and-hand or lower leg, far outside the mask, that limb's drawn
   keypoints go onto that frame as positive points together with the mask the
@@ -152,21 +155,61 @@ connected, so the behaviour can be switched without rewiring:
   by Meta's tracker-only re-propagation. Each frame is judged on its own, so
   a loss over several frames, or one from the birth frame on, is refined on
   every frame it qualifies on. The frames the refine can reach are tracked
-  again; the rest keep `prompt` mode's mask. It also refines every frame of
+  again; the rest keep the track's mask. It also refines every frame of
   a run of 1-8 frames where the mask drops a hand-sized region of her that it
   holds on both sides and the pose has her body in (the Mask Guard's
   `mask_loss` on closed runs), from up to 16 points inside that region. A
-  clip where no frame needs points gets `prompt` mode's mask exactly. Nothing
+  clip where no frame needs points gets the track's mask exactly. Nothing
   is removed on pose grounds: there are no negative points. Limits: as
-  `prompt`; only whole-limb drops far outside the mask, and regions dropped
-  for up to 8 frames between two frames that hold them, are recovered.
+  `prompt`'s track; only whole-limb drops far outside the mask, and regions
+  dropped for up to 8 frames between two frames that hold them, are
+  recovered.
+
+How `prompt` mode repairs its track (one track), from the mask alone, no pose:
+
+1. The track: the detector finds her, the tracker carries her, the frames
+   before the birth (or before a gain) are tracked backwards. Nothing else
+   changes it.
+2. A part lost for good: the largest 4-connected piece of a frame's mask that
+   the next frame lacks is 8% of the mask or more, and from that next frame to
+   the end of its stretch (the frames with a mask) the area never comes back
+   above 92% of the frame before's. The frames from the one that lost it to
+   the end of the stretch are tracked again, forwards, by the tracker alone,
+   on a memory of their own that holds nothing but the mask of the frame
+   before the loss (no detection, no re-anchor, no points). The track's memory
+   is built with the detector's anchors, whose masks leave out a limb the
+   detector does not see as her (a blurred hand reaching toward the camera),
+   and there the tracker lets the part go; a memory seeded from her whole mask
+   keeps it. On the test clips it fires on exactly that hand, at three of four
+   widths (pieces of 12-14% of the mask, the area at most 87-89% from there on);
+   no other frame keeps its area at or under 92% to the end of its stretch,
+   and of the frames that lose 8% or more the area comes back to 96% at least.
+   A loss the area comes back from before the end of its stretch is left
+   alone, however long it lasts: on the test clips those are an arm swinging
+   in front of the body, where the mask is right.
+3. A part dropped for a few frames: on the masks after step 2, where the mask
+   drops a part of her for 1-8 frames between two frames that hold it (each
+   of the two loses a part of 1.5% of her mask or more holding a whole block
+   of the Wan Animate final, grow 10 and blockify 32; the two parts overlap;
+   neither moved away), every frame of the run is refined from up to 16
+   points where both frames hold her, together with the mask the tracker had
+   on that frame (Meta's point refine, as in `prompt_pose` step 3), and shows
+   its mask and the refine's together (the larger of the two logits, at the
+   decoder's 288 x 288). Nothing else is tracked again: no demotion, no
+   second pass.
+
+The console names each repair: the frames tracked again, the frame before
+them and the share lost, and each refined frame with its points. The repairs
+keep every propagated frame's raw decoder logits on the CPU until they are
+done, 162 KiB a frame (35 MiB for 233 frames, 97 MiB for 612).
 
 How `prompt_pose` works, in Meta's order (SAM 3's video predictor, as
 easy-sam3 vendors it: the text prompt with its full pass, points on the
 existing object, then the re-propagation its action history asks for):
 
-1. Pass 1 is `prompt` mode, unchanged. Where it tracked the frames before a
-   gain again, the gain frame counts as the birth below.
+1. Pass 1 is `prompt` mode's track, unchanged, without its repairs. Where it
+   tracked the frames before a gain again, the gain frame counts as the birth
+   below.
 2. The frames to refine are chosen from pass 1's masks and the keypoints the
    pose images draw: body and hand keypoints at `pose_data`'s
    `draw_threshold`, on the canvas (one off it is dropped, not clamped), a
@@ -218,7 +261,7 @@ existing object, then the re-propagation its action history asks for):
    them from the birth, for its memory.
 
 The result: the frames before the birth, the kept conditioning frames and the
-frames the refine cannot reach are pass 1's, `prompt` mode's bit for bit; the
+frames the refine cannot reach are pass 1's, the track's bit for bit; the
 refined frames show the refine and every other frame the second pass. The
 console lines name the refined frames with their points, the stability
 fallback, the object score, the frames that keep the first pass, the demoted
@@ -265,7 +308,11 @@ keypoint must lie to become a point: on the test clips every keypoint the pose
 drew on a label, toy, cabinet or floor lay within 46 px of the mask, and the
 one hand the mask lost 68-126 px out. `prompt_pose` also reads every
 `[prompt]` and `[prompt, max_objects 1]` field: its first pass is `prompt`
-mode.
+mode's track. A refine's dense prompt, `prompt` mode's and `prompt_pose`'s
+alike, is the track's raw decoder logits of the frame; `prompt_pose`'s second
+pass reads `input_range`, `fill_hole_area`, `obj_ptr_token`,
+`memory_selection` and `max_conditioning_frames`, and `prompt` mode's re-track
+after a part lost for good reads what the track's backward pass reads.
 
 The six re-anchor and memory fields (`clear_on_anchor` to `memory_selection`)
 are read at `max_objects` 1 only. With `max_objects` above 1 the shared

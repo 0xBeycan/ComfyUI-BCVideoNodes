@@ -21,7 +21,7 @@ from names import spec  # noqa: E402
 def test_the_video_track_mode_gains_prompt_pose_and_stays_prompt_by_default():
     choices, options = spec("BCVSAM3VideoTrack")["required"]["mode"]
     assert choices == ["prompt", "box_keypoint", "prompt_pose"] and options["default"] == "prompt"
-    assert "prompt_pose: prompt mode's track;" in options["tooltip"]
+    assert "prompt_pose: prompt mode's track, without its repairs;" in options["tooltip"]
     assert "as positive points together with the mask the tracker had on that frame" in options["tooltip"]
     assert "The Mask Guard fails a limb or the head the mask leaves out" in options["tooltip"]
     optional = spec("BCVSAM3VideoTrack")["optional"]

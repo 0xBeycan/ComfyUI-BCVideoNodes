@@ -281,14 +281,19 @@ def _holds_unit(grid, piece, corner):
 
 # --- mask_loss: a region of her the model loses ------------------------------------------------
 
+def _piece(labels, stats, i):
+    """Piece `i` of cv2 connected-component `labels` and `stats`, as (piece, top-left corner (y, x))."""
+    x, y, w, h = (int(v) for v in stats[i, :4])
+    return labels[y:y + h, x:x + w] == i, (y, x)
+
+
 def _pieces(lost):
     """The connected pieces of the boolean map `lost`, each as (piece, top-left corner (y, x))."""
     import cv2
 
     count, labels, stats, _ = cv2.connectedComponentsWithStats(lost.astype(np.uint8), connectivity=8)
     for i in range(1, count):
-        x, y, w, h = (int(v) for v in stats[i, :4])
-        yield labels[y:y + h, x:x + w] == i, (y, x)
+        yield _piece(labels, stats, i)
 
 
 def _gain(masks, anchors, run, piece, corner, reach):
@@ -547,6 +552,60 @@ def closed_losses(masks, pose_metas: list[PoseMeta], draw_threshold):
     _, H, W = masks.shape
     evidence = _LimbEvidence(pose_metas, W, H, draw_threshold)
     return lost_regions(masks, _final_reading(masks), evidence, open_runs=False)
+
+
+def dropped_parts(masks):
+    """prompt mode's trigger (sam3_1_multiplex.refine.segment_by_prompt_repaired), from the mask alone:
+    a part of her the raw `masks` hold on both sides of a closed run of up to LOSS_WINDOW frames and
+    drop on every frame of it, as the Wan Animate workflow's final reads them (GrowMaskWithBlur expand
+    FINAL_GROW, BlockifyMask FINAL_BLOCK). The runs are lost_regions' closed runs; the part is judged on
+    each side:
+
+    - each of the two frames around the run loses a part: a connected piece of what it holds (the mask
+      and the final both) that no frame of the run holds (the mask or the final), and the two parts
+      overlap - the region both frames hold and the run drops;
+    - each part is hand-sized or bigger (LOSS_HAND of its frame's mask) and holds a whole block of the
+      final, as lost_regions asks of a region: the final reads the mask a block at a time;
+    - neither is a limb that moved away and came back (_gain under LOSS_GAIN, as lost_regions).
+
+    Each part is measured whole, not their overlap alone: a hand that moves between the two frames
+    leaves only a sliver both of them hold. For the same reason nothing is asked of the frames further
+    beyond the run: a moving hand is held there nowhere. `masks` is as lost_regions'. A generator of
+    (run, anchors, region, corner, share) as closed_losses': the region is the overlap of the two
+    parts, the only place a part moving from one to the other covers all the way, as [h, w] booleans
+    with its top-left pixel `corner` (y, x), and the share the smaller part's."""
+    import cv2
+
+    N, H, W = masks.shape
+    view = _Reading(masks, _final_reading(masks))
+    for run, anchors, _, box, gone in _closed_runs(view):
+        if not (view(anchors[0])[0][box] & view(anchors[1])[0][box] & ~gone).any():
+            continue                               # the two frames hold nothing the run drops
+        # the part of the frame after reaches beyond the box of the frame before: what the run holds, whole
+        held = np.zeros((H, W), bool)
+        for f in run:
+            held |= view(f)[1]
+        sides = [view(a)[0] & ~held for a in anchors]
+        both = sides[0] & sides[1]
+        if not all(view.hand_sized(side, a) for side, a in zip(sides, anchors)):
+            continue                               # no part of that side can be hand-sized
+        areas = [view.areas[a] for a in anchors]
+        labelled = [cv2.connectedComponentsWithStats(side.astype(np.uint8), connectivity=8)[1:3] for side in sides]
+        reach = min(len(run), LOSS_REACH_FRAMES) * LOSS_REACH * min(H, W)
+        ys, xs = np.nonzero(both)
+        for pair in sorted(set(zip(labelled[0][0][ys, xs].tolist(), labelled[1][0][ys, xs].tolist()))):
+            shares = []
+            for (labels, stats), i, area in zip(labelled, pair, areas):
+                part, corner = _piece(labels, stats, i)
+                share = int(part.sum()) / area
+                if (share < LOSS_HAND or not view.whole_unit((*anchors, *run), part, corner)
+                        or _gain(masks, anchors, run, part, corner, reach) >= LOSS_GAIN):
+                    break
+                shares.append(share)
+            else:
+                region = (labelled[0][0] == pair[0]) & (labelled[1][0] == pair[1])
+                box = _box(region)
+                yield run, anchors, region[box], (int(box[0].start), int(box[1].start)), min(shares)
 
 
 # --- the head and a whole limb outside the mask -------------------------------------------------

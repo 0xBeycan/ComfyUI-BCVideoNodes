@@ -6,17 +6,19 @@ its predictor runs it (easy-sam3 @ 88fe578 vendors it): the text prompt with its
 detector-and-tracker pass, points on the existing object, then the tracker-only re-propagation its
 action history asks for.
 
-1. Pass 1 is `segment_by_prompt`, unchanged (refine.first_pass); it only hands over what the rest
-   reads (its capture). Where it tracked the frames before a gain again (prompt.gain_frame), the
-   capture's birth is the gain frame, so below "the birth" is that frame and the frames before it are
-   pass 1's backward fill.
+1. Pass 1 is `segment_by_prompt`, the track, unchanged (refine.first_pass); it only hands over what
+   the rest reads (its capture, the conditioning outputs whole). Prompt mode's own repairs
+   (refine.segment_by_prompt_repaired) are not run: the triggers below judge the track, so no part is
+   refined twice and the clip is tracked again at most once. Where pass 1 tracked the frames before a
+   gain again (prompt.gain_frame), the capture's birth is the gain frame, so below "the birth" is that
+   frame and the frames before it are pass 1's backward fill.
 2. The frames to refine and their points are chosen from pass 1's masks once pass 1 is done, by two
    triggers whose frames are joined: the pose-driven one (`refine_points`), from the keypoints the
    pose images draw, each frame on its own; and the mask-driven one (`dropped_regions`), the Mask
    Guard's mask_loss detection on closed runs (guard.mask.closed_losses), from the region itself.
    A frame both pick gets the pose's points first, then the region's.
-3. No frame chosen: pass 1's masks are the result, prompt mode's bit for bit. Meta does not
-   propagate again without a new prompt.
+3. No frame chosen: pass 1's masks are the result, the track's bit for bit. Meta does not propagate
+   again without a new prompt.
 4. Otherwise each chosen frame is refined, pass 1's conditioning frames near a refined frame are
    demoted and the tracker alone tracks the clip again from the birth; the frames before the first
    one the refine can reach keep pass 1's mask (refine.refine_and_track).
@@ -216,7 +218,7 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     chosen = refine_points(masks, xy, drawn, birth, c.pose_point_distance * min(H, W))
     dropped = dropped_regions(masks, pose_metas, draw_threshold, birth)
     if not chosen and not dropped:
-        log.info("prompt_pose: no frame needed points; the mask is prompt mode's")
+        log.info("prompt_pose: no frame needed points; the mask is the track's")
         report_counts(result, counts)
         return masks
 

@@ -1,7 +1,7 @@
 """The SAM 3.1 Multiplex counts TypedDicts against the code that fills them: each TypedDict's keys,
 in order, are the labels its function writes into `counts` - the keys of the dict it starts
-from, then every `counts["..."]` it stores, in the order they first appear - and those are the
-literal lists below. A label added to the code without its key, or a key reordered, fails here.
+from, then every `counts["..."]` it stores, in the order they first appear, after those of a
+helper it hands `counts` to - and those are the literal lists below. A label added to the code without its key, or a key reordered, fails here.
 
 The four modules import without ComfyUI, but this file imports comfy.cli_args first, so it runs
 where ComfyUI is importable:
@@ -33,15 +33,25 @@ COUNTS = {
     "PromptPoseCounts": (prompt_pose, "segment_by_prompt_pose",
                          ("refined frames", "refined for a dropped region", "points", "stability fallbacks",
                           "demoted", "re-tracked", "kept from the first pass", "frames segmented")),
-    "RefineCounts": (refine, "refine_and_track",
+    "RefineCounts": (refine, ("refine_frame", "refine_and_track"),
                      ("refined frames", "points", "stability fallbacks", "demoted", "re-tracked",
                       "kept from the first pass")),
+    "PromptRepairCounts": (refine, "segment_by_prompt_repaired",
+                           ("tracked again", "refined frames", "points", "stability fallbacks", "frames segmented")),
 }
 
 
-def labels_written(function):
-    """The labels `function` writes into its local `counts`, in the order they first appear in
-    its source: the keys of the dict literal it binds, then the keys of every store."""
+def labels_written(*functions):
+    """The labels `functions` write into their local `counts`, in the order they first appear in
+    their sources, one function after the other: the keys of the dict literal each binds, then the
+    keys of every store. A function its caller hands `counts` to comes before the caller."""
+    labels = []
+    for function in functions:
+        labels += [label for label in _labels(function) if label not in labels]
+    return tuple(labels)
+
+
+def _labels(function):
     found = []
     for node in ast.walk(ast.parse(inspect.getsource(function))):
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Dict):
@@ -56,12 +66,13 @@ def labels_written(function):
     for *_, label in sorted(found):
         if label not in labels:
             labels.append(label)
-    return tuple(labels)
+    return labels
 
 
 @pytest.mark.parametrize("name", list(COUNTS))
 def test_the_counts_typeddict_has_the_labels_the_code_writes_in_order(name):
-    module, function, literal = COUNTS[name]
+    module, functions, literal = COUNTS[name]
     keys = tuple(getattr(module, name).__annotations__)
     assert keys == literal
-    assert labels_written(getattr(module, function)) == literal
+    functions = (functions,) if isinstance(functions, str) else functions
+    assert labels_written(*(getattr(module, function) for function in functions)) == literal

@@ -520,7 +520,7 @@ def test_the_capture_holds_the_track_s_birth_its_conditioning_frames_as_created_
     cfg = config()   # max_conditioning_frames 2 with the birth kept: pass 1 drops the anchor on 16 at 32
     dump = {}
     rig(cfg, logits=dump)
-    capture = {"raw": {}}
+    capture = {"raw": {}, "cond": {}}          # the conditioning outputs whole, as prompt_pose asks
     prompt_run(rig, monkeypatch, cfg, capture=capture)
     assert capture["birth"] == 2 and sorted(capture["cond"]) == [2, 16, 32]
     assert all("pred_masks_high_res" not in out and "maskmem_features" in out for out in capture["cond"].values())
@@ -628,7 +628,7 @@ def test_with_no_frame_to_refine_the_result_is_prompt_mode_s_tensor(pp_rig, capl
     assert out.masks is returned[-1]                                     # pass 1's tensor itself
     assert torch.equal(out.masks, out.prompt) and out.log == out.prompt_log and out.result == out.prompt_result
     assert out.refines == [] and out.detected == list(range(RIG_N))      # no refine, no second pass
-    assert "prompt_pose: no frame needed points; the mask is prompt mode's" in caplog.text
+    assert "prompt_pose: no frame needed points; the mask is the track's" in caplog.text
 
 
 @pytest.mark.parametrize("defaults", [False, True])
@@ -981,7 +981,7 @@ def test_a_clip_whose_mask_drops_nothing_is_prompt_mode_s_tensor_with_the_body_d
     pass_1, returned = passes[-1]
     assert out.refines == [] and out.masks is returned and torch.equal(out.masks, pass_1)
     assert out.log == out.prompt_log and "refined for a dropped region" not in out.result
-    assert "prompt_pose: no frame needed points; the mask is prompt mode's" in caplog.text
+    assert "prompt_pose: no frame needed points; the mask is the track's" in caplog.text
 
 
 # --- the entry: what prompt_pose mode reads and ignores -------------------------------------------
