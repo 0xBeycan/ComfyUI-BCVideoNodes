@@ -29,6 +29,9 @@ there. This is Meta's own SAM 3 video policy, run over core's weight-carrying pr
 With `max_objects` above 1 the earlier single-track policy runs once per track, on the shared
 defaults (input range, pointer token, memory_gap, thresholds), and Meta's multi-object rules
 decide between the tracks (`segment_by_prompt_multi`); at 1 none of that code runs.
+
+This is the track. At max_objects 1 prompt mode refines it afterwards where the mask drops a part
+of her for a few frames (refine.segment_by_prompt_refined); prompt_pose runs the track alone.
 """
 from typing import Optional, TypedDict
 
@@ -363,10 +366,10 @@ PromptCounts = TypedDict("PromptCounts", {"false starts": int, "reconditioned": 
                                           "tracked from frame": int}, total=False)
 
 
-# What segment_by_prompt hands over when it is given a `capture` dict (prompt_pose's second pass
-# reads it): the live track's birth frame (no key while no track is born, -1 after a false start),
-# its multiplex state, its conditioning outputs as they were created - the birth and every fired
-# anchor, those prune_conditioning dropped later included - without their 1008x1008 high-res mask,
+# What segment_by_prompt hands over when it is given a `capture` dict (the refine action reads it,
+# refine.refine_and_track): the live track's birth frame (no key while no track is born, -1 after a
+# false start), its multiplex state, its conditioning outputs as they were created - the birth and
+# every fired anchor, those prune_conditioning dropped later included - without their 1008x1008 high-res mask,
 # and, in the dict the caller put under "raw", each propagated frame's decoder logits before the
 # cleaning, a CPU copy. When a gain (gain_frame) re-tracked the frames before it, they are handed
 # over as the frames before a birth are: "birth" is the gain frame, and "cond" and "raw" hold
@@ -383,7 +386,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
     """[N, H, W] float masks of the person in `images` [N, H, W, 3], from the text prompt
     alone. `result`, if given, is filled with what happened for the log; `logits`, if given, a
     dict, receives each output frame's low-res logits (see `logits_record`); `capture`, if given,
-    a dict with an empty dict under "raw", receives what the run hands over to prompt_pose (see
+    a dict with an empty dict under "raw", receives what the run hands over to the refine (see
     PromptCapture).
 
     The [prompt] A/B switches of `config` pick ours or Meta's side of a policy step (A6, A7); at

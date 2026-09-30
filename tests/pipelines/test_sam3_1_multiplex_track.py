@@ -102,7 +102,8 @@ def pose_data_2():
 
 @pytest.fixture
 def fake_segment(monkeypatch):
-    """segment_by_pose / segment_by_prompt stand-ins that record what they were handed."""
+    """segment_by_pose / segment_by_prompt_refined (prompt mode) / segment_by_prompt_pose stand-ins that record
+    what they were handed."""
     calls = []
 
     def by_pose(model, images, bboxes, pose_metas, config, min_keypoint_conf, **kwargs):
@@ -118,7 +119,7 @@ def fake_segment(monkeypatch):
         return torch.zeros(images.shape[:3])
 
     monkeypatch.setattr(sam3, "segment_by_pose", by_pose)
-    monkeypatch.setattr(sam3, "segment_by_prompt", by_prompt)
+    monkeypatch.setattr(sam3, "segment_by_prompt_refined", by_prompt)
     monkeypatch.setattr(sam3, "segment_by_prompt_pose", by_prompt_pose)
     return calls
 

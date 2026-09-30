@@ -79,7 +79,7 @@ HEAD_OUT_SIDES = ("r_eye", "l_eye", "r_ear", "l_ear")
 # The final mask the Wan Animate workflow feeds the sampler: the raw mask grown by
 # GrowMaskWithBlur (expand FINAL_GROW, tapered) and cut into BlockifyMask's blocks of FINAL_BLOCK
 # px, laid from each frame's own grown box, so the grid moves from frame to frame; every block that
-# holds a grown pixel is on (mask.block_grid, mask.final_mask). The model reads the final a block at
+# holds a grown pixel is on (mask.block_grid, mask._final_blocks). The model reads the final a block at
 # a time: a region of her it loses is a whole block (mask_loss), on the raw mask a block the final
 # of the frame leaves off. The final's outline lies FINAL_GROW to FINAL_GROW + FINAL_BLOCK beyond
 # the raw mask's, FINAL_PAD on average, and moves by up to a block between frames with no change in
@@ -133,7 +133,7 @@ SCAIL2_REFERENCE = ("mode", "area", "fragments", "cropped", "iou_first_frame", "
 # The rows above as the dicts the checks build: the same keys in the same order, which is the
 # order the metrics JSON lists them in (tests/pipelines/test_guard_rows.py holds each to its tuple).
 # head_out names the head keypoints outside the mask, limbs_out the limbs wholly outside it
-# (mask.limbs_out), mask_loss the largest share of her mask the model loses on the frame.
+# (mask.keypoints_out), mask_loss the largest share of her mask the model loses on the frame.
 class PoseRow(TypedDict):
     frame: int
     detected: bool

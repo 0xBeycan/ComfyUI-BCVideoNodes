@@ -140,11 +140,16 @@ def latent_reading(cells, shape):
     f's latent grid that read as the person (`cells`, `driving_person`) at the frame size `shape`
     (H, W), and that grid's cells as (row edges, column edges)."""
     H, W = shape
-    grid = (_cell_edges(cells.shape[1], H), _cell_edges(cells.shape[2], W)) if len(cells) else None
+    grid = rows = cols = None
+    if len(cells):
+        grid = (_cell_edges(cells.shape[1], H), _cell_edges(cells.shape[2], W))
+        # the cell each pixel row and each pixel column reads, as the nearest upsampling picks it
+        rows, cols = (F.interpolate(torch.arange(n, dtype=torch.float32)[None, None, :, None], size=(size, 1),
+                                    mode="nearest")[0, 0, :, 0].long().numpy()
+                      for n, size in ((cells.shape[1], H), (cells.shape[2], W)))
 
     def read(f):
-        up = F.interpolate(torch.from_numpy(cells[f])[None, None].float(), size=shape, mode="nearest")
-        return up[0, 0].numpy() > 0.5, grid
+        return cells[f].take(cols, axis=1).take(rows, axis=0), grid
     return read
 
 

@@ -3,7 +3,7 @@ in order, are the labels its function writes into `counts` - the keys of the dic
 from, then every `counts["..."]` it stores, in the order they first appear - and those are the
 literal lists below. A label added to the code without its key, or a key reordered, fails here.
 
-The three modules import without ComfyUI, but this file imports comfy.cli_args first, so it runs
+The four modules import without ComfyUI, but this file imports comfy.cli_args first, so it runs
 where ComfyUI is importable:
 
     python -m pytest tests/pipelines/test_sam3_1_multiplex_counts.py
@@ -19,7 +19,7 @@ pytest.importorskip("cv2")
 cli_args = pytest.importorskip("comfy.cli_args")
 cli_args.args.disable_xformers = True
 
-from bcvideonodes.pipelines.sam3_1_multiplex import pose, prompt, prompt_pose  # noqa: E402
+from bcvideonodes.pipelines.sam3_1_multiplex import pose, prompt, prompt_pose, refine  # noqa: E402
 
 COUNTS = {
     "PromptCounts": (prompt, "segment_by_prompt",
@@ -33,6 +33,12 @@ COUNTS = {
     "PromptPoseCounts": (prompt_pose, "segment_by_prompt_pose",
                          ("refined frames", "refined for a dropped region", "points", "stability fallbacks",
                           "demoted", "re-tracked", "kept from the first pass", "frames segmented")),
+    "RefineCounts": (refine, "refine_and_track",
+                     ("refined frames", "points", "stability fallbacks", "demoted", "re-tracked",
+                      "kept from the first pass")),
+    "PromptRefineCounts": (refine, "segment_by_prompt_refined",
+                           ("refined frames", "points", "stability fallbacks", "demoted", "re-tracked",
+                            "kept from the first pass", "frames segmented")),
 }
 
 

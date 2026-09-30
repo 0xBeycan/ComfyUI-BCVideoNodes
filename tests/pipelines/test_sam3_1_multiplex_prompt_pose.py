@@ -555,12 +555,29 @@ def refined_box(real):
     return box(*position(real), h=10, ring=1)[None, None]
 
 
+def stand_in_refine(out, monkeypatch):
+    """Stands in for the refine (its mask the person's box two rows taller, refined_box) and records
+    each call in `out.refines`: the frame, the points, the dense prompt and where the tracker's log
+    stood."""
+    out.refines = []
+
+    def refine(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux, previous):
+        real = vision_feats[0]
+        out.refines.append({"frame": real, "points": points, "previous": previous, "log": len(tracker.log)})
+        logits_ = refined_box(real)
+        return ({"pred_masks": logits_, "pred_masks_high_res": logits_, "object_score_logits": torch.tensor([[7.0]]),
+                 "obj_ptr": 0, "maskmem_features": ("cond", "refined", real), "maskmem_pos_enc": [0]},
+                {"points": list(points)[:16], "stability": 0.99, "fallback": False})
+
+    monkeypatch.setattr(sam3, "refine_with_points", refine)
+
+
 @pytest.fixture
 def pp_rig(rig, monkeypatch):
     """segment_by_prompt_pose on test_sam3_1_multiplex_ab's stand-ins, the refine stood in for (the
     person's box two rows taller) and, when `chosen` is given, the rule too. `make` builds the
-    tracker; prompt mode is run on one of its own first, as the baseline. `size` is the (H, W) of
-    the frames prompt_pose is given (the baseline stays on the rig's)."""
+    tracker; prompt mode's track is run on one of its own first, as the baseline. `size` is the
+    (H, W) of the frames prompt_pose is given (the baseline stays on the rig's)."""
     def run(cfg=None, chosen=None, metas=None, logits=None, make=None, size=(RIG_H, RIG_W), **rig_kwargs):
         cfg = cfg or config()
         tracker_kwargs = {k: rig_kwargs.pop(k) for k in ("ring", "speck", "scores", "empty") if k in rig_kwargs}
@@ -571,17 +588,7 @@ def pp_rig(rig, monkeypatch):
         monkeypatch.setattr(sam3, "_multiplex_parts", lambda model: (None, None, tracker, Backbone()))
         detect, out.detected = sam3.detect_person, []
         monkeypatch.setattr(sam3, "detect_person", lambda *a: out.detected.append(a[2]) or detect(*a))
-        out.refines = []
-
-        def refine(tracker, backbone, frame, trunk_out, vision_feats, vision_pos, feat_sizes, points, mux, previous):
-            real = vision_feats[0]
-            out.refines.append({"frame": real, "points": points, "previous": previous, "log": len(tracker.log)})
-            logits_ = refined_box(real)
-            return ({"pred_masks": logits_, "pred_masks_high_res": logits_, "object_score_logits": torch.tensor([[7.0]]),
-                     "obj_ptr": 0, "maskmem_features": ("cond", "refined", real), "maskmem_pos_enc": [0]},
-                    {"points": list(points)[:16], "stability": 0.99, "fallback": False})
-
-        monkeypatch.setattr(sam3, "refine_with_points", refine)
+        stand_in_refine(out, monkeypatch)
         if chosen is not None:
             monkeypatch.setattr(sam3, "refine_points", lambda *args: dict(chosen))
         metas = metas or [meta({}, size[1], size[0])] * RIG_N

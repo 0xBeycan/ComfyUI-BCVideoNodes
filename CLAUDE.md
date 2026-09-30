@@ -33,7 +33,7 @@ nodes/               common (category, _config, _ConfigNode), sampler, pose, sam
                      scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard)
 pipelines/           long_video (the chunk loop), pose, face, scail2 (the colored masks, the driving video
                      on black), guard/ (config, common, pose, mask, report, timeline, combine, scail2),
-                     sam3_1_multiplex/ (config, prompt, pose, prompt_pose, track: the entry the node calls)
+                     sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry the node calls)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, yolo/, sam3_1_multiplex/ (adapter, loader,
@@ -148,7 +148,7 @@ and patch underscore names through the `Names` tables.
 - No spaghetti, no duplication; clean, readable, debuggable. Small functions with one job.
 - Explicit data contracts as TypedDict annotations (`libs/pose_data.py`, the guard rows in
   `pipelines/guard/common.py`, the SAM counts in
-  `pipelines/sam3_1_multiplex/{prompt,pose,prompt_pose}.py`); the values stay plain dicts.
+  `pipelines/sam3_1_multiplex/{prompt,pose,prompt_pose,refine}.py`); the values stay plain dicts.
 - The owner's extraction rule: a new function only if (a) identical code already lives in 2+
   places (reduce it to one) or (b) it is likely (~70-80%) to be reused by future nodes of this
   repo's kind. Otherwise keep it inline. Near-copies that differ in any detail stay separate.

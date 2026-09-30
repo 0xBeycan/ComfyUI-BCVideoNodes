@@ -17,8 +17,9 @@ from ...libs.pose_data import PoseData
 from ...models.sam3_1_multiplex.loader import load_sam3_1_multiplex
 from .config import TRACKER_FIELDS, SAM3_1MultiplexConfig, changed_fields
 from .pose import segment_by_pose
-from .prompt import PROMPT, segment_by_prompt, segment_by_prompt_multi
+from .prompt import PROMPT, segment_by_prompt_multi
 from .prompt_pose import segment_by_prompt_pose
+from .refine import segment_by_prompt_refined
 
 
 MODE_PROMPT = "prompt"
@@ -133,7 +134,11 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     - "prompt": the text `prompt` alone, under the tracking policy in `config` (SAM3_1MultiplexConfig).
       The frames before the birth are tracked backwards from it, or, when the track gains a large
       piece that lasts within 16 frames of its birth, every frame before that gain from the gain
-      frame (prompt.gain_frame). pose_data, bboxes and the coords are not used.
+      frame (prompt.gain_frame). With one track, where the mask alone shows a part of her dropped
+      for 1-8 frames between two frames that hold it, every frame of that run is refined from
+      points where both hold her and the frames the refine can reach are tracked again
+      (refine.segment_by_prompt_refined); nothing dropped, the track's mask is the result. pose_data,
+      bboxes and the coords are not used.
     - "box_keypoint": pose_data (required) gives every frame's box and body keypoints; the
       positive points are computed from them frame by frame and the negatives from the running
       mask. `bboxes`, when given, replace pose_data's detection boxes. `positive_coords` /
@@ -145,12 +150,12 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
       fields), and on every frame from the birth on where pose_data (required) shows the track
       lost a whole forearm-and-hand or lower leg, each frame judged on its own, that limb's drawn
       keypoints as positive points on that frame, then the frames those refines can reach tracked
-      again, the rest keeping prompt mode's mask
+      again, the rest keeping the track's mask; prompt mode's own refine is not run
       (segment_by_prompt_pose; its [prompt_pose] fields). `bboxes`, the
       coords, `max_objects` and `object_index` are not used.
 
     `max_objects` is how many tracks may be born and kept. 1 is the single-person policy
-    (`segment_by_prompt`); above 1, prompt mode only, `segment_by_prompt_multi` runs instead and
+    (`segment_by_prompt`, the track, and its refine); above 1, prompt mode only, `segment_by_prompt_multi` runs instead and
     nothing of it runs at 1. `object_index` -1 is the union of every tracked object, k is object
     k alone, objects numbered from 0 in birth order; asking for an object that was not tracked
     raises with the count found.
@@ -179,10 +184,10 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
     the propagation decoder selected on each frame, the one its object pointer was built from
     (None on the birth frame and on frames without output). In prompt mode "anchors" lists every
     re-anchor slot, fired or not, as prompt.AnchorLog records. Not collected with max_objects above 1.
-    In prompt_pose mode the record is its first pass's, prompt mode's, with every frame the mode
-    refined or shows from its second pass replaced: a "prompt" frame whose logits are the ones
-    before the cleaning ("raw" true), its "mask_index" the second pass's (None on a refined frame);
-    "anchors" are the first pass's slots."""
+    Where prompt mode refines, and in prompt_pose mode, the record is the track's with every frame
+    the mode refined or shows from its second pass replaced: a "prompt" frame whose logits are the
+    ones before the cleaning ("raw" true), its "mask_index" the second pass's (None on a refined
+    frame); "anchors" are the track's slots."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, found {mode!r}")
     if not isinstance(max_objects, int) or max_objects < 1:
@@ -221,7 +226,7 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
             if not prompt or not prompt.strip():
                 raise ValueError("prompt mode needs a text prompt, found an empty one")
             if max_objects == 1:
-                mask = segment_by_prompt(model, clip, images, prompt, config, result=result, **dump)
+                mask = segment_by_prompt_refined(model, clip, images, prompt, config, result=result, **dump)
             else:
                 mask = segment_by_prompt_multi(model, clip, images, prompt, config, max_objects,
                                                object_index, result=result)

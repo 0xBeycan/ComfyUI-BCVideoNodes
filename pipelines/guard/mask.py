@@ -1,5 +1,7 @@
 """The mask checks: the per-frame measurements of the mask against the pose it belongs to (or
 alone, without pose_data), the flags they raise, and check_mask."""
+from functools import reduce
+
 import numpy as np
 
 from ...libs import log
@@ -179,9 +181,22 @@ def _dilated(mask, k):
     return cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
 
 
+def _grow_side(size):
+    """The side of _grown's square kernel: 2% of `size`, odd and at least 3 pixels."""
+    return max(3, int(0.02 * size) | 1)
+
+
 def _grown(mask, size):
     """`mask` dilated by a square kernel of 2% of `size`, odd and at least 3 pixels."""
-    return _dilated(mask, max(3, int(0.02 * size) | 1))
+    return _dilated(mask, _grow_side(size))
+
+
+def _box(region):
+    """The box of the [H, W] booleans `region` as (row slice, column slice), None when it is empty."""
+    rows, cols = np.flatnonzero(region.any(axis=1)), np.flatnonzero(region.any(axis=0))
+    if not len(rows):
+        return None
+    return slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1)
 
 
 # --- the final mask and the grids the models read ----------------------------------------------
@@ -198,31 +213,54 @@ def block_grid(mask):
     """BlockifyMask's grid over the box of `mask` ([H, W] booleans, the grown mask; a final mask
     has the same box): (row edges, column edges), each block from one edge to the next along
     both sides; None on an empty frame. The grid is laid from each frame's own box."""
-    rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
-    if not len(rows):
+    box = _box(mask)
+    if box is None:
         return None
-    return _block_edges(rows[0], rows[-1] + 1), _block_edges(cols[0], cols[-1] + 1)
+    rows, cols = box
+    return _block_edges(rows.start, rows.stop), _block_edges(cols.start, cols.stop)
 
 
-def _final_mask(mask):
+def _final_blocks(mask):
     """The final mask the Wan Animate workflow makes of one raw [H, W] boolean frame, the one the
-    sampler and every model after the preprocess read, and its block grid: GrowMaskWithBlur
-    (expand FINAL_GROW, tapered corners: FINAL_GROW dilations by a 3 x 3 cross; an empty frame
-    stays empty), then BlockifyMask (FINAL_BLOCK, block_grid): a block on wherever it holds a
-    grown pixel, nothing outside the box. Returns (final, grid)."""
+    sampler and every model after the preprocess read, as its block grid and its blocks:
+    GrowMaskWithBlur (expand FINAL_GROW, tapered corners: FINAL_GROW dilations by a 3 x 3 cross; an
+    empty frame stays empty), then BlockifyMask (FINAL_BLOCK, block_grid): a block on wherever it
+    holds a grown pixel, nothing outside the box. Returns (grid, [rows, columns] booleans, the
+    blocks that are on), None on an empty frame. The grown mask lies within FINAL_GROW px of the
+    mask's box, so only that part of the frame is grown."""
     import cv2
 
+    box = _box(mask)
+    if box is None:
+        return None
+    H, W = mask.shape
+    y0, x0 = max(0, box[0].start - FINAL_GROW), max(0, box[1].start - FINAL_GROW)
+    y1, x1 = min(H, box[0].stop + FINAL_GROW), min(W, box[1].stop + FINAL_GROW)
     cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], np.uint8)
-    grown = cv2.dilate(mask.astype(np.uint8), cross, iterations=FINAL_GROW).astype(bool)
-    out = np.zeros_like(grown)
-    grid = block_grid(grown)
-    if grid is None:
-        return out, None
-    rows, cols = grid
-    box = grown[rows[0]:rows[-1], cols[0]:cols[-1]].astype(np.int64)
-    on = np.add.reduceat(np.add.reduceat(box, rows[:-1] - rows[0], axis=0), cols[:-1] - cols[0], axis=1) > 0
-    out[rows[0]:rows[-1], cols[0]:cols[-1]] = np.repeat(np.repeat(on, np.diff(rows), axis=0), np.diff(cols), axis=1)
-    return out, grid
+    grown = cv2.dilate(mask[y0:y1, x0:x1].astype(np.uint8), cross, iterations=FINAL_GROW).astype(bool)
+    rows, cols = block_grid(grown)
+    grown = grown[rows[0]:rows[-1], cols[0]:cols[-1]]
+    on = np.logical_or.reduceat(np.logical_or.reduceat(grown, rows[:-1] - rows[0], axis=0), cols[:-1] - cols[0], axis=1)
+    return (rows + y0, cols + x0), on
+
+
+def _final_reading(masks):
+    """`read(f)` (see lost_regions) of the raw [N, H, W] boolean `masks`: frame f's final mask, [H, W]
+    booleans laid out from its blocks, and its grid (_final_blocks). Each frame is grown and
+    blockified once, however often it is read."""
+    shape, blocks = masks.shape[1:], {}
+
+    def read(f):
+        if f not in blocks:
+            blocks[f] = _final_blocks(masks[f])
+        final = np.zeros(shape, bool)
+        if blocks[f] is None:
+            return final, None
+        (rows, cols), on = blocks[f]
+        on = np.repeat(np.repeat(on, np.diff(rows), axis=0), np.diff(cols), axis=1)
+        final[rows[0]:rows[-1], cols[0]:cols[-1]] = on
+        return final, (rows, cols)
+    return read
 
 
 def _holds_unit(grid, piece, corner):
@@ -243,14 +281,19 @@ def _holds_unit(grid, piece, corner):
 
 # --- mask_loss: a region of her the model loses ------------------------------------------------
 
+def _piece(labels, stats, i):
+    """Piece `i` of cv2 connected-component `labels` and `stats`, as (piece, top-left corner (y, x))."""
+    x, y, w, h = (int(v) for v in stats[i, :4])
+    return labels[y:y + h, x:x + w] == i, (y, x)
+
+
 def _pieces(lost):
     """The connected pieces of the boolean map `lost`, each as (piece, top-left corner (y, x))."""
     import cv2
 
     count, labels, stats, _ = cv2.connectedComponentsWithStats(lost.astype(np.uint8), connectivity=8)
     for i in range(1, count):
-        x, y, w, h = (int(v) for v in stats[i, :4])
-        yield labels[y:y + h, x:x + w] == i, (y, x)
+        yield _piece(labels, stats, i)
 
 
 def _gain(masks, anchors, run, piece, corner, reach):
@@ -330,6 +373,62 @@ class _KeypointEvidence:
         return all(self.at_end(f, piece, corner) for f in run)
 
 
+class _Reading:
+    """What the model reads of each frame of `masks` (`read`, see lost_regions), frame by frame and kept
+    in `kept` while a run may ask for it: reading(f) is (where the mask and its reading both hold her,
+    where either does, the grid the reading is laid on, the box of where either does: _box). `areas`
+    is each frame's mask area in pixels, at least 1; `present` says which frames have a mask."""
+
+    def __init__(self, masks, read):
+        self.masks, self.read, self.kept = masks, read, {}
+        counts = [int(np.count_nonzero(masks[f])) for f in range(masks.shape[0])]
+        self.present, self.areas = np.array(counts, dtype=bool), [max(count, 1) for count in counts]
+
+    def __call__(self, f):
+        if f not in self.kept:
+            reading, grid = self.read(f)
+            frame = self.masks[f]
+            both, either = (frame, frame) if reading is None else (frame & reading, frame | reading)
+            self.kept[f] = (both, either, grid, _box(either))
+        return self.kept[f]
+
+    def whole_unit(self, frames, piece, corner):
+        """Whether the piece holds a whole unit of the grid of one of `frames` (_holds_unit)."""
+        return any(_holds_unit(self(f)[2], piece, corner) for f in frames)
+
+    def hand_sized(self, region, f):
+        """Whether the [h, w] booleans `region` can hold a hand-sized piece of frame f's mask: LOSS_HAND of its area."""
+        return np.count_nonzero(region) / self.areas[f] >= LOSS_HAND
+
+
+def _closed_runs(view):
+    """The closed runs mask_loss asks about, as (run, anchors, beyond, box, gone): every run t..t+g-1 of
+    1 to LOSS_WINDOW frames after a frame with a mask, the frames around it (t - 1, t + g), the frames
+    within LOSS_WINDOW beyond each of those, the box of what the frame before holds (its _Reading box),
+    and what the run's frames hold, raw or read, inside that box ([h, w] booleans, grown in place for
+    the next run: read it before asking for that one). Whatever the run drops of the frame before lies
+    in the box. A run stops growing once what the frame before holds and the run does not is no longer
+    hand-sized (view.hand_sized): no region of it is. `view` is a _Reading; the frames no later run
+    reads are let go."""
+    N = view.masks.shape[0]
+    for t in range(1, N - 1):
+        for f in [f for f in view.kept if f < t - LOSS_WINDOW - 1]:
+            del view.kept[f]
+        if not view.present[t - 1]:
+            continue
+        before, _, _, box = view(t - 1)
+        before = before[box]
+        gone = np.zeros(before.shape, bool)
+        for g in range(1, LOSS_WINDOW + 1):
+            if t + g >= N:
+                break
+            gone |= view(t + g - 1)[1][box]
+            if not view.hand_sized(before & ~gone, t - 1):
+                break                                  # too little held before the run is left to drop
+            yield (range(t, t + g), (t - 1, t + g),
+                   (range(max(0, t - LOSS_WINDOW), t - 1), range(t + g + 1, min(N, t + g + LOSS_WINDOW))), box, gone)
+
+
 def lost_regions(masks, read, evidence=None, open_runs=True):
     """mask_loss's detection: every region of her the model loses, as (run, anchors, piece, corner,
     share) - the frames of the run (a range), the frames that hold the region around it (the frame
@@ -366,16 +465,7 @@ def lost_regions(masks, read, evidence=None, open_runs=True):
     the regions come run by run, the closed runs first."""
     N, H, W = masks.shape
     S = min(H, W)
-    views = {}                             # frame -> (both hold, either holds, grid)
-    present = np.array([masks[f].any() for f in range(N)], dtype=bool)
-
-    def view(f):
-        if f not in views:
-            reading, grid = read(f)
-            frame = masks[f]
-            reading = frame if reading is None else reading
-            views[f] = (frame & reading, frame | reading, grid)
-        return views[f]
+    view = _Reading(masks, read)
 
     def held(f, piece, corner):
         (py, px), (ph, pw) = corner, piece.shape
@@ -386,12 +476,17 @@ def lost_regions(masks, read, evidence=None, open_runs=True):
             return True
         return all(any(held(f, piece, corner) for f in frames) for frames in beyond if len(frames))
 
-    def judge(lost, run, anchors, beyond):
+    def judge(lost, box, run, anchors, beyond):
+        # `lost` is inside `box`; a region too small to hold a hand-sized piece has none to judge
+        if not view.hand_sized(lost, anchors[0]):
+            return
+        region = np.zeros((H, W), bool)
+        region[box] = lost
         reach = min(len(run), LOSS_REACH_FRAMES) * LOSS_REACH * S
-        area = max(int(masks[anchors[0]].sum()), 1)
-        for piece, corner in _pieces(lost):
+        area = view.areas[anchors[0]]
+        for piece, corner in _pieces(region):
             share = int(piece.sum()) / area
-            if share < LOSS_HAND or not any(_holds_unit(view(f)[2], piece, corner) for f in (*anchors, *run)):
+            if share < LOSS_HAND or not view.whole_unit((*anchors, *run), piece, corner):
                 continue
             if evidence is not None and not evidence.on_run(run, anchors, piece, corner):
                 continue
@@ -400,50 +495,40 @@ def lost_regions(masks, read, evidence=None, open_runs=True):
             yield run, anchors, piece, corner, share
 
     # closed runs: t..t+g-1, held on t-1 and on t+g
-    for t in range(1, N - 1):
-        for f in [f for f in views if f < t - LOSS_WINDOW - 1]:
-            del views[f]
-        if not present[t - 1]:
-            continue
-        before = view(t - 1)[0]
-        gone = np.zeros((H, W), bool)
-        for g in range(1, LOSS_WINDOW + 1):
-            if t + g >= N:
-                break
-            gone |= view(t + g - 1)[1]
-            if not (before & ~gone).any():
-                break                                  # nothing held before the run is left to drop
-            lost = before & view(t + g)[0] & ~gone
-            if lost.any():
-                yield from judge(lost, range(t, t + g), (t - 1, t + g),
-                                 (range(max(0, t - LOSS_WINDOW), t - 1), range(t + g + 1, min(N, t + g + LOSS_WINDOW))))
+    for run, anchors, beyond, box, gone in _closed_runs(view):
+        lost = view(anchors[0])[0][box] & view(anchors[1])[0][box] & ~gone
+        yield from judge(lost, box, run, anchors, beyond)
     if evidence is None or not open_runs:
         return
-    # open runs, with a pose: within each stretch a..b of frames with a mask, t..b held on t-1, and a..e held on e+1
+    # open runs, with a pose: within each stretch a..b of frames with a mask, t..b held on t-1, and a..e held on e+1;
+    # what the run holds is grown inside each frame's box, and what the anchor loses read inside its own
+    views = view.kept
     views.clear()
     f = 0
     while f < N:
-        if not present[f]:
+        if not view.present[f]:
             f += 1
             continue
         a = f
-        while f < N and present[f]:
+        while f < N and view.present[f]:
             f += 1
         b = f - 1
         gone = np.zeros((H, W), bool)
         for t in range(b, a, -1):
-            gone |= view(t)[1]
-            lost = view(t - 1)[0] & ~gone
-            if lost.any():
-                yield from judge(lost, range(t, b + 1), (t - 1,), (range(max(0, t - LOSS_WINDOW), t - 1),))
+            _, either, _, box = view(t)
+            gone[box] |= either[box]
+            before, _, _, box = view(t - 1)
+            yield from judge(before[box] & ~gone[box], box, range(t, b + 1), (t - 1,),
+                             (range(max(0, t - LOSS_WINDOW), t - 1),))
             views.pop(t, None)
         views.clear()
         gone = np.zeros((H, W), bool)
         for e in range(a, b):
-            gone |= view(e)[1]
-            lost = view(e + 1)[0] & ~gone
-            if lost.any():
-                yield from judge(lost, range(a, e + 1), (e + 1,), (range(e + 2, min(N, e + 1 + LOSS_WINDOW)),))
+            _, either, _, box = view(e)
+            gone[box] |= either[box]
+            before, _, _, box = view(e + 1)
+            yield from judge(before[box] & ~gone[box], box, range(a, e + 1), (e + 1,),
+                             (range(e + 2, min(N, e + 1 + LOSS_WINDOW)),))
             views.pop(e, None)
         views.clear()
 
@@ -466,24 +551,82 @@ def closed_losses(masks, pose_metas: list[PoseMeta], draw_threshold):
     sides. A generator, as lost_regions."""
     _, H, W = masks.shape
     evidence = _LimbEvidence(pose_metas, W, H, draw_threshold)
-    return lost_regions(masks, lambda f: _final_mask(masks[f]), evidence, open_runs=False)
+    return lost_regions(masks, _final_reading(masks), evidence, open_runs=False)
+
+
+def dropped_parts(masks):
+    """prompt mode's trigger (sam3_1_multiplex.refine.segment_by_prompt_refined), from the mask alone:
+    a part of her the raw `masks` hold on both sides of a closed run of up to LOSS_WINDOW frames and
+    drop on every frame of it, as the Wan Animate workflow's final reads them (GrowMaskWithBlur expand
+    FINAL_GROW, BlockifyMask FINAL_BLOCK). The runs are lost_regions' closed runs; the part is judged on
+    each side:
+
+    - each of the two frames around the run loses a part: a connected piece of what it holds (the mask
+      and the final both) that no frame of the run holds (the mask or the final), and the two parts
+      overlap - the region both frames hold and the run drops;
+    - each part is hand-sized or bigger (LOSS_HAND of its frame's mask) and holds a whole block of the
+      final, as lost_regions asks of a region: the final reads the mask a block at a time;
+    - neither is a limb that moved away and came back (_gain under LOSS_GAIN, as lost_regions).
+
+    Each part is measured whole, not their overlap alone: a hand that moves between the two frames
+    leaves only a sliver both of them hold. For the same reason nothing is asked of the frames further
+    beyond the run: a moving hand is held there nowhere. `masks` is as lost_regions'. A generator of
+    (run, anchors, region, corner, share) as closed_losses': the region is the overlap of the two
+    parts, the only place a part moving from one to the other covers all the way, as [h, w] booleans
+    with its top-left pixel `corner` (y, x), and the share the smaller part's."""
+    import cv2
+
+    N, H, W = masks.shape
+    view = _Reading(masks, _final_reading(masks))
+    for run, anchors, _, box, gone in _closed_runs(view):
+        if not (view(anchors[0])[0][box] & view(anchors[1])[0][box] & ~gone).any():
+            continue                               # the two frames hold nothing the run drops
+        # the part of the frame after reaches beyond the box of the frame before: what the run holds, whole
+        held = np.zeros((H, W), bool)
+        for f in run:
+            held |= view(f)[1]
+        sides = [view(a)[0] & ~held for a in anchors]
+        both = sides[0] & sides[1]
+        if not all(view.hand_sized(side, a) for side, a in zip(sides, anchors)):
+            continue                               # no part of that side can be hand-sized
+        areas = [view.areas[a] for a in anchors]
+        labelled = [cv2.connectedComponentsWithStats(side.astype(np.uint8), connectivity=8)[1:3] for side in sides]
+        reach = min(len(run), LOSS_REACH_FRAMES) * LOSS_REACH * min(H, W)
+        ys, xs = np.nonzero(both)
+        for pair in sorted(set(zip(labelled[0][0][ys, xs].tolist(), labelled[1][0][ys, xs].tolist()))):
+            shares = []
+            for (labels, stats), i, area in zip(labelled, pair, areas):
+                part, corner = _piece(labels, stats, i)
+                share = int(part.sum()) / area
+                if (share < LOSS_HAND or not view.whole_unit((*anchors, *run), part, corner)
+                        or _gain(masks, anchors, run, part, corner, reach) >= LOSS_GAIN):
+                    break
+                shares.append(share)
+            else:
+                region = (labelled[0][0] == pair[0]) & (labelled[1][0] == pair[1])
+                box = _box(region)
+                yield run, anchors, region[box], (int(box[0].start), int(box[1].start)), min(shares)
 
 
 # --- the head and a whole limb outside the mask -------------------------------------------------
 
 def head_out(kps, visible, seen, diag):
     """The drawn head keypoints inside the frame (nose, eyes, ears) outside `seen` (the mask, and
-    what the model reads of it) grown by 2% of the box diagonal `diag`, by name."""
-    grown = _grown(seen, diag) | seen
+    what the model reads of it) grown by 2% of the box diagonal `diag` (_grown), by name: those with
+    no pixel of `seen` in the grow kernel around them."""
     H, W = seen.shape
+    r = _grow_side(diag) // 2
     xs = np.clip(kps[HEAD, 0].astype(int), 0, W - 1)
     ys = np.clip(kps[HEAD, 1].astype(int), 0, H - 1)
-    return [BODY_NAMES[j] for j, x, y in zip(HEAD, xs, ys) if visible[j] and not grown[y, x]]
+    return [BODY_NAMES[j] for j, x, y in zip(HEAD, xs, ys)
+            if visible[j] and not seen[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1].any()]
 
 
-def limbs_out(seen, shape, pose_metas: list[PoseMeta], draw_threshold, chunk=32):
-    """Per frame, the limbs wholly outside `seen(f)` ([H, W] booleans, the mask the model reads of
-    frame f; `shape` is (N, H, W)):
+def keypoints_out(seen, shape, poses, areas, pose_metas: list[PoseMeta], draw_threshold, chunk=32):
+    """Per frame, the head keypoints and the limbs outside `seen(f)` ([H, W] booleans, the mask the
+    model reads of frame f; `shape` is (N, H, W)), `chunk` frames at a time, each frame's `seen` built
+    once. Returns (head_out of each frame with a mask - `areas` its pixels, `poses` the frames'
+    common._frame_pose - and [] on an empty one, the limbs wholly outside on each frame). The limbs are
     prompt_pose's own rule (sam3_1_multiplex.prompt_pose.refine_points) judging each frame on its
     own - a forearm-and-hand or a lower leg with LIMB_POINTS drawn keypoints or more that lie
     outside the mask, POSE_POINT_DISTANCE of the shorter side or more from it, its distal part at
@@ -495,15 +638,18 @@ def limbs_out(seen, shape, pose_metas: list[PoseMeta], draw_threshold, chunk=32)
     from ..sam3_1_multiplex.prompt_pose import LIMBS as POSE_LIMBS
     from ..sam3_1_multiplex.prompt_pose import drawn_keypoints, refine_points
     N, H, W = shape
-    out = [[] for _ in range(N)]
+    heads, limbs = [], [[] for _ in range(N)]
     for s in range(0, N, chunk):
         metas = pose_metas[s:s + chunk]
+        frames = np.stack([seen(f) for f in range(s, s + len(metas))])
+        for f, frame in enumerate(frames, s):
+            _, _, diag, kps, _, visible = poses[f]
+            heads.append(head_out(kps, visible, frame, diag) if areas[f] else [])
         xy, drawn = drawn_keypoints(metas, draw_threshold, [NOTHING_HIDDEN] * len(metas), H, W)
-        frames = torch.from_numpy(np.stack([seen(f) for f in range(s, s + len(metas))]))
-        fired = refine_points(frames, xy, drawn, 0, POSE_POINT_DISTANCE * min(H, W))
+        fired = refine_points(torch.from_numpy(frames), xy, drawn, 0, POSE_POINT_DISTANCE * min(H, W))
         for f, keypoints in fired.items():
-            out[s + f] = [name for name, limb in POSE_LIMBS.items() if set(limb) & set(keypoints)]
-    return out
+            limbs[s + f] = [name for name, limb in POSE_LIMBS.items() if set(limb) & set(keypoints)]
+    return heads, limbs
 
 
 # --- the measurements, the flags, check_mask ----------------------------------------------------
@@ -529,8 +675,9 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
     if posed:
         envelopes = box_envelopes(detections, N, W, H)
         whole = [_whole_body(meta, W, H, draw_threshold) for meta in pose_metas]
+        poses = [_frame_pose(meta, det, W, H, draw_threshold) for meta, det in zip(pose_metas, detections)]
         evidence = _KeypointEvidence(whole) if final else _LimbEvidence(pose_metas, W, H, draw_threshold)
-        limbs = limbs_out(seen, masks.shape, pose_metas, draw_threshold)
+        heads, limbs = keypoints_out(seen, masks.shape, poses, areas, pose_metas, draw_threshold)
     loss = dropouts(masks, read, evidence) if posed else (dropouts(masks, read) if loss_without_pose else [None] * N)
     alone = {}                             # frame -> its mask_regions by that frame alone
 
@@ -559,7 +706,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
             m.update({"head_out": [], "limbs_out": [], "box_iou_prev": None})
         else:
             det, meta = detections[i], pose_metas[i]
-            bw, bh, diag, kps, drawn, visible = _frame_pose(meta, det, W, H, draw_threshold)
+            bw, bh, _, kps, drawn, _ = poses[i]
             m["mask_to_box"] = area / (bw * bh)
             m["box_reliable"] = bool(det["score"] > 0 and drawn.sum() >= RELIABLE_KEYPOINTS
                                      and (kps[drawn, 2].mean() if drawn.any() else 0) >= RELIABLE_CONF)
@@ -570,7 +717,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
 
             # the person's region grown where neither the neighbours' masks nor the skeleton are
             if area and near:
-                reference = masks[near].any(axis=0)
+                reference = reduce(np.logical_or, (masks[j] for j in near))
                 grown = (_dilated(reference, 2 * FINAL_BLOCK + 1) if final
                          else _grown(reference, np.sqrt(np.median(areas[near]))))
                 excess = person & ~grown & ~skeleton_zone(meta, (H, W), draw_threshold, LEAK_REACH)
@@ -579,7 +726,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
                 m["attached_leak"] = 0.0
 
             # the head keypoints outside the mask, and the limbs wholly outside it
-            m["head_out"] = head_out(kps, visible, seen(i), diag) if area else []
+            m["head_out"] = heads[i]
             m["limbs_out"] = limbs[i]
             m["box_iou_prev"] = _box_iou_prev(detections, i)
         m["mask_loss"] = loss[i]
@@ -634,13 +781,13 @@ def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop
     grown and blockified (the WanAnimate Preprocess Guard's), whose measures allow for its blocks
     (common.FINAL_BLOCK); it needs pose_data. Otherwise `mask` is the raw mask, which the workflow
     grows into that final before any model reads it: what the model loses is judged on the final
-    (`_final_mask`). Returns (mask unchanged, report, metrics JSON, timeline IMAGE)."""
+    (`_final_blocks`). Returns (mask unchanged, report, metrics JSON, timeline IMAGE)."""
     config = _config(config, MaskGuardConfig)
     if final and pose_data is None:
         raise ValueError("the final mask is judged against its pose; connect pose_data")
     masks, pose_metas, detections = _mask_inputs(mask, pose_data, final)
     thresholds = _thresholds(pose_data, config)
-    read = (lambda f: (None, block_grid(masks[f]))) if final else (lambda f: _final_mask(masks[f]))
+    read = (lambda f: (None, block_grid(masks[f]))) if final else _final_reading(masks)
     with log.step(f"mask guard: checking {len(masks)} frames ({'on' if enabled else 'off'})"):
         rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["draw_threshold"], read, final)
         flags = mask_flags(rows, thresholds)
