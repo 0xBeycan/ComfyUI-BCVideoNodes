@@ -36,12 +36,11 @@ class SAM3_1MultiplexConfig:
     """The tunables of the three modes. Each tooltip starts with the mode it affects, and a field is
     read in that mode only: a field changed from its default that the run does not read (another
     mode's, the multi-object ones at max_objects 1, the tracker ones with `temporal` off in
-    box_keypoint mode) is named in one console line, never raised on. prompt_pose runs prompt mode's
-    track first, so it also reads the `[prompt]` and `[prompt, max_objects 1]` fields. Whatever
-    memory_mask says, the refine's dense prompt (prompt mode's and prompt_pose's alike) is the
-    track's raw logits of the frame, and the second pass encodes its memory from the raw logits
-    (Meta's re-propagation); that pass reads input_range, fill_hole_area, obj_ptr_token,
-    memory_selection and max_conditioning_frames.
+    box_keypoint mode) is named in one console line, never raised on. prompt_pose runs prompt mode
+    first, so it also reads the `[prompt]` and `[prompt, max_objects 1]` fields. Whatever
+    memory_mask says, its refine's dense prompt is pass 1's raw logits of the frame, and its second
+    pass encodes its memory from the raw logits (Meta's re-propagation); that pass reads
+    input_range, fill_hole_area, obj_ptr_token, memory_selection and max_conditioning_frames.
 
     The `[prompt]` defaults are easy-sam3's set (its thresholds, its re-anchor and memory policy)
     on SAM 3.1 fed the input range it was trained on: the set validated on the eight test clips

@@ -6,22 +6,20 @@ its predictor runs it (easy-sam3 @ 88fe578 vendors it): the text prompt with its
 detector-and-tracker pass, points on the existing object, then the tracker-only re-propagation its
 action history asks for.
 
-1. Pass 1 is `segment_by_prompt`, the track, unchanged (refine.first_pass); it only hands over what
-   the rest reads (its capture). Prompt mode's own refine (refine.segment_by_prompt_refined, from the
-   mask alone) is not run: the pose's triggers below judge the track, so no region is refined twice
-   and the clip is tracked again once. Where pass 1 tracked the frames before a gain again
-   (prompt.gain_frame), the capture's birth is the gain frame, so below "the birth" is that frame and
-   the frames before it are pass 1's backward fill.
+1. Pass 1 is `segment_by_prompt`, unchanged (refine.first_pass); it only hands over what the rest
+   reads (its capture). Where it tracked the frames before a gain again (prompt.gain_frame), the
+   capture's birth is the gain frame, so below "the birth" is that frame and the frames before it are
+   pass 1's backward fill.
 2. The frames to refine and their points are chosen from pass 1's masks once pass 1 is done, by two
    triggers whose frames are joined: the pose-driven one (`refine_points`), from the keypoints the
    pose images draw, each frame on its own; and the mask-driven one (`dropped_regions`), the Mask
    Guard's mask_loss detection on closed runs (guard.mask.closed_losses), from the region itself.
    A frame both pick gets the pose's points first, then the region's.
-3. No frame chosen: pass 1's masks are the result, the track's bit for bit. Meta does not
+3. No frame chosen: pass 1's masks are the result, prompt mode's bit for bit. Meta does not
    propagate again without a new prompt.
 4. Otherwise each chosen frame is refined, pass 1's conditioning frames near a refined frame are
    demoted and the tracker alone tracks the clip again from the birth; the frames before the first
-   one the refine can reach keep pass 1's mask (refine.refine_and_track, which prompt mode runs too).
+   one the refine can reach keep pass 1's mask (refine.refine_and_track).
 
 The result: pass 1's backward fill before the birth, pass 1's mask on the kept conditioning frames
 and on every frame before the first one the refine can reach, the refine on the refined frames and
@@ -36,7 +34,7 @@ import torch
 from ...libs import log
 from ...libs.keypoints import (L_ANKLE, L_ELBOW, L_FOOT, L_KNEE, L_WRIST, R_ANKLE, R_ELBOW, R_FOOT, R_KNEE, R_WRIST,
                                in_frame)
-from ...libs.mask import count_masked_frames
+from ...libs.mask import count_masked_frames, masked_frames
 from ...models.sam3_1_multiplex.adapter import SAM3_1_MULTIPLEX_SIZE
 from .config import report_counts
 from .refine import first_pass, held_words, refine_and_track, region_frames, to_tracker
@@ -139,7 +137,7 @@ def refine_points(masks, xy, drawn, birth, distance):
     cells = np.where(drawn[..., None], pixels, 0.0).astype(np.int64)    # the pixel each drawn keypoint is in
     rows, cols = torch.from_numpy(cells[..., 1]), torch.from_numpy(cells[..., 0])
     inside = (masks[torch.arange(N)[:, None], rows, cols] > 0).numpy() & drawn
-    present = masks.flatten(1).any(dim=1).numpy()
+    present = masked_frames(masks).tolist()
     limb_keypoints = np.zeros(KEYPOINT_COUNT, dtype=bool)
     limb_keypoints[[k for limb in LIMBS.values() for k in limb]] = True
     for f in range(birth, N):

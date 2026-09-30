@@ -13,9 +13,19 @@ def to_frame_size(low_res, H, W, threshold=0.0):
     return (upsampled[0, 0] > threshold).float().cpu()
 
 
+def masked_frames(masks, chunk=16):
+    """[N] bools: which of the [N, H, W] masks have at least one pixel set. Read `chunk` frames at a
+    time: any() of a float mask makes a boolean copy of what it reads first, over the whole clip about
+    half a GB on a 612-frame 720p clip."""
+    present = torch.zeros(len(masks), dtype=torch.bool)
+    for s in range(0, len(masks), chunk):
+        present[s:s + chunk] = masks[s:s + chunk].flatten(1).any(dim=1)
+    return present
+
+
 def count_masked_frames(masks):
-    """How many of the [N, H, W] masks have at least one pixel set."""
-    return int((masks.flatten(1).any(dim=1)).sum())
+    """How many of the [N, H, W] masks have at least one pixel set (masked_frames)."""
+    return int(masked_frames(masks).sum())
 
 
 def largest_piece(mask):

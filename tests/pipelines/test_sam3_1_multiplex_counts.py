@@ -36,9 +36,6 @@ COUNTS = {
     "RefineCounts": (refine, "refine_and_track",
                      ("refined frames", "points", "stability fallbacks", "demoted", "re-tracked",
                       "kept from the first pass")),
-    "PromptRefineCounts": (refine, "segment_by_prompt_refined",
-                           ("refined frames", "points", "stability fallbacks", "demoted", "re-tracked",
-                            "kept from the first pass", "frames segmented")),
 }
 
 

@@ -1,15 +1,12 @@
-"""What prompt mode and prompt_pose run after prompt mode's track: Meta's point refine on the tracked
-object, on the frames chosen from the track's masks, then the tracker-only re-propagation its action
-history asks for. The sequence is Meta's SAM 3 video API chained as its predictor runs it (easy-sam3 @
-88fe578 vendors it). One implementation for both modes:
+"""What prompt_pose runs after prompt mode's track: Meta's point refine on the tracked object, on the
+frames chosen from the track's masks, then the tracker-only re-propagation its action history asks
+for. The sequence is Meta's SAM 3 video API chained as its predictor runs it (easy-sam3 @ 88fe578
+vendors it):
 
 - `first_pass`: the track (prompt.segment_by_prompt) and the capture the rest reads;
 - `region_frames`: the frames of a run where the mask drops a region of her, and points inside it;
-- `refine_and_track`: the refines, the demotion and the second pass (steps 4 and 5 of prompt_pose's
-  docstring);
-- `segment_by_prompt_refined`: prompt mode itself, the track and, where the mask alone shows a part of
-  her dropped for up to LOSS_WINDOW frames between two frames that hold it (guard.mask.dropped_parts),
-  the refine of each frame of that run. With no such part the result is the track's tensor itself.
+- `refine_and_track`: the refines, the demotion and the second pass (step 4 of prompt_pose's
+  docstring).
 """
 import dataclasses
 import time
@@ -19,12 +16,12 @@ import numpy as np
 import torch
 
 from ...libs import log
-from ...libs.mask import count_masked_frames, to_frame_size
+from ...libs.mask import to_frame_size
 from ...models.sam3_1_multiplex.adapter import (MAX_REFINE_POINTS, SAM3_1_MULTIPLEX_SIZE, backbone_frame,
                                                 memory_lookback, multiplex_parts, propagation_backbone,
                                                 refine_with_points, track_and_clean)
 from ...models.sam3_1_multiplex.postprocess import clean_channel_logits, low_res_logits
-from .config import BEST_IOU, RAW, SIGNED_RANGE, report_counts
+from .config import BEST_IOU, RAW, SIGNED_RANGE
 from .prompt import PromptCapture, encode_frame_memory, keep_memory, memory_score, memory_view, segment_by_prompt
 
 
@@ -318,43 +315,4 @@ def refine_and_track(model, images, config, masks, capture, refines, counts: Ref
              f"{log.frame_ranges(sorted(kept)) or 'none'}; re-tracked {len(retracked)} frame(s) from frame {birth}; "
              f"seconds: pass 1 {pass_one:.1f}, refines {refine_seconds:.1f}, pass 2 {pass_two:.1f} "
              f"(its trunk {trunk['seconds']:.1f})")
-    return masks
-
-
-# --- prompt mode ---------------------------------------------------------------------------------
-
-# The counts segment_by_prompt_refined adds to the track's for the log, keyed by the label the log
-# shows, in the order they are added: refine_and_track's, then "frames segmented", which replaces the
-# track's with the result's.
-PromptRefineCounts = TypedDict("PromptRefineCounts", {"refined frames": int, "points": int,
-                                                      "stability fallbacks": int, "demoted": int, "re-tracked": int,
-                                                      "kept from the first pass": int, "frames segmented": int},
-                               total=False)
-
-
-def segment_by_prompt_refined(model, clip, images, prompt, config, result=None, logits=None):
-    """[N, H, W] float masks of the person in `images` [N, H, W, 3]: prompt mode. The track
-    (segment_by_prompt), and where its mask alone shows a part of her dropped for 1 to LOSS_WINDOW
-    frames between two frames that hold it (guard.mask.dropped_parts: each of the two frames loses a
-    hand-sized part holding a whole block of the Wan Animate workflow's final, grow 10 and blockify 32,
-    the two parts overlap, and neither moved away), every frame of that run from the birth on, its mask
-    not empty, refined from up to MAX_REFINE_POINTS points inside the region both frames hold
-    (region_frames), then refine_and_track. With no such part the result is the track's tensor itself,
-    its log and counts unchanged.
-
-    `result` and `logits` are segment_by_prompt's; the logits record gets the refined and re-decoded
-    frames as refine_and_track says. The track reads every [prompt] and [prompt, max_objects 1] field,
-    the refine and the second pass what refine_and_track says."""
-    from ..guard.mask import dropped_parts
-    counts: PromptRefineCounts = {"refined frames": 0, "points": 0, "stability fallbacks": 0, "demoted": 0,
-                                  "re-tracked": 0, "kept from the first pass": 0}
-    masks, capture, pass_one = first_pass(model, clip, images, prompt, config, result, logits)
-    dropped = region_frames(masks, capture.get("birth", -1), dropped_parts)
-    if not dropped:
-        return masks
-    _, H, W = masks.shape
-    refines = {g: (to_tracker(pixels, H, W), held_words(holding)) for g, (pixels, holding) in dropped.items()}
-    refine_and_track(model, images, config, masks, capture, refines, counts, logits, "prompt", pass_one)
-    counts["frames segmented"] = count_masked_frames(masks)
-    report_counts(result, counts)
     return masks

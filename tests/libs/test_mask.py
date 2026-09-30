@@ -1,5 +1,5 @@
-"""The mask helpers of libs/mask.py - hole capping, island handling and the largest piece - on
-synthetic masks. No model is loaded.
+"""The mask helpers of libs/mask.py - hole capping, island handling, the largest piece and the frames
+that hold a mask - on synthetic masks. No model is loaded.
 
 libs/mask.py imports without ComfyUI, but this file imports comfy.cli_args first, so it runs
 where ComfyUI is importable (the pod, with the ComfyUI root on PYTHONPATH) and is skipped
@@ -98,3 +98,17 @@ def test_largest_piece_is_4_connected_and_the_first_of_a_tie():
     tie[:, 0:2] = tie[:, 7:9] = True
     assert np.array_equal(sam3.largest_piece(tie), np.pad(np.ones((4, 2), bool), ((0, 0), (0, 7))))
     assert sam3.largest_piece(np.zeros((4, 4), bool)) is None
+
+
+# --- the frames that hold a mask -----------------------------------------------------------
+
+@pytest.mark.parametrize("chunk", [1, 16, 64])
+def test_masked_frames_are_the_frames_with_a_pixel_set(chunk):
+    masks = torch.zeros(37, 6, 5)
+    masks[0, 2, 3] = 1.0
+    masks[15, 5, 4] = 0.5
+    masks[16, 0, 0] = -1.0          # any value but 0 is set
+    masks[36] = 1.0
+    assert sam3.masked_frames(masks, chunk).tolist() == [f in (0, 15, 16, 36) for f in range(37)]
+    assert sam3.count_masked_frames(masks) == 4
+    assert sam3.count_masked_frames(torch.zeros(0, 6, 5)) == 0
