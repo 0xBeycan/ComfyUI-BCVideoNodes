@@ -12,7 +12,7 @@ import json
 import pytest
 import torch
 
-from guard_fakes import MASK, H, N, W, arm, clip, drop_keypoints, origin, place_keypoints
+from guard_fakes import MASK, H, N, W, clip, origin, place_keypoints
 from scail2_fakes import scail2
 
 
@@ -50,12 +50,12 @@ def test_a_clean_clip_passes(replacement_mode):
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
-def test_blank_driving_frames_are_driving_empty(replacement_mode):
+def test_blank_driving_frames_are_driving_empty_without_a_pose(replacement_mode):
+    # without a pose nothing says whether a person is there to lose: a warning
     masks = clip()[0]
     masks[[5, 6, 20]] = 0
     passed, flags, _, report, _ = guard_run(*rendered(replacement_mode, driving=masks))
-    # frames 5-6 and frame 20 drop the whole person between frames that hold her: two dropouts
-    assert passed and flags == {"driving_empty": [5, 6, 20], "mask_loss": [5, 6, 20]}, report
+    assert passed and flags == {"driving_empty": [5, 6, 20]}, report
     assert "- driving_empty (warning): 3 frame(s), longest run 2: 5-6, 20" in report
 
 
@@ -64,7 +64,8 @@ def test_a_detached_region_is_driving_fragmented_and_a_speck_is_data():
     masks[12, 280:320, 200:240] = 1.0   # 1600 px, 6.7% of the person: a second object
     masks[14, 0:16, 220:236] = 1.0      # 256 px, 1.1%: a speck
     passed, flags, _, report, record = guard_run(*rendered(False, driving=masks))
-    assert passed and flags == {"driving_fragmented": [12]}, report
+    assert not passed and flags == {"driving_fragmented": [12]}, report
+    assert "- driving_fragmented (fail)" in report
     assert record["frames"][14]["fragments"] == [round(256 / 24000, 4)]
 
 
@@ -130,13 +131,11 @@ def test_the_latent_cut_loses_a_thin_limb_on_black():
     assert kept == [1.0, 0.0, 1.0]
 
 
-def test_an_empty_frame_has_no_latent_kept_and_no_iou_change_from_empty():
+def test_an_empty_frame_has_no_latent_kept():
     masks = clip()[0]
     masks[[3, 4]] = 0
     _, _, _, _, record = guard_run(*rendered(False, driving=masks))
-    frames = record["frames"]
-    assert frames[3]["latent_kept"] is None and frames[3]["mask_iou_prev"] == 0.0 and frames[4]["mask_iou_prev"] == 1.0
-    assert frames[0]["mask_iou_prev"] is None
+    assert record["frames"][3]["latent_kept"] is None and record["frames"][2]["latent_kept"] == 1.0
 
 
 def test_switched_off_it_measures_and_never_stops():
@@ -163,121 +162,128 @@ def test_the_metrics_record():
     _, _, _, _, record = guard_run(*rendered(True))
     assert list(record) == ["guard", "thresholds", "enabled", "flags", "reference", "frames"]
     assert record["guard"] == "scail2"
-    # the Mask Guard's thresholds but those of its two keypoint-mask fails, which this guard does not run
-    shared = {f.name: getattr(MASK, f.name) for f in dataclasses.fields(scail2.MaskChecksConfig)}
+    # its own threshold, then the Mask Guard's
+    shared = {f.name: getattr(MASK, f.name) for f in dataclasses.fields(scail2.MaskGuardConfig)}
     assert record["thresholds"] == {"min_reference_iou": 0.4, "draw_threshold": None, **shared}
-    assert not {"head_out_eyes_ears", "large_loss_area"} & set(record["thresholds"])
     assert record["enabled"] == sorted(scail2.SCAIL2_CHECKS)
     assert tuple(record["reference"]) == scail2.SCAIL2_REFERENCE
     assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"]) and len(record["frames"]) == N
 
 
 def test_the_warnings_and_the_failures():
-    warnings = {"driving_empty", "driving_fragmented", "reference_fragmented", "reference_misaligned", "mask_loss",
-                "mask_attached_leak", "mask_missing_keypoints", "mask_missed_limb", "body_not_drawn", "mask_unstable"}
-    # mask_empty and mask_leak come with pose_data and stop as they do in the Mask Guard
-    assert set(scail2.SCAIL2_CHECKS) - scail2.WARNINGS == {"no_driving_person", "reference_empty", "mask_empty",
-                                                           "mask_leak"}
+    warnings = {"driving_empty", "reference_fragmented", "reference_misaligned", "mask_leak", "mask_attached_leak"}
+    # the Mask Guard's fails come with pose_data and stop as they do there
+    assert set(scail2.SCAIL2_CHECKS) - scail2.WARNINGS == {"no_driving_person", "driving_fragmented", "reference_empty",
+                                                           "mask_empty", "mask_head_out", "mask_limb_out", "mask_loss"}
     assert set(scail2.SCAIL2_CHECKS) & scail2.WARNINGS == warnings
 
 
 def test_without_pose_data_the_report_names_what_it_did_not_check():
     _, _, _, report, record = guard_run(*rendered(False))
-    assert ("- without pose_data, not checked: mask_empty, mask_leak, mask_attached_leak, mask_missing_keypoints, "
-            "mask_missed_limb, body_not_drawn, mask_unstable") in report
-    assert record["frames"][5]["keypoint_recall"] is None and record["frames"][5]["missed_limbs"] == []
+    assert ("- without pose_data, not checked: mask_empty, mask_leak, mask_attached_leak, mask_head_out, "
+            "mask_limb_out, mask_loss") in report
+    row = record["frames"][5]
+    assert row["head_out"] == [] and row["limbs_out"] == [] and row["mask_loss"] is None
+
+
+def latent_loss(replacement_mode, masks):
+    """mask_loss's dropouts on `masks` as SCAIL-2 reads them (its latent grid), without a pose."""
+    person, _, cells = scail2.driving_person(rendered(replacement_mode, driving=masks)[0])
+    return scail2.dropouts(person, scail2.latent_reading(cells, person.shape[1:]))
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
-def test_a_region_the_driving_mask_drops_for_one_frame_is_mask_loss_where_the_latent_grid_drops_it(replacement_mode):
-    # a 30 x 30 hole on frame 20 (rows 190-219, columns 120-149). SCAIL-2 reads the mask on 16 x 16
-    # px cells, a cell on where the person fills half of it: the hole empties the cell at rows
-    # 192-207, columns 128-143 and leaves a quarter of the one below it; the cells beside it stay
-    # over half full. What the mask and that grid both drop is 28 x 16 px, a disc of radius 8
+def test_what_the_latent_grid_loses_is_whole_cells_of_her(replacement_mode):
+    # a 40 x 40 hole on frame 20 (rows 190-229, columns 120-159 of the frame). SCAIL-2 reads the mask
+    # on 16 x 16 px cells, a cell on where the person fills half of it: the hole empties the four
+    # cells at rows 192-223, columns 128-159 whole, and what the mask and that grid both drop there
+    # holds them: 1216 px (32 x 32 + the 6 rows under them the next cells lose too) of her 24000
     masks = clip()[0]
     x1, y1 = origin(20)
-    masks[20, y1 + 150:y1 + 180, x1 + 40:x1 + 70] = 0
-    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks))
-    assert passed and flags == {"mask_loss": [20]}, report
-    assert record["frames"][20]["mask_loss"] == pytest.approx(8 / 240)
+    masks[20, y1 + 150:y1 + 190, x1 + 40:x1 + 80] = 0
+    loss = latent_loss(replacement_mode, masks)
+    assert loss[20] > 0.015 and loss[19] == loss[21] == 0.0
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
 def test_a_hole_the_latent_grid_reads_over_is_not_mask_loss(replacement_mode):
     # a 20 x 20 hole on frame 20 centred on a corner of the latent grid (row 208, column 128):
     # each of its four cells loses 100 of its 256 px and still reads as the person, so the model
-    # never gets the hole, though at the mask's own pixels it holds a disc of radius 10 (over
-    # max_mask_loss)
+    # never gets the hole
     masks = clip()[0]
     masks[20, 198:218, 118:138] = 0
-    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks))
-    assert passed and flags == {}, report
-    assert record["frames"][20]["mask_loss"] == 0.0
+    assert latent_loss(replacement_mode, masks)[20] == 0.0
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
 def test_a_part_the_latent_grid_never_reads_is_not_mask_loss_when_it_drops(replacement_mode):
     # a still person whose outline runs along the grid (columns 64-175), with a 12 x 20 px bump on
     # her right side (rows 134-153, columns 176-187) that frame 2 drops. The bump fills 120 px of
-    # each of the two cells it lies in, under half, so the model never had it; at the mask's own
-    # pixels its drop holds a disc of radius 6 (over max_mask_loss)
+    # each of the two cells it lies in, under half, so the model never had it
     masks = torch.zeros(5, H, W)
     masks[:, 48:272, 64:176] = 1.0
     masks[[0, 1, 3, 4], 134:154, 176:188] = 1.0
-    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks))
-    assert passed and flags == {}, report
-    assert record["frames"][2]["mask_loss"] == 0.0
+    assert latent_loss(replacement_mode, masks)[2] == 0.0
+
+
+HOLE = ((150, 234), (8, 92))   # an 84 x 84 hole in her legs, rows and columns of her rectangle
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_with_pose_data_a_hand_sized_part_of_her_the_grid_loses_is_mask_loss(replacement_mode):
+    # the hole on frame 20 empties whole cells of her legs, which her drawn shins cross: a loss. Her
+    # legs drawn down her right edge, the pose puts no body in it; without pose_data it is not checked
+    masks, pose_data = clip()
+    x1, y1 = origin(20)
+    masks[20, y1 + HOLE[0][0]:y1 + HOLE[0][1], x1 + HOLE[1][0]:x1 + HOLE[1][1]] = 0
+    driving, reference = rendered(replacement_mode, driving=masks)
+    passed, flags, _, report, record = guard_run(driving, reference, pose_data=pose_data)
+    assert not passed and flags == {"mask_loss": [20]}, report
+    assert record["frames"][20]["mask_loss"] > 0.015 and "mask_loss (fail)" in report
+    assert guard_run(driving, reference)[1] == {}
+    for i in range(N):
+        xi, yi = origin(i)
+        for j, y in ((8, 140), (11, 140), (9, 185), (12, 185), (10, 222), (13, 222), (18, 234), (19, 234)):
+            place_keypoints(pose_data, [i], j, xi + 97, yi + y)
+    assert guard_run(driving, reference, pose_data=pose_data)[1] == {}
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
 def test_a_keypoint_in_a_cell_the_latent_grid_reads_as_her_is_inside_the_mask(replacement_mode):
-    # frames 8-12 draw the right wrist 4 px left of her side, in the cell at columns 64-79 that
-    # her side fills 12 of 16 columns of (her left edge is at column 68-72). At the mask's own
-    # pixels it is a limb end the mask lost - the Mask Guard says so - but SCAIL-2 reads that cell
-    # as her
+    # frames 8-12 draw the nose 4 px left of her head, in the cell at columns 64-79 that her side
+    # fills 8 to 12 of 16 columns of (her left edge is at column 68-72). At the mask's own pixels it
+    # is the head outside the mask - the Mask Guard fails it - but SCAIL-2 reads that cell as her
     masks, pose_data = clip()
     for i in range(8, 13):
         x1, y1 = origin(i)
-        place_keypoints(pose_data, [i], 4, x1 - 4, y1 + 112)
+        place_keypoints(pose_data, [i], 0, x1 - 4, y1 + 20)
     raw = json.loads(scail2.check_mask(masks, pose_data, MASK, stop_on_fail=False)[2])["flags"]
-    assert raw == {"mask_missed_limb": [8, 9, 10, 11, 12]}, raw
+    assert raw == {"mask_head_out": [8, 9, 10, 11, 12]}, raw
     passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks), pose_data=pose_data)
     assert passed and flags == {}, report
-    assert all(record["frames"][i]["missed_limbs"] == [] for i in range(8, 13))
+    assert all(record["frames"][i]["head_out"] == [] for i in range(8, 13))
 
 
 @pytest.mark.parametrize("replacement_mode", [False, True])
-def test_the_wan_animate_mask_s_fails_are_not_scail2_checks(replacement_mode):
-    # an arm held out from her side (40 x 50 px) gone on frame 20 - 5.6% of her, a large loss for
-    # the Mask Guard (test_guard.test_a_dropout_of_a_twentieth_of_her_or_more_fails) - and her nose
-    # drawn 20 px left of her head from frame 10 on: the Mask Guard fails both; the SCAIL-2 guard
-    # keeps the dropout a warning and runs no head check, and its record keeps its own row and checks
+def test_with_pose_data_the_driving_mask_gets_the_mask_guard_s_fails(replacement_mode):
+    # her nose drawn 20 px left of her head from frame 10 on, and the mask stopping above her knees
+    # on frames 20-24: the head and both lower legs outside the mask, and her lower legs a part of
+    # her the grid loses for five frames, failed as the Mask Guard does
     masks, pose_data = clip()
-    arm(masks, [i for i in range(N) if i != 20], (60, 110), 40)
     for i in range(10, N):
         x1, y1 = origin(i)
         place_keypoints(pose_data, [i], 0, x1 - 20, y1 + 20)
-    raw = json.loads(scail2.check_mask(masks, pose_data, MASK, stop_on_fail=False)[2])["flags"]
-    assert raw == {"mask_head_out": list(range(10, N)), "mask_loss_large": [20]}, raw
-    passed, flags, _, report, record = guard_run(*rendered(replacement_mode, driving=masks), pose_data=pose_data)
-    assert passed and flags == {"mask_loss": [20]}, report
-    assert record["enabled"] == sorted(scail2.SCAIL2_CHECKS) and not {"mask_head_out", "mask_loss_large"} & set(record["enabled"])
-    assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"])
-
-
-@pytest.mark.parametrize("replacement_mode", [False, True])
-def test_with_pose_data_the_driving_mask_gets_the_pose_based_checks(replacement_mode):
-    masks, pose_data = clip()
-    for i in (20, 21):                    # the mask loses the right hand
+    for i in range(20, 25):
         x1, y1 = origin(i)
-        masks[i, y1 + 90:y1 + 135, x1:x1 + 30] = 0
-    drop_keypoints(pose_data, range(5, 35), list(range(8, 20)))   # the pose loses the lower body
+        masks[i, y1 + 165:, :] = 0
     driving, reference = rendered(replacement_mode, driving=masks)
     passed, flags, _, report, record = guard_run(driving, reference)
-    assert passed and flags == {"mask_loss": [20, 21]}, report       # the hand is back on frame 22
+    assert passed and flags == {}, report
     passed, flags, _, report, record = guard_run(driving, reference, pose_data=pose_data)
-    assert passed and flags["mask_missed_limb"] == [20, 21] and flags["body_not_drawn"] == list(range(5, 35)), report
+    assert not passed and flags == {"mask_head_out": list(range(10, N)), "mask_limb_out": list(range(20, 25)),
+                                    "mask_loss": list(range(20, 25))}, report
     assert "without pose_data" not in report and record["thresholds"]["draw_threshold"] == 0.5
+    assert record["enabled"] == sorted(scail2.SCAIL2_CHECKS)
     assert all(tuple(row) == scail2.SCAIL2_ROW for row in record["frames"])
 
 
@@ -299,7 +305,7 @@ def test_with_pose_data_an_empty_driving_frame_the_pose_sees_fails():
     masks, pose_data = clip()
     masks[20] = 0
     passed, flags, _, report, _ = guard_run(*rendered(False, driving=masks), pose_data=pose_data)
-    assert not passed and flags["mask_empty"] == [20] and flags["driving_empty"] == [20], report
+    assert not passed and flags == {"mask_empty": [20]}, report
 
 
 def test_pose_data_of_other_frames_is_an_error():

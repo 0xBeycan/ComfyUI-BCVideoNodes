@@ -10,10 +10,8 @@ from bcvideonodes.pipelines import guard
 N, H, W = 40, 320, 240
 POSE_CONFIG = {"min_keypoint_conf": 0.3}   # Pose Detection's config; the guards do not read it
 DRAW_THRESHOLD = 0.5                       # what the guards count: the keypoints the pose images draw
-POSE = guard.PoseGuardConfig(min_pose_completeness=0.6, max_torso_jump=0.25, max_limb_spike=0.08)
-MASK = guard.MaskGuardConfig(min_mask_to_box=0.15, max_mask_outside_box=0.10, max_attached_leak=0.03,
-                             min_keypoint_recall=0.9, max_body_not_drawn=0.25, min_mask_iou=0.6, max_mask_loss=0.0185,
-                             head_out_eyes_ears=2, large_loss_area=0.05)
+POSE = guard.PoseGuardConfig(max_torso_jump=0.25, max_limb_spike=0.08)
+MASK = guard.MaskGuardConfig(min_mask_to_box=0.15, max_mask_outside_box=0.10, max_attached_leak=0.03, head_out_eyes_ears=2)
 
 LEGS = [8, 9, 10, 11, 12, 13, 18, 19]   # the keypoints of both legs and both feet
 # A person facing the camera, in pixels inside her 100 x 240 rectangle: her right side on the
@@ -37,7 +35,8 @@ def clip():
         x2, y2 = x1 + 100, y1 + 240
         masks[i, y1:y2, x1:x2] = 1.0
         pts = np.array([((x1 + x) / W, (y1 + y) / H, 0.9) for x, y in SKELETON])
-        metas.append({"width": W, "height": H, "keypoints_body": pts})
+        metas.append({"width": W, "height": H, "keypoints_body": pts, "keypoints_left_hand": np.zeros((21, 3)),
+                      "keypoints_right_hand": np.zeros((21, 3))})
         detections.append({"bbox": [float(x1), float(y1), float(x2), float(y2)], "score": 0.95, "persons": 1})
     return masks, {"pose_metas_original": metas, "detections": detections, "pose_config": dict(POSE_CONFIG),
                    "draw_threshold": DRAW_THRESHOLD}

@@ -1,68 +1,14 @@
-"""The pose checks: the per-frame pose measurements, the flags they raise, and check_pose."""
+"""The pose checks: the per-frame pose measurements, the flags they raise, and check_pose. All of
+them are warnings: a pose error the diffusion model does not absorb shows in the mask checks."""
 import numpy as np
 
 from ...libs import log
-from ...libs.keypoints import BODY_NAMES, HEAD_LIMBS, LIMBS
+from ...libs.keypoints import BODY_NAMES, LIMBS
 from ...libs.pose_data import Detection, PoseData, PoseMeta
-from .common import (COMPLETENESS_SHARE, COMPLETENESS_WINDOW, GAP_CONTEXT, GAP_MAX, GAP_MIN, GAP_SHARE, LIMB_ENDS,
-                     POSE_CHECKS, SPIKE_RETURN, TORSO, PoseRow, _box_iou_prev, _flag, _frame_pose, _pose_inputs,
-                     _thresholds, accounted_limbs)
+from .common import LIMB_ENDS, SPIKE_RETURN, TORSO, PoseRow, _box_iou_prev, _flag, _frame_pose, _pose_inputs, _thresholds
 from .config import PoseGuardConfig, _config
 from .report import _finish
 from .timeline import POSE_PANELS
-
-
-def pose_completeness(drawn, accounted):
-    """Per frame, the share of the limbs its neighbourhood draws that it still has, and which of
-    them it lost. `drawn` and `accounted` are [N, len(LIMBS)] booleans: the limb is drawn, and
-    the limb is drawn or cannot be seen - out of the shot or hidden (`accounted_limbs`). A limb
-    the frame does not draw but accounts for is not lost: only a missing limb is."""
-    N = len(drawn)
-    shares, lost = [], []
-    for i in range(N):
-        window = drawn[max(0, i - COMPLETENESS_WINDOW):i + COMPLETENESS_WINDOW + 1]
-        expected = window.mean(axis=0) >= COMPLETENESS_SHARE
-        missing = expected & ~accounted[i]
-        n = int(expected.sum())
-        shares.append(float((accounted[i] & expected).sum() / n) if n else 1.0)
-        lost.append([f"{BODY_NAMES[a]}-{BODY_NAMES[b]}" for (a, b), m in zip(LIMBS, missing) if m])
-    return shares, lost
-
-
-def _gaps(col):
-    """The (start, end) of every run of False in the boolean column `col`, end exclusive."""
-    i, N = 0, len(col)
-    while i < N:
-        if col[i]:
-            i += 1
-            continue
-        start = i
-        while i < N and not col[i]:
-            i += 1
-        yield start, i
-
-
-def limb_gaps(drawn, accounted):
-    """Per frame, the limbs (outside the head) missing on it inside a stretch of GAP_MIN to
-    GAP_MAX frames without the limb that the GAP_CONTEXT frames on both sides draw. `drawn` and
-    `accounted` as in `pose_completeness`: the limb is missing on the frames of the stretch that
-    do not account for it, flagged where those run for GAP_MIN frames or more."""
-    N = len(drawn)
-    out = [[] for _ in range(N)]
-    for j, (a, b) in enumerate(LIMBS):
-        if (a, b) in HEAD_LIMBS:
-            continue
-        col = drawn[:, j]
-        for start, end in _gaps(col):
-            before, after = col[max(0, start - GAP_CONTEXT):start], col[end:end + GAP_CONTEXT]
-            if not (GAP_MIN <= end - start <= GAP_MAX and len(before) == GAP_CONTEXT and len(after) == GAP_CONTEXT
-                    and before.mean() >= GAP_SHARE and after.mean() >= GAP_SHARE):
-                continue
-            for first, last in _gaps(accounted[start:end, j]):
-                if last - first >= GAP_MIN:
-                    for f in range(start + first, start + last):
-                        out[f].append(f"{BODY_NAMES[a]}-{BODY_NAMES[b]}")
-    return out
 
 
 def limb_spikes(kps, drawn, H, max_jump):
@@ -90,18 +36,16 @@ def pose_frame_metrics(pose_metas: list[PoseMeta], detections: list[Detection], 
     afterwards, except the spike's, which decides what counts as one. W and H are the size of
     the frames the pose was found on."""
     N = len(pose_metas)
-    rows, drawn, accounted, all_kps, all_drawn = [], [], [], [], []
+    rows, all_kps, all_drawn = [], [], []
     prev = None
     for i in range(N):
         det = detections[i]
         _, _, diag, kps, on, _ = _frame_pose(pose_metas[i], det, W, H, draw_threshold)
-        drawn.append([bool(on[a] and on[b]) for a, b in LIMBS])
-        accounted.append(accounted_limbs(pose_metas[i], W, H, draw_threshold))
         all_kps.append(kps[:, :2])
         all_drawn.append(on)
         m = {"frame": i, "detected": det["score"] > 0, "persons": det["persons"],
              "pose_conf": float(kps[:, 2].mean()), "drawn_keypoints": int(on.sum()),
-             "drawn_limbs": int(sum(drawn[-1])), "box_iou_prev": _box_iou_prev(detections, i)}
+             "drawn_limbs": sum(bool(on[a] and on[b]) for a, b in LIMBS), "box_iou_prev": _box_iou_prev(detections, i)}
         # torso motion against the previous frame
         if prev is not None:
             both = on & prev["drawn"]
@@ -111,14 +55,10 @@ def pose_frame_metrics(pose_metas: list[PoseMeta], detections: list[Detection], 
             m["torso_jump"] = 0.0
         rows.append(m)
         prev = {"kps": kps, "drawn": on}
-    drawn = np.array(drawn, dtype=bool).reshape(N, len(LIMBS))
-    accounted = np.array(accounted, dtype=bool).reshape(N, len(LIMBS))
-    shares, lost = pose_completeness(drawn, accounted)
-    gaps = limb_gaps(drawn, accounted)
     spikes = limb_spikes(np.array(all_kps).reshape(N, len(BODY_NAMES), 2),
                          np.array(all_drawn).reshape(N, len(BODY_NAMES)), H, max_limb_spike)
-    for m, share, limbs, gap, spike in zip(rows, shares, lost, gaps, spikes):
-        m["pose_completeness"], m["lost_limbs"], m["limb_spikes"], m["limb_gaps"] = share, limbs, spike, gap
+    for m, spike in zip(rows, spikes):
+        m["limb_spikes"] = spike
     return rows
 
 
@@ -128,36 +68,29 @@ def pose_flags(rows: list[PoseRow], t):
 
     for m in rows:
         i = m["frame"]
-        if m["pose_completeness"] < t["min_pose_completeness"]:
-            _flag(flags, "pose_incomplete", i)
         if m["box_iou_prev"] is not None and m["box_iou_prev"] > 0.5 and m["torso_jump"] > t["max_torso_jump"]:
             _flag(flags, "pose_jump", i)
         if m["limb_spikes"]:
             _flag(flags, "pose_spike", i)
-        if m["limb_gaps"]:
-            _flag(flags, "pose_limb_gap", i)
         if m["box_iou_prev"] is not None and m["box_iou_prev"] < 0.3:
             _flag(flags, "subject_switch", i)
     return flags
 
 
-def check_pose(pose_data: PoseData, config=None, enabled=True, stop_on_fail=True):
-    """The pose checks on `pose_data` alone.
+def check_pose(pose_data: PoseData, config=None, stop_on_fail=True):
+    """The pose checks on `pose_data` alone, all warnings: they are reported and never fail.
 
     `config` is a PoseGuardConfig (None = defaults); the keypoints and limbs counted are the
-    ones drawn, at `pose_data["draw_threshold"]`. `enabled` False still measures
-    and reports every check but marks them off, so none can fail. With `stop_on_fail` a failed
-    enabled check raises GuardFailed with the report; the wrapper that combines both groups
-    passes False and lets `combine_guards` decide.
+    ones drawn, at `pose_data["draw_threshold"]`. With `stop_on_fail` the report is logged here;
+    the wrapper that combines both groups passes False and lets `combine_guards` log it.
 
     Returns (pose_data unchanged, report, metrics JSON, timeline IMAGE)."""
     config = _config(config, PoseGuardConfig)
     pose_metas, detections = _pose_inputs(pose_data)
     W, H = (pose_metas[0]["width"], pose_metas[0]["height"]) if pose_metas else (0, 0)
     thresholds = _thresholds(pose_data, config)
-    with log.step(f"pose guard: checking {len(pose_metas)} frames ({'on' if enabled else 'off'})"):
+    with log.step(f"pose guard: checking {len(pose_metas)} frames"):
         rows = pose_frame_metrics(pose_metas, detections, W, H, thresholds["draw_threshold"], config.max_limb_spike)
         flags = pose_flags(rows, thresholds)
-    report, metrics, timeline = _finish("Pose guard", "pose", rows, flags, thresholds,
-                                        set(POSE_CHECKS if enabled else ()), POSE_PANELS, stop_on_fail)
+    report, metrics, timeline = _finish("Pose guard", "pose", rows, flags, thresholds, set(), POSE_PANELS, stop_on_fail)
     return pose_data, report, metrics, timeline

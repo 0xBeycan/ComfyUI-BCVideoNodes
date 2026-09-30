@@ -9,7 +9,7 @@ import json
 import pytest
 
 from bcvideonodes.pipelines import guard
-from guard_fakes import LEGS, MASK, N, POSE, H, W, arm, clip, drop_keypoints, origin
+from guard_fakes import MASK, POSE, H, W, clip, origin
 
 
 def jump_torso(pose_data, i):
@@ -25,39 +25,24 @@ def test_pose_guard_alone_passes_a_clean_clip_and_passes_pose_data_through():
     assert out is pose_data
     assert report.startswith("Pose guard: passed"), report
     record = json.loads(metrics)
-    assert record["guard"] == "pose" and record["enabled"] == sorted(guard.POSE_CHECKS)
+    assert record["guard"] == "pose" and record["enabled"] == []
     assert all(tuple(row) == guard.POSE_ROW for row in record["frames"])
     assert timeline.dim() == 4 and timeline.shape[0] == 1 and timeline.shape[-1] == 3
 
 
-def test_pose_guard_alone_fires_only_pose_checks():
+def test_pose_guard_alone_fires_only_pose_checks_and_never_stops():
     masks, pose_data = clip()
     masks[:10] = 0          # a mask fault the pose guard cannot see
     jump_torso(pose_data, 12)
-    with pytest.raises(guard.GuardFailed, match="Pose guard: FAILED") as failure:
-        guard.check_pose(pose_data, POSE)
-    assert "pose_jump" in str(failure.value) and "mask_" not in str(failure.value)
-
-
-def test_pose_guard_warnings_never_stop():
-    _, pose_data = clip()
-    drop_keypoints(pose_data, range(18, 24), LEGS)
+    pose_data["detections"][25]["bbox"] = [0.0, 0.0, 40.0, 40.0]
     _, report, metrics, _ = guard.check_pose(pose_data, POSE)
-    assert report.startswith("Pose guard: passed") and "pose_incomplete (warning)" in report
-    assert json.loads(metrics)["flags"]["pose_incomplete"] == list(range(18, 24))
-
-
-def test_pose_guard_off_measures_but_never_stops():
-    _, pose_data = clip()
-    jump_torso(pose_data, 12)
-    _, report, metrics, _ = guard.check_pose(pose_data, POSE, enabled=False)
-    assert report.startswith("Pose guard: passed") and "pose_jump (off)" in report
-    assert json.loads(metrics)["flags"]["pose_jump"] == [12, 13]   # out and back
+    assert report.startswith("Pose guard: passed") and "pose_jump (warning)" in report and "mask_" not in report
+    assert json.loads(metrics)["flags"] == {"pose_jump": [12, 13], "subject_switch": [25, 26]}   # out and back
 
 
 def test_only_damage_diffusion_cannot_absorb_stops():
     assert set(guard.POSE_CHECKS + guard.MASK_CHECKS) - guard.WARNINGS == {
-        "pose_jump", "subject_switch", "mask_empty", "mask_leak", "mask_fragmented", "mask_head_out", "mask_loss_large"}
+        "mask_empty", "mask_fragmented", "mask_head_out", "mask_limb_out", "mask_loss"}
 
 
 def test_pose_guard_defaults_are_the_measured_ones():
@@ -120,7 +105,7 @@ def test_the_wrong_config_type_is_an_error():
     with pytest.raises(TypeError):
         guard.check_pose(pose_data, MASK)
     with pytest.raises(TypeError):
-        guard.check_mask(masks, pose_data, {"min_mask_iou": 0.6})
+        guard.check_mask(masks, pose_data, {"min_mask_to_box": 0.15})
 
 
 def test_combine_needs_one_of_each_group_of_the_same_clip():
@@ -174,7 +159,7 @@ def test_pose_data_without_the_draw_threshold_is_an_error():
 def test_combined_equals_both_groups_side_by_side():
     masks, pose_data = clip()
     masks[20:25, 200:, :] = 0
-    drop_keypoints(pose_data, range(18, 24), LEGS)
+    jump_torso(pose_data, 12)
     _, _, pose_metrics, _ = guard.check_pose(pose_data, POSE, stop_on_fail=False)
     _, _, mask_metrics, _ = guard.check_mask(masks, pose_data, MASK, stop_on_fail=False)
     _, metrics, _ = guard.combine_guards(pose_metrics, mask_metrics, stop_on_fail=False)
@@ -188,18 +173,17 @@ def test_combined_equals_both_groups_side_by_side():
 def test_mask_guard_without_pose_data_runs_the_pose_free_checks():
     masks, pose_data = clip()
     masks[30, 170:250, 0:30] = 1.0                        # an object beside her
-    arm(masks, [i for i in range(N) if i != 20], (60, 100), 40)   # her arm held out, dropped on one frame
-    _, y1 = origin(20)
-    masks[25:35, y1 + 200:, :] = 0                        # her legs cut off for good: only a pose sees that
+    x1, y1 = origin(20)
+    masks[20, y1 + 150:y1 + 234, x1 + 8:x1 + 92] = 0      # a hole in her legs, a whole block of the final
+    masks[25:35, y1 + 165:, :] = 0                        # her lower legs cut off for good: only a pose sees that
     out, report, metrics, timeline = guard.check_mask(masks, None, MASK, stop_on_fail=False)
     record = json.loads(metrics)
     assert out is masks and record["flags"] == {"mask_loss": [20], "mask_fragmented": [30]}, report
     assert report.startswith("Mask guard: FAILED") and report.splitlines()[-1] == (
-        "- without pose_data, not checked: mask_empty, mask_leak, mask_attached_leak, mask_missing_keypoints, "
-        "mask_head_out, mask_missed_limb, body_not_drawn, mask_unstable")
+        "- without pose_data, not checked: mask_empty, mask_leak, mask_attached_leak, mask_head_out, mask_limb_out")
     assert record["thresholds"]["draw_threshold"] is None
     row = record["frames"][25]
-    assert (row["keypoint_recall"], row["missed_keypoints"], row["body_not_drawn"], row["box_reliable"]) == (None, [], None, False)
+    assert (row["head_out"], row["limbs_out"], row["attached_leak"], row["box_reliable"]) == ([], [], None, False)
     assert all(tuple(row) == guard.MASK_ROW for row in record["frames"])
     assert timeline.shape[0] == 1 and timeline.shape[-1] == 3
 
@@ -238,7 +222,7 @@ def test_mask_guard_without_pose_data_still_reports_a_piece_off_her_edges(rows):
     x1, _ = origin(30)
     masks[30, rows[0]:rows[1], x1 + 30:x1 + 60] = 1.0
     _, _, metrics, _ = guard.check_mask(masks, None, MASK, stop_on_fail=False)
-    assert json.loads(metrics)["flags"] == {"mask_specks": [30]}
+    assert json.loads(metrics)["frames"][30]["fragments"] == [round(25 * 30 / 24000, 4)]
 
 
 def test_both_guards_take_a_zero_frame_clip():

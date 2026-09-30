@@ -304,104 +304,72 @@ and its propagated ones at 0.
 
 ### Pose Guard and Mask Guard
 
-Frame-by-frame checks of the drawn pose (incomplete skeleton, torso jump,
-limb spike, subject switch) and of the mask against that pose (empty, leaking
-outside the box, fragmented, keypoints or the head outside the mask, body the
-pose does not draw, unstable, a region dropped for a few frames). The guards count the model's keypoints at
-`draw_threshold`; a part a draw rule, `draw_head` off or a 0 stick width
+Frame-by-frame checks of the drawn pose and of the mask against that pose,
+built to warn or fail only for what really causes problems in diffusion.
+Pose errors the model tolerates - a knee the pose does not draw, a keypoint
+slightly off the arm - raise nothing. The guards count the model's keypoints
+at `draw_threshold`; a part a draw rule, `draw_head` off or a 0 stick width
 leaves out of the pose images still counts. The detector is not judged: its
 box count and missed frames are in the metrics as data. Every measurement is
-always reported and plotted;
-with the switch (`pose_guard` / `mask_guard`) on, a failed check stops the
-workflow with the report. Only damage diffusion cannot absorb stops: a torso
-jump (`pose_jump`), a subject switch (`subject_switch`), an empty, leaking or
-fragmented mask (`mask_empty`, `mask_leak`, `mask_fragmented`), and two mask
-defects the models cannot restore, set on the keypoint mask (a correct mask
-shows neither): the head outside the mask (`mask_head_out`: the drawn nose, or
-`head_out_eyes_ears` or more of the drawn eyes and ears, inside the frame and
-outside the mask; fewer count toward the `mask_missing_keypoints` warning)
-and a large dropped region (`mask_loss_large`: a `mask_loss` dropout of
-`large_loss_area` of the person's mask or more). Each fails in place of the
-warning it refines on its frame. Everything else is a warning and never
-stops: an incomplete skeleton
-(`pose_incomplete`), a limb spike (`pose_spike`), a limb missing for a
-stretch (`pose_limb_gap`), small detached specks (`mask_specks`), background
-attached to the body (`mask_attached_leak`), keypoints outside the mask
-(`mask_missing_keypoints`), one limb end outside the mask
-(`mask_missed_limb`), body the pose does not draw (`body_not_drawn`), an
-unstable mask (`mask_unstable`), a smaller region the mask drops for a few
-frames (`mask_loss`). The thresholds are widgets generated from `PoseGuardConfig` /
-`MaskGuardConfig` in `pipelines/guard/config.py`.
+always reported and plotted; with the Mask Guard's switch (`mask_guard`) on,
+a failed check stops the workflow with the report.
 
-The two keypoint-mask fails have their own thresholds, the last two widgets
-of the Mask Guard and the WanAnimate Preprocess Guard (last, so saved
-workflows keep their widget positions):
+The fails, damage the models cannot restore:
 
-- `head_out_eyes_ears` (INT, default 2, 1 to 4): `mask_head_out` fails on a
-  frame where at least this many of the drawn eyes and ears lie inside the
-  frame and outside the (slightly grown) mask; the drawn nose outside fails
-  at any value. Fewer eyes and ears outside stay in `mask_missing_keypoints`,
-  a warning when the recall falls under `min_keypoint_recall`. 1 fails a
-  single eye or ear too, also where the mask's outline at the hair leaves
-  one out; 4 fails only all four, or the nose. A face the pose model draws
-  on the back of a head lies on the head, which the mask covers. It needs
-  `pose_data`.
-- `large_loss_area` (FLOAT, default 0.05, 0 to 1): a dropout that reaches the
-  `mask_loss` warning fails as `mask_loss_large` on the frames of its run
-  when the region it drops is at least this share of the person's mask on
-  the frame before the run (`mask_loss_area` in the metrics); a smaller one
-  stays a `mask_loss` warning. 0 fails every `mask_loss` dropout; 1 only one
-  that drops the whole mask.
+- `mask_empty`: no mask, or a mask under `min_mask_to_box` of the box, on a
+  frame whose box the detector and the pose model agree on (a frame with no
+  person, a black fade, is no fail).
+- `mask_fragmented`: a detached region at least 5% of the largest one (a
+  ghost, a second person, a limb torn off the mask). A piece holding the
+  person's own drawn keypoints is her; so is a speck-sized piece most of which
+  her part holds on two of the frames around. Smaller pieces are data only.
+- `mask_head_out`: the drawn nose, or `head_out_eyes_ears` or more of the
+  drawn eyes and ears, inside the frame and outside the (slightly grown)
+  mask: a head the model redraws from nothing.
+- `mask_limb_out`: a whole forearm-and-hand or lower leg outside the mask,
+  judged by prompt_pose's own rule on each frame alone: 3 or more of the
+  limb's drawn keypoints outside the mask, each at least 0.07 of the frame's
+  shorter side from it, and the limb's distal part at least 90% outside - a
+  whole limb lost, not a fingertip past the edge.
+- `mask_loss`: a region of her the model loses. The mask holds it on the
+  frame before a run and drops it on every frame of the run: a run of up to 8
+  frames that the frame after holds again, or, with `pose_data`, a run from
+  the clip's start or to its end. It counts only as the model reads it: the
+  Wan Animate workflow grows the raw mask into the final mask (GrowMaskWithBlur
+  expand 10, BlockifyMask 32) before any model reads it, so the region has to
+  be missing from the final of every frame of the run and hold a whole block
+  of it; it is hers (the pose has her body in it next to the run, or the mask
+  holds it beyond the run), not a limb that moved away and came back (the
+  mask shows that nearby meanwhile); with `pose_data` the drawn skeleton
+  crosses it on every frame of the run (or a limb that crosses it next to the
+  run is lost by the pose too, so the pose cannot say where it went); and it
+  is hand-sized: at least 1.5% of her mask (`LOSS_HAND` in
+  `pipelines/guard/common.py`, set on the test clips: the smallest real loss
+  2.1% of her, the largest piece under it that passed every other test 1.15%).
 
-Both defaults are set on the test clips: a correct (prompt) mask left no head
-keypoint out on any frame and its dropouts stayed under 4% of the person;
-on every frame where the keypoint mask lost the head, the nose or two or
-more of the eyes and ears were out, and the hands and legs it dropped
-measured 5.5 to 11% of the person on the raw mask. A frame whose mask is
-empty is left to `mask_empty` by both.
-
-A missing limb is one that should be drawn and is not: the person faces the
-camera, the limb is in the shot and in sight, and the pose does not draw it.
-A limb out of the frame (its keypoint placed at or beyond the edge, within a
-limb's width) or hidden (its keypoint placed on another part of the body -
-behind the body, the hair or a hand - or the person turned to profile or
-away) is never missing: `pose_limb_gap`, `pose_incomplete` and
-`body_not_drawn` leave it alone. `mask_missed_limb` counts only a limb end
-the mask lost: not a keypoint the pose checks call a spike, not a wrist whose
-hand folds back over the forearm, not a keypoint in a small notch of the
-mask, not a limb drawn along the outside of the mask in fast motion.
-`mask_loss` is a region the mask drops for a run of 1 to 8 frames while
-holding it on the frames before and after, flagged over the whole run. It is
-measured by its thickness (the radius of the largest disc inside it, as a
-fraction of the frame's shorter side): a dropped hand or foot is as thick as
-it is wide, the slivers an outline jitters by are a few pixels thick however
-long they are. It counts over `max_mask_loss` on a single frame, over twice
-that on a longer run. A dropout of `large_loss_area` of the person's mask or
-more (on the frame before its run; `mask_loss_area` in the metrics) fails as
-`mask_loss_large`; a frame whose mask is empty is left to `mask_empty`. A
-limb that moved away and came back
-leaves the same trace, but the mask shows it nearby meanwhile; such a run is
-not a loss. With `pose_data` a region the drawn skeleton crosses on at least
-half the frames of the run counts from half the threshold (the pose sees the
-body there). No model reads the raw mask: the Wan Animate workflow grows it
-into the final mask (GrowMaskWithBlur expand 10, then BlockifyMask 32) before
-the sampler or any other model gets it, so only the part of a region that
-the final of every frame of the run leaves out counts - what the grow
-restores never reaches them. Without `pose_data` a thin dropout of a small
-moving part (a foot that also moves between the frames around the loss) can
-stay under the threshold, and a limb moving within the area both frames
-around the run hold is not told apart from a loss.
+The warnings, which never stop: a torso jump (`pose_jump`), a limb spike
+(`pose_spike`), a subject switch (`subject_switch`), a mask leaking outside
+the box (`mask_leak`), background attached to the body
+(`mask_attached_leak`). The thresholds are widgets generated from
+`PoseGuardConfig` / `MaskGuardConfig` in `pipelines/guard/config.py`; the
+Pose Guard has no fail and so no switch. `head_out_eyes_ears` (INT, default
+2, 1 to 4) is the last widget of the Mask Guard and the WanAnimate Preprocess
+Guard: 1 fails a single eye or ear too, also where the mask's outline at the
+hair leaves one out; 4 fails only all four, or the nose. A face the pose
+model draws on the back of a head lies on the head, which the mask covers.
+The default is set on the test clips: a correct (prompt) mask left no head
+keypoint out on any frame, and on every frame where the keypoint mask lost
+the head, the nose or two or more of the eyes and ears were out.
 
 - Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
   `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
 - Mask Guard: in `mask`, optional `pose_data`; out `mask` (unchanged),
   `report`, `metrics`, `timeline`. `pose_data` gives the best result: without
-  it the guard runs only `mask_fragmented`, `mask_specks`, `mask_loss` and
-  `mask_loss_large`,
-  and the report names the checks it did not run. Without it a detached piece
-  is the person only when it runs off a side of the frame her largest region
-  also runs off (the frame edge cut it from her); with it, a piece holding
-  her own drawn keypoints is her.
+  it the guard runs only `mask_fragmented` and `mask_loss` (runs between two
+  frames that hold the region), and the report names the checks it did not
+  run. Without it a detached piece is the person only when it runs off a side
+  of the frame her largest region also runs off (the frame edge cut it from
+  her); with it, a piece holding her own drawn keypoints is her.
 
 ### WanAnimate Preprocess and WanAnimate Preprocess Guard
 
@@ -416,18 +384,18 @@ the chained nodes produce with the same settings.
   is passed whenever the mode is not `prompt`). Outputs: `pose_images`, `face_images`,
   `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
-  report. Inputs `mask`, `pose_data`, both switches and all thresholds;
+  report. Inputs `mask`, `pose_data`, the `mask_guard` switch and all thresholds;
   outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`. Its `mask` is
   the final mask the sampler gets: the preprocess mask through
   GrowMaskWithBlur (expand 10) and BlockifyMask (32). BlockifyMask lays its
   grid from each frame's own box, so the grid moves from frame to frame and
   the final's outline is known only to within a block: the mask checks allow
   for that (`mask_attached_leak` allows the neighbouring frames' masks a
-  block, `body_not_drawn` and the detached pieces allow for the padding, and
-  `mask_loss` counts only a region holding a drawn keypoint on every frame of
-  its run; a block holding a keypoint inside the raw mask is always on). The
-  Mask Guard on the raw mask judges the mask at its own precision, and its
-  `mask_loss` by what the final leaves out.
+  block, the detached pieces allow for the padding, and `mask_loss` counts
+  only a region holding a drawn keypoint on every frame of its run; a block
+  holding a keypoint inside the raw mask is always on). The Mask Guard on the
+  raw mask judges the mask at its own precision, and its `mask_loss` by what
+  the final leaves out.
 
 ### SCAIL-2 Colored Mask and SCAIL-2 Preprocess
 
@@ -481,52 +449,44 @@ Checks the two colored masks before the SCAIL-2 sampler, on the person as
 the sampler reads it (blue above 225/255). End-to-end SCAIL-2 draws no pose,
 so `pose_data` is optional: connected (Pose Detection on the driving frames
 at the generation size), the driving mask also gets the Mask Guard's
-pose-based checks, with their levels (but not its two keypoint-mask fails,
-`mask_head_out` and `mask_loss_large`, whose widgets it does not show), and a detached piece holding the
+pose-based checks with their levels, and a detached piece holding the
 person's keypoints is her (without it, only a piece that runs off a side of
-the frame she runs off is). The mode is read from the reference mask's border, as the
-sampler reads it; the driving mask is taken to be at the generation size. On
-SCAIL-2's own examples blank frames and a split-up mask are normal (the person
-leaves the shot, a passer-by occludes her), so only two checks stop the
-workflow (with `scail2_guard` on): no driving frame has the person
-(`no_driving_person`), the reference mask has no character
-(`reference_empty`). Warnings, which never stop: a driving frame without the
-person (`driving_empty`), a detached region at least 5% of the largest one
-on a driving frame or on the reference (`driving_fragmented`,
-`reference_fragmented`), a region the driving mask drops for one frame
-(`mask_loss`), and, in replacement mode only, a reference whose
-character overlaps the first driving frame's person by an IoU below
-`min_reference_iou` (0.4) after the center crop the core node cuts the
-reference to (`reference_misaligned`). The threshold is a first value, not
-calibrated yet.
+the frame she runs off is). The mode is read from the reference mask's
+border, as the sampler reads it; the driving mask is taken to be at the
+generation size. With `scail2_guard` on these stop the workflow: no driving
+frame has the person (`no_driving_person`), a detached region at least 5% of
+the largest one on a driving frame (`driving_fragmented`), the reference
+mask has no character (`reference_empty`), and with `pose_data` the Mask
+Guard's fails (`mask_empty`, `mask_head_out`, `mask_limb_out`, `mask_loss`).
+Warnings, which never stop: without `pose_data` a driving frame without the
+person (`driving_empty`: normal where the person leaves the shot, and only a
+pose tells), a detached region on the reference (`reference_fragmented`), in
+replacement mode a reference whose character overlaps the first driving
+frame's person by an IoU below `min_reference_iou` (0.4) after the center
+crop the core node cuts the reference to (`reference_misaligned`; a first
+value, not calibrated yet), and with `pose_data` `mask_leak` and
+`mask_attached_leak`.
 
 The driving mask is judged the way SCAIL-2 reads it. The core node
 area-resizes it to half size and cuts each colour at 225/255, then
 area-pools that to the latent grid, one cell per 16 x 16 px of the
 generation; it grows nothing and uses no noise mask. A cell reads as the
-person when she fills at least half of it. A hole or a sliver inside a
-cell, or a keypoint just outside her in a cell she fills half of, never
-reaches the model, while a dropped hand empties cells. So `mask_loss`
-counts a dropped region only where the mask and that reading both drop it
-(its thickness is measured on what both drop), and with `pose_data` a
-drawn keypoint the reading holds is inside the mask
-(`mask_missing_keypoints`, `mask_missed_limb`). On that grid fast motion
-(a limb that moved, an arm-body gap opening for a frame) empties whole
-cells on a correct mask too, so the node's `max_mask_loss` defaults to
-0.05, higher than the Mask Guard's 0.0185: a hand-sized loss counts,
-motion does not (measured on the test clips). Measured as data: the mask
-area, the share of the mask the sampler's half-size latent cut keeps
-(`latent_kept`: a thin limb can vanish there), the mask IoU with the
-previous frame, the share of the reference character that crop cuts off
-(`cropped`: the core node crops the reference to the generation's aspect
-ratio either way), and the reference's IoU and scale against the first
-driving frame.
+person when she fills at least half of it. So a region of her the model
+loses (`mask_loss`) is one the mask and that reading both drop, holding a
+whole cell of the grid, and a drawn keypoint the reading holds is inside the
+mask (`mask_head_out`, `mask_limb_out`). `mask_loss` needs `pose_data`: on
+that grid a limb in motion empties whole cells of a correct mask, which only
+the pose tells from a dropped part of her. Measured as data: the mask area,
+the share of the mask the sampler's half-size latent cut keeps
+(`latent_kept`: a thin limb can vanish there), the share of the reference
+character that crop cuts off (`cropped`: the core node crops the reference
+to the generation's aspect ratio either way), and the reference's IoU and
+scale against the first driving frame.
 
 - in: `pose_video_mask`, `reference_image_mask` (IMAGE), optional
   `pose_data`; widgets `scail2_guard` (on), the reference threshold
-  (`SCAIL2GuardConfig`) and the mask thresholds (`MaskChecksConfig`: those
-  of `MaskGuardConfig` without the two keypoint-mask fails', in
-  `pipelines/guard/config.py`)
+  (`SCAIL2GuardConfig`) and the Mask Guard's thresholds (`MaskGuardConfig`,
+  in `pipelines/guard/config.py`)
 - out: `pose_video_mask`, `reference_image_mask` (unchanged), `report`,
   `metrics` (JSON: `"guard": "scail2"`, the driving frames, the reference
   record), `timeline` (IMAGE)

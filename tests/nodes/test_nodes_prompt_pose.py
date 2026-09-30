@@ -23,7 +23,7 @@ def test_the_video_track_mode_gains_prompt_pose_and_stays_prompt_by_default():
     assert choices == ["prompt", "box_keypoint", "prompt_pose"] and options["default"] == "prompt"
     assert "prompt_pose: prompt mode's track;" in options["tooltip"]
     assert "as positive points together with the mask the tracker had on that frame" in options["tooltip"]
-    assert "Mask Guard reports all three" in options["tooltip"]
+    assert "The Mask Guard fails a limb or the head the mask leaves out" in options["tooltip"]
     optional = spec("BCVSAM3VideoTrack")["optional"]
     assert optional["pose_data"][1]["tooltip"].startswith("[box_keypoint, prompt_pose] ")
     for name in ("bboxes", "positive_coords", "negative_coords"):

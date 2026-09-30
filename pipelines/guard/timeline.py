@@ -14,26 +14,24 @@ COLORS = {"blue": (31, 119, 180), "orange": (255, 127, 14), "green": (44, 160, 4
 # The timeline panels, as (title, [(legend, row key, colour)]). A series keeps its colour in
 # every timeline it appears in.
 POSE_PANELS = [
-    ("pose", [("mean keypoint confidence", "pose_conf", "orange"), ("limbs vs neighbours", "pose_completeness", "green")]),
+    ("pose", [("mean keypoint confidence", "pose_conf", "orange")]),
     ("motion", [("box IoU vs previous", "box_iou_prev", "orange"), ("torso jump / box diagonal", "torso_jump", "green")]),
 ]
 MASK_PANELS = [
     ("mask", [("mask / box area", "mask_to_box", "blue"), ("mask outside box", "mask_outside_box", "orange")]),
-    ("mask vs pose", [("keypoints inside mask", "keypoint_recall", "blue"), ("body not drawn", "body_not_drawn", "red")]),
-    ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue"), ("box IoU vs previous", "box_iou_prev", "orange")]),
+    ("loss", [("share of her the model loses", "mask_loss", "red"), ("attached leak", "attached_leak", "green")]),
+    ("motion", [("box IoU vs previous", "box_iou_prev", "orange")]),
 ]
 PREPROCESS_PANELS = [
     ("mask", [("mask / box area", "mask_to_box", "blue"), ("mask outside box", "mask_outside_box", "orange")]),
-    ("pose", [("keypoints inside mask", "keypoint_recall", "blue"), ("mean keypoint confidence", "pose_conf", "orange"),
-              ("limbs vs neighbours", "pose_completeness", "green"), ("body not drawn", "body_not_drawn", "red")]),
-    ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue"), ("box IoU vs previous", "box_iou_prev", "orange"),
-                ("torso jump / box diagonal", "torso_jump", "green")]),
+    ("loss", [("share of her the model loses", "mask_loss", "red"), ("attached leak", "attached_leak", "green")]),
+    ("pose", [("mean keypoint confidence", "pose_conf", "orange")]),
+    ("motion", [("box IoU vs previous", "box_iou_prev", "orange"), ("torso jump / box diagonal", "torso_jump", "green")]),
 ]
 
 SCAIL2_PANELS = [
     ("driving mask", [("mask area / frame", "mask_area", "blue"), ("mask kept by the latent cut", "latent_kept", "green")]),
-    ("mask vs pose", [("keypoints inside mask", "keypoint_recall", "blue"), ("body not drawn", "body_not_drawn", "red")]),
-    ("motion", [("mask IoU vs previous", "mask_iou_prev", "blue")]),
+    ("loss", [("share of her the model loses", "mask_loss", "red"), ("attached leak", "attached_leak", "green")]),
 ]
 
 
