@@ -152,10 +152,14 @@ connected, so the behaviour can be switched without rewiring:
   by Meta's tracker-only re-propagation. Each frame is judged on its own, so
   a loss over several frames, or one from the birth frame on, is refined on
   every frame it qualifies on. The frames the refine can reach are tracked
-  again; the rest keep `prompt` mode's mask. A clip where no frame needs
-  points gets `prompt` mode's mask exactly. Nothing is removed on pose
-  grounds: there are no negative points. Limits: as `prompt`; only
-  whole-limb drops far outside the mask are recovered.
+  again; the rest keep `prompt` mode's mask. It also refines every frame of
+  a run of 1-8 frames where the mask drops a hand-sized region of her that it
+  holds on both sides and the pose has her body in (the Mask Guard's
+  `mask_loss` on closed runs), from up to 16 points inside that region. A
+  clip where no frame needs points gets `prompt` mode's mask exactly. Nothing
+  is removed on pose grounds: there are no negative points. Limits: as
+  `prompt`; only whole-limb drops far outside the mask, and regions dropped
+  for up to 8 frames between two frames that hold them, are recovered.
 
 How `prompt_pose` works, in Meta's order (SAM 3's video predictor, as
 easy-sam3 vendors it: the text prompt with its full pass, points on the
@@ -176,9 +180,18 @@ existing object, then the re-propagation its action history asks for):
    with at least 90% of their distal part outside. The frames around it do
    not decide it, so a loss over several frames refines each frame it
    qualifies on. Head, neck, shoulders and hips never trigger; the frames
-   before the birth are never refined.
-3. Each such frame is refined from its points (in pose order, capped at 16:
-   the first 8 and the last 8) together with the mask the tracker had on that
+   before the birth are never refined. A second trigger is the mask's own:
+   the Mask Guard's `mask_loss` detection on pass 1's masks, closed runs
+   only, as the Wan Animate workflow's final reads them (GrowMaskWithBlur
+   expand 10, BlockifyMask 32): a region of her the final loses for 1-8
+   frames and holds on the frames on both sides, a whole block of its grid,
+   at least 1.5% of her mask, with the pose's body in it (a limb crosses it
+   on the frames around, and crosses it or is lost by the pose too on the
+   run). Every frame of such a run from the birth on, its mask not empty, is
+   refined from up to 16 points inside the region, spread over it and at
+   least half its depth in. The refined frames are those of both triggers.
+3. Each such frame is refined from its points (in pose order, then the
+   region's, capped at 16: the first 8 and the last 8) together with the mask the tracker had on that
    frame (pass 1's raw decoder logits, clamped to +/-32, as the dense prompt;
    on the birth frame, which pass 1 did not propagate, the mask it was
    conditioned with, as Meta's refine looks it up), on the interactive
@@ -380,7 +393,8 @@ the chained nodes produce with the same settings.
   Crop. Widgets: the drawing widgets, `face_padding`, `mode`,
   `prompt`; optional `pose_config`, `sam3_config`. In `box_keypoint` mode the
   mask is prompted from the pose; in `prompt_pose` mode the pose's drawn
-  keypoints add points on the frames where the track lost a limb (`pose_data`
+  keypoints add points on the frames where the track lost a limb, and a region
+  the mask drops for a few frames adds points inside it (`pose_data`
   is passed whenever the mode is not `prompt`). Outputs: `pose_images`, `face_images`,
   `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined

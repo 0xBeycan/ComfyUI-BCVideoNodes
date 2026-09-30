@@ -244,6 +244,116 @@ def test_the_draw_rules_are_read_from_pose_config():
     assert [h["body"] for h in hidden] == [[], [], [sam3.R_WRIST], [], []] and hidden[2]["hands"] == ["right"]
 
 
+# --- the mask-driven trigger: a region the mask drops for a few frames ---------------------------
+# Her rectangle (400 x 200 by default, rows and columns from 40) and an 80 x 80 square held out at
+# its right (rows 100-180) on every frame but the lost ones. On a frame without the square the Wan
+# Animate workflow's final covers her rectangle grown by 10 px, so the region it loses is the
+# square's part more than 10 px from her: on the default scene rows 100-180, columns 250-320, 5600
+# px of her 86400 (6.5%), and the final's grid on the frames around (the grown box, columns 30-330
+# in 9 blocks of 33, rows 30-450 in 13 of 32) has a whole block in it: columns 261-294, rows 126-158.
+# Her right elbow is drawn on her rectangle and her right wrist on the square, so her forearm
+# crosses the region on the frames that hold it; on a lost frame the pose loses the wrist too (under
+# the draw threshold where it was), as on the clip the trigger was made for.
+
+DROP_FRAMES, DROP_LOST = 7, (3,)
+
+
+def dropout_scene(lost=DROP_LOST, body=(400, 200), moved=(), empty=(), wrist=None, frames=DROP_FRAMES):
+    """(masks [frames, H, W], pose_metas) of the scene: the square is gone on `lost` and 160 px lower
+    on `moved`; the whole mask is empty on `empty`; the wrist at `wrist` (x, y) when given, else on
+    the square."""
+    rows, cols = body
+    H, W = 40 + rows + 40, 40 + cols + 80 + 40
+    right = 40 + cols
+    masks = torch.zeros(frames, H, W)
+    metas = []
+    for f in range(frames):
+        top = 260 if f in moved else 100
+        if f not in empty:
+            masks[f, 40:40 + rows, 40:right] = 1.0
+            if f not in lost:
+                masks[f, top:top + 80, right:right + 80] = 1.0
+        x, y = wrist or (right + 50.5, 140.5)
+        metas.append(meta({sam3.R_ELBOW: (right - 39.5, 140.5), sam3.R_WRIST: (x, y, 0.1 if f in lost else 0.9)}, W, H))
+    return masks, metas
+
+
+def dropped(masks, metas, birth=0):
+    return sam3.dropped_regions(masks, metas, 0.5, birth)
+
+
+def test_a_hand_sized_region_dropped_for_one_frame_and_held_on_both_sides_is_refined():
+    masks, metas = dropout_scene()
+    got = dropped(masks, metas)
+    assert list(got) == [3] and got[3][1] == [2, 4]
+    # the first point is the region's deepest pixel, the first in raster order of the pixels 35 px
+    # from its outline (rows 34-45, columns 34-35 of the 80 x 70 region)
+    assert got[3][0][0] == (250 + 34.5, 100 + 34.5)
+
+
+def test_the_points_lie_well_inside_the_region_the_frame_lacks_and_apart():
+    masks, metas = dropout_scene()
+    points = dropped(masks, metas)[3][0]
+    assert 2 <= len(points) <= sam3.MAX_REFINE_POINTS
+    for x, y in points:
+        # at least half the region's depth (35 px) inside it: 18 px or more from its outline
+        assert 250 + 17 < x < 320 - 17 and 100 + 17 < y < 180 - 17, (x, y)
+        assert masks[2, int(y), int(x)] and masks[4, int(y), int(x)] and not masks[3, int(y), int(x)]
+    for i, (x, y) in enumerate(points):
+        assert all(np.hypot(x - u, y - v) > 17.5 for u, v in points[:i]), (x, y)
+
+
+def test_region_points_on_a_strip_go_along_its_middle_row_capped():
+    # a 5 x 15 strip, 3 px deep along its middle row (columns 2-12): the points are the pixels of that
+    # row 2 px apart (more than half the depth), from the left; the pixels a row off lie within
+    # 1.5 px of one of them
+    strip = np.ones((5, 15), bool)
+    assert sam3.region_points(strip, (100, 50)) == [(50 + c + 0.5, 102.5) for c in (2, 4, 6, 8, 10, 12)]
+    # a 5 x 60 strip has 28 such pixels: the first MAX_REFINE_POINTS are taken
+    points = sam3.region_points(np.ones((5, 60), bool), (0, 0))
+    assert sam3.MAX_REFINE_POINTS == 16 and points == [(c + 0.5, 2.5) for c in range(2, 33, 2)]
+
+
+def test_a_region_under_the_hand_floor_is_not_refined():
+    # the same 5600 px region: 1.43% of her 640 x 600 rectangle and the square (under LOSS_HAND,
+    # 1.5%), 1.64% of a 600 x 560 one; each holds a whole block of its grid
+    assert dropped(*dropout_scene(body=(640, 600))) == {}
+    assert list(dropped(*dropout_scene(body=(600, 560)))) == [3]
+
+
+@pytest.mark.parametrize("lost", [(3, 4, 5, 6), (0, 1, 2)])
+def test_an_open_run_is_not_refined(lost):
+    # dropped to the clip's last frame, or from its first: no frame holds it on the other side
+    assert dropped(*dropout_scene(lost=lost)) == {}
+
+
+def test_a_region_not_held_on_both_sides_is_not_refined():
+    # from frame 4 on the square is 160 px lower: no frame after the drop holds the region again
+    assert dropped(*dropout_scene(moved=(4, 5, 6))) == {}
+
+
+def test_a_run_of_up_to_eight_frames_is_refined_on_each():
+    got = dropped(*dropout_scene(lost=range(1, 9), frames=11))
+    assert list(got) == list(range(1, 9)) and {tuple(h) for _, h in got.values()} == {(0, 9)}
+    assert dropped(*dropout_scene(lost=range(1, 10), frames=11)) == {}
+
+
+def test_without_the_body_in_the_region_nothing_is_refined():
+    # her wrist drawn on her rectangle: no limb of hers crosses the region, which could be background
+    assert dropped(*dropout_scene(wrist=(100.5, 140.5))) == {}
+
+
+@pytest.mark.parametrize("birth, empty, refined", [
+    (0, (), {3}),
+    (3, (), {3}),          # the birth frame can be refined
+    (4, (), set()),        # never a frame before the birth
+    (0, (3,), set()),      # never a frame whose mask is empty
+    (-1, (), set()),       # no track, nothing
+])
+def test_which_frames_the_mask_trigger_can_refine(birth, empty, refined):
+    assert set(dropped(*dropout_scene(empty=empty), birth=birth)) == refined
+
+
 # --- demotion and the second pass's memory ------------------------------------------------------
 
 def test_demotion_takes_pass_1_s_conditioning_frames_within_16_of_a_refined_frame():
@@ -449,8 +559,9 @@ def refined_box(real):
 def pp_rig(rig, monkeypatch):
     """segment_by_prompt_pose on test_sam3_1_multiplex_ab's stand-ins, the refine stood in for (the
     person's box two rows taller) and, when `chosen` is given, the rule too. `make` builds the
-    tracker; prompt mode is run on one of its own first, as the baseline."""
-    def run(cfg=None, chosen=None, metas=None, logits=None, make=None, **rig_kwargs):
+    tracker; prompt mode is run on one of its own first, as the baseline. `size` is the (H, W) of
+    the frames prompt_pose is given (the baseline stays on the rig's)."""
+    def run(cfg=None, chosen=None, metas=None, logits=None, make=None, size=(RIG_H, RIG_W), **rig_kwargs):
         cfg = cfg or config()
         tracker_kwargs = {k: rig_kwargs.pop(k) for k in ("ring", "speck", "scores", "empty") if k in rig_kwargs}
         make = make or (lambda: FakeTracker(**tracker_kwargs))
@@ -473,9 +584,9 @@ def pp_rig(rig, monkeypatch):
         monkeypatch.setattr(sam3, "refine_with_points", refine)
         if chosen is not None:
             monkeypatch.setattr(sam3, "refine_points", lambda *args: dict(chosen))
-        metas = metas or [meta({}, RIG_W, RIG_H)] * RIG_N
+        metas = metas or [meta({}, size[1], size[0])] * RIG_N
         out.result = {}
-        out.masks = sam3.segment_by_prompt_pose(FakeModel(), object(), torch.zeros(RIG_N, RIG_H, RIG_W, 3), "p", cfg,
+        out.masks = sam3.segment_by_prompt_pose(FakeModel(), object(), torch.zeros(RIG_N, *size, 3), "p", cfg,
                                                 metas, 0.5, [NOTHING] * RIG_N, result=out.result, logits=logits)
         out.log = tracker.log
         out.second = tracker.log[out.refines[0]["log"]:] if out.refines else []    # the second pass's calls
@@ -693,15 +804,17 @@ LOSES = 20
 
 class LosesTheArm(FakeTracker):
     """The scripted tracker, whose mask on the frames `losing` (LOSES) drops the right part of the
-    person (the low-res columns from x + 5 on, where the three right-hand keypoints below lie)."""
+    person (the low-res columns from x + `kept` on, x + 5 where the three right-hand keypoints below
+    lie)."""
     losing = (LOSES,)
+    kept = 5
 
     def track_step(self, frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs):
         out = super().track_step(frame_idx, is_init_cond_frame, current_vision_feats, *args, **kwargs)
         real = current_vision_feats[0]
         if real in self.losing:
             _, x = position(real)
-            out["pred_masks"][0, 0, :, x + 5:] = -10.0
+            out["pred_masks"][0, 0, :, x + self.kept:] = -10.0
         return out
 
 
@@ -775,6 +888,93 @@ def test_the_sink_names_the_mode_and_gets_the_record(pp_rig):
     assert info["mode"] == "prompt_pose" and info["raw"][36] and info["cut"][36] == "prompt"
     assert info["fill_hole_area"] == cfg.fill_hole_area and "anchors" in info
     assert torch.equal(masks[36], shown(refined_box(36), cfg))
+
+
+# The mask-driven trigger on the tracked clip, on 512 x 512 frames (32 px per low-res pixel), where
+# the final's 32 px blocks fit: on LOSES the tracker drops the person's low-res columns from x + 4
+# on, and the frames around it hold them. Her right elbow and wrist are drawn on her box, the wrist
+# on the columns dropped; on LOSES the pose loses the wrist too.
+BIG = (512, 512)
+
+
+class DropsTheHand(LosesTheArm):
+    kept = 4
+
+
+def forearm_on_the_person(real, lost=()):
+    """Her right elbow and wrist on frame `real` in 512 x 512 pixels, the wrist under the draw
+    threshold on `lost`."""
+    y, x = position(real)
+    elbow, wrist = ((x + 2) * 32 + 16, 200.5), ((x + 6) * 32 + 16, 200.5)
+    return meta({sam3.R_ELBOW: elbow, sam3.R_WRIST: (*wrist, 0.1 if real in lost else 0.9)}, *BIG[::-1])
+
+
+def first_pass(monkeypatch):
+    """A list that gets, on every run of segment_by_prompt (the baseline's, then prompt_pose's pass 1),
+    a copy of its masks and the tensor itself."""
+    got = []
+    by_prompt = sam3.segment_by_prompt
+
+    def keep(*a, **k):
+        masks = by_prompt(*a, **k)
+        got.append((masks.clone(), masks))
+        return masks
+
+    monkeypatch.setattr(sam3, "segment_by_prompt", keep)
+    return got
+
+
+def test_the_mask_trigger_on_a_tracked_clip_refines_the_frame_that_dropped_the_region(pp_rig, monkeypatch, caplog):
+    passes = first_pass(monkeypatch)
+    cfg = config()
+    metas = [forearm_on_the_person(f, lost=(LOSES,)) for f in range(RIG_N)]
+    with caplog.at_level("INFO"):
+        out = pp_rig(cfg, metas=metas, make=DropsTheHand, size=BIG)
+    (refine,) = out.refines
+    assert refine["frame"] == LOSES and 1 <= len(refine["points"]) <= 16
+    pass_1, _ = passes[-1]
+    for x, y in refine["points"]:
+        # each point, back in frame pixels, is on the region: held on 19 and 21, dropped on 20
+        col, row = int(x / 1008 * BIG[1]), int(y / 1008 * BIG[0])
+        assert pass_1[LOSES - 1, row, col] > 0 and pass_1[LOSES + 1, row, col] > 0 and pass_1[LOSES, row, col] == 0
+    assert (f"prompt_pose: frame {LOSES} refined from {len(refine['points'])} point(s) in a region the mask dropped "
+            f"(held on frames {LOSES - 1} and {LOSES + 1}), with the first pass mask") in caplog.text
+    # the second pass: the birth kept, the anchors on 16 and 32 demoted, every other frame from 3 re-tracked
+    assert list(tracked(out.second)) == [f for f in range(3, RIG_N) if f != LOSES]
+    refined = sam3.clean_channel_logits(refined_box(LOSES), cfg.fill_hole_area)
+    assert torch.equal(out.masks[LOSES], sam3.to_frame_size(refined, *BIG))
+    assert (out.result["refined frames"], out.result["refined for a dropped region"], out.result["points"],
+            out.result["demoted"], out.result["re-tracked"]) == (1, 1, len(refine["points"]), 2, 36)
+
+
+def test_the_two_triggers_join_their_frames_and_a_frame_both_pick_gets_the_pose_points_first(pp_rig, caplog):
+    metas = [forearm_on_the_person(f, lost=(LOSES,)) for f in range(RIG_N)]
+    # three right-hand keypoints on the part of her the mask keeps: the pose rule alone picks nothing
+    metas[LOSES] = meta({**{right_hand(j): (200.5 + j, 300.5) for j in range(3)}, sam3.R_ELBOW: (208.5, 200.5),
+                         sam3.R_WRIST: (336.5, 200.5, 0.1)}, *BIG[::-1])
+    (alone,) = pp_rig(config(), metas=metas, make=DropsTheHand, size=BIG).refines
+    assert alone["frame"] == LOSES
+    with caplog.at_level("INFO"):
+        out = pp_rig(config(), chosen={LOSES: [right_hand(j) for j in range(3)], 36: [right_hand(0)]}, metas=metas,
+                     make=DropsTheHand, size=BIG)
+    assert [r["frame"] for r in out.refines] == [LOSES, 36]
+    # the pose's points first, then the region's (past 16 the refine keeps the first 8 and the last 8)
+    pose = [((200.5 + j) / 512 * 1008, 300.5 / 512 * 1008) for j in range(3)]
+    assert out.refines[0]["points"] == pytest.approx(pose + alone["points"])
+    assert ("point(s) on the right forearm and hand and in a region the mask dropped (held on frames "
+            f"{LOSES - 1} and {LOSES + 1})") in caplog.text
+    assert out.result["refined frames"] == 2 and out.result["refined for a dropped region"] == 1
+
+
+def test_a_clip_whose_mask_drops_nothing_is_prompt_mode_s_tensor_with_the_body_drawn(pp_rig, monkeypatch, caplog):
+    passes = first_pass(monkeypatch)
+    metas = [forearm_on_the_person(f) for f in range(RIG_N)]
+    with caplog.at_level("INFO"):
+        out = pp_rig(config(), metas=metas, size=BIG)
+    pass_1, returned = passes[-1]
+    assert out.refines == [] and out.masks is returned and torch.equal(out.masks, pass_1)
+    assert out.log == out.prompt_log and "refined for a dropped region" not in out.result
+    assert "prompt_pose: no frame needed points; the mask is prompt mode's" in caplog.text
 
 
 # --- the entry: what prompt_pose mode reads and ignores -------------------------------------------

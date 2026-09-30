@@ -1,14 +1,19 @@
 """`prompt_pose` - prompt mode's track, and on every frame where the pose shows the track lost a
 whole forearm-and-hand or lower leg, that limb's drawn keypoints as positive points on the tracked
-object on that frame. The sequence is Meta's SAM 3 video API chained as its predictor runs it
-(easy-sam3 @ 88fe578 vendors it): the text prompt with its full detector-and-tracker pass, points on
-the existing object, then the tracker-only re-propagation its action history asks for.
+object on that frame; on every frame of a short run where the mask drops a hand-sized region of her
+it holds on both sides, points inside that region. The sequence is Meta's SAM 3 video API chained as
+its predictor runs it (easy-sam3 @ 88fe578 vendors it): the text prompt with its full
+detector-and-tracker pass, points on the existing object, then the tracker-only re-propagation its
+action history asks for.
 
 1. Pass 1 is `segment_by_prompt`, unchanged; it only hands over what the rest reads (its capture).
    Where it tracked the frames before a gain again (prompt.gain_frame), the capture's birth is the
    gain frame, so below "the birth" is that frame and the frames before it are pass 1's backward fill.
-2. The frames to refine and their points are chosen from pass 1's masks and the keypoints the pose
-   images draw (`refine_points`), once pass 1 is done, each frame on its own.
+2. The frames to refine and their points are chosen from pass 1's masks once pass 1 is done, by two
+   triggers whose frames are joined: the pose-driven one (`refine_points`), from the keypoints the
+   pose images draw, each frame on its own; and the mask-driven one (`dropped_regions`), the Mask
+   Guard's mask_loss detection on closed runs (guard.mask.closed_losses), from the region itself.
+   A frame both pick gets the pose's points first, then the region's.
 3. No frame chosen: pass 1's masks are the result, prompt mode's bit for bit. Meta does not
    propagate again without a new prompt.
 4. Otherwise each chosen frame is refined (Meta's point refine, `refine_with_points`, with pass 1's
@@ -39,8 +44,9 @@ from ...libs import log
 from ...libs.keypoints import (L_ANKLE, L_ELBOW, L_FOOT, L_KNEE, L_WRIST, R_ANKLE, R_ELBOW, R_FOOT, R_KNEE, R_WRIST,
                                in_frame)
 from ...libs.mask import count_masked_frames, to_frame_size
-from ...models.sam3_1_multiplex.adapter import (SAM3_1_MULTIPLEX_SIZE, backbone_frame, memory_lookback, multiplex_parts,
-                                                propagation_backbone, refine_with_points, track_and_clean)
+from ...models.sam3_1_multiplex.adapter import (MAX_REFINE_POINTS, SAM3_1_MULTIPLEX_SIZE, backbone_frame,
+                                                memory_lookback, multiplex_parts, propagation_backbone,
+                                                refine_with_points, track_and_clean)
 from ...models.sam3_1_multiplex.postprocess import clean_channel_logits, low_res_logits
 from .config import BEST_IOU, RAW, SIGNED_RANGE, report_counts
 from .prompt import PromptCapture, encode_frame_memory, keep_memory, memory_score, memory_view, segment_by_prompt
@@ -167,6 +173,67 @@ def refine_points(masks, xy, drawn, birth, distance):
     return fired
 
 
+# --- the mask-driven trigger: a region the mask drops for a few frames ---------------------------
+
+class _Booleans:
+    """[N, H, W] float masks as the mask_loss detection reads them: a frame's booleans (mask > 0), or
+    a box of them, at a time, so the clip is never copied whole."""
+
+    def __init__(self, masks):
+        self.masks, self.shape = masks, tuple(masks.shape)
+
+    def __getitem__(self, key):
+        return (self.masks[key] > 0).numpy()
+
+
+def region_points(piece, corner, count=MAX_REFINE_POINTS):
+    """Up to `count` points well inside the region `piece` ([h, w] booleans, its top-left pixel at
+    `corner`, (y, x)) and spread over it, as (x, y) pixel centres of the frame. The region's depth
+    is its deepest pixel's distance from the outline (the frame edge counts as outline). Among the
+    pixels at least half that depth inside: the deepest (the first in raster order on a tie), then
+    the deepest farther than half that depth from every point taken, and so on."""
+    import cv2
+    h, w = piece.shape
+    depth = cv2.distanceTransform(np.pad(piece, 1).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1]
+    half = float(depth.max()) / 2
+    free = depth >= half
+    ys, xs = np.mgrid[:h, :w]
+    points = []
+    while len(points) < count and free.any():
+        y, x = np.unravel_index(int(np.argmax(np.where(free, depth, -1.0))), depth.shape)
+        points.append((corner[1] + int(x) + 0.5, corner[0] + int(y) + 0.5))
+        free &= (ys - y) ** 2 + (xs - x) ** 2 > half ** 2
+    return points
+
+
+def dropped_regions(masks, pose_metas, draw_threshold, birth):
+    """{frame: (points, holding)}: the frames the mask-driven trigger refines, ascending, the
+    positive points it sends on each as (x, y) pixel centres (region_points of every region the
+    frame lacks, in the order found) and the frames that hold those regions around it, ascending.
+    `masks` [N, H, W] are pass 1's, whose track was born on frame `birth` (-1: none).
+
+    The regions are the Mask Guard's mask_loss detection on closed runs (guard.mask.closed_losses):
+    a region of her the Wan Animate workflow's final mask (grow 10, blockify 32) loses for 1 to 8
+    frames and holds on the frames on both sides, a whole block of its grid, hand-sized (LOSS_HAND
+    of her mask) or bigger, with the pose's body in it (the guard's evidence: her body keypoints
+    drawn at `draw_threshold`, no draw rule left out; a limb that crosses the region on an end frame
+    and is not drawn on the run counts). Every frame of such a run is refined, except, as with the
+    pose-driven rule, the frames before the birth and a frame whose mask is empty."""
+    from ..guard.mask import closed_losses
+    found = {}
+    if birth < 0:
+        return found
+    present = masks.flatten(1).any(dim=1).tolist()
+    for run, anchors, piece, corner, _ in closed_losses(_Booleans(masks), pose_metas, draw_threshold):
+        points = region_points(piece, corner)
+        for f in run:
+            if f >= birth and present[f]:
+                pixels, holding = found.setdefault(f, ([], set()))
+                pixels += points
+                holding.update(anchors)
+    return {f: (pixels, sorted(holding)) for f, (pixels, holding) in sorted(found.items())}
+
+
 # --- the second pass: demotion and the memory it reads ------------------------------------------
 
 def demote(conditioning, refined):
@@ -244,8 +311,9 @@ def _clock(device):
 
 # The counts segment_by_prompt_pose adds to pass 1's for the log, keyed by the label the log
 # shows, in the order they are added; "frames segmented" replaces pass 1's with the result's.
-PromptPoseCounts = TypedDict("PromptPoseCounts", {"refined frames": int, "points": int, "stability fallbacks": int,
-                                                  "demoted": int, "re-tracked": int, "kept from the first pass": int,
+PromptPoseCounts = TypedDict("PromptPoseCounts", {"refined frames": int, "refined for a dropped region": int,
+                                                  "points": int, "stability fallbacks": int, "demoted": int,
+                                                  "re-tracked": int, "kept from the first pass": int,
                                                   "frames segmented": int},
                              total=False)
 
@@ -253,7 +321,8 @@ PromptPoseCounts = TypedDict("PromptPoseCounts", {"refined frames": int, "points
 def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw_threshold, hidden, result=None,
                            logits=None):
     """[N, H, W] float masks of the person in `images` [N, H, W, 3]: prompt mode's, with Meta's
-    point refine where the pose shows a limb the track lost (see the module docstring).
+    point refine where the pose shows a limb the track lost, and where the mask drops a region of
+    her for a few frames (see the module docstring).
     `pose_metas`, `draw_threshold` and `hidden` are pose_data's keypoints, the threshold its images
     are drawn at and what its draw rules leave out of them (track.prompt_pose_inputs). `result`
     and `logits` are segment_by_prompt's; in the logits record the refined frames and the
@@ -272,15 +341,16 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     xy, drawn = drawn_keypoints(pose_metas, draw_threshold, hidden, H, W)
     device = mm.get_torch_device()
     capture: PromptCapture = {"raw": {}}
-    counts: PromptPoseCounts = {"refined frames": 0, "points": 0, "stability fallbacks": 0, "demoted": 0,
-                                "re-tracked": 0}
+    counts: PromptPoseCounts = {"refined frames": 0, "refined for a dropped region": 0, "points": 0,
+                                "stability fallbacks": 0, "demoted": 0, "re-tracked": 0}
 
     start = _clock(device)
     masks = segment_by_prompt(model, clip, images, prompt, c, result=result, logits=logits, capture=capture)
     pass_one = _clock(device) - start
     birth = capture.get("birth", -1)
     chosen = refine_points(masks, xy, drawn, birth, c.pose_point_distance * min(H, W))
-    if not chosen:
+    dropped = dropped_regions(masks, pose_metas, draw_threshold, birth)
+    if not chosen and not dropped:
         log.info("prompt_pose: no frame needed points; the mask is prompt mode's")
         report_counts(result, counts)
         return masks
@@ -307,27 +377,36 @@ def segment_by_prompt_pose(model, clip, images, prompt, config, pose_metas, draw
     # frame: the raw ones where pass 1 propagated it; on the birth, which it did not, its conditioning
     # output's, the previous output Meta's refine looks up there. From the points without that mask
     # (Meta's first refine of a frame) the test clips' refined frame kept the forearms and hands but
-    # lost the head, torso and dress.
+    # lost the head, torso and dress. A frame both triggers pick gets the pose's points first; past
+    # MAX_REFINE_POINTS the refine keeps the first half and the last half.
     refined = {}
     start = _clock(device)
     with torch.inference_mode():
-        for g, keypoints in chosen.items():
+        for g in sorted(set(chosen) | set(dropped)):
+            keypoints = chosen.get(g, [])
+            pixels, holding = dropped.get(g, ([], []))
             frame, vision_feats, vision_pos, feat_sizes, _, trunk_out = backbone_frame(
                 tracker, backbone_fn, frames, g, device, dtype, size, signed)
             points = [tuple(p) for p in (xy[g, keypoints] * SAM3_1_MULTIPLEX_SIZE).tolist()]
+            points += [(x / W * SAM3_1_MULTIPLEX_SIZE, y / H * SAM3_1_MULTIPLEX_SIZE) for x, y in pixels]
             output, info = refine_with_points(tracker, backbone, frame, trunk_out, vision_feats, vision_pos,
                                               feat_sizes, points, mux,
                                               capture["raw"][g] if g in capture["raw"] else capture["cond"][g]["pred_masks"])
             refined[g] = output
             put(g, clean_channel_logits(output["pred_masks"], c.fill_hole_area), output["pred_masks"])
             counts["refined frames"] += 1
+            counts["refined for a dropped region"] += int(g in dropped)
             counts["points"] += len(info["points"])
             counts["stability fallbacks"] += int(info["fallback"])
             sent = len(info["points"])
             stable = "-" if info["stability"] is None else f"{info['stability']:.3f}"
             limbs = [name for name, limb in LIMBS.items() if set(limb) & set(keypoints)]
+            where = [f"on the {' and '.join(limbs)}"] if limbs else []
+            if holding:
+                where.append(f"in a region the mask dropped (held on frames {', '.join(map(str, holding[:-1]))} "
+                             f"and {holding[-1]})")
             log.info(f"prompt_pose: frame {g} refined from {sent if sent == len(points) else f'{sent} of {len(points)}'} "
-                     f"point(s) on the {' and '.join(limbs)}, with the first pass mask; object score "
+                     f"point(s) {' and '.join(where)}, with the first pass mask; object score "
                      f"{float(output['object_score_logits'].float().flatten()[0]):.2f}, token-0 stability {stable}"
                      f"{', the best-IoU mask taken' if info['fallback'] else ''}")
     refines = _clock(device) - start

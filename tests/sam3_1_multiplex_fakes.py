@@ -20,7 +20,7 @@ sam3 = Names("sam3", {
            "prompt_pose_inputs"),
     **refs("pipelines.sam3_1_multiplex.prompt_pose",
            "DEMOTION_WINDOW", "HANDS", "KEYPOINT_COUNT", "LIMBS", "closest_conditioning", "demote",
-           "drawn_keypoints", "first_influenced", "pass_two_view"),
+           "drawn_keypoints", "dropped_regions", "first_influenced", "pass_two_view", "region_points"),
     **refs("models.sam3_1_multiplex.adapter", "MASK_LOGIT_SCALE", "MAX_REFINE_POINTS", "backbone_frame",
            "track_frame"),
     "_propagation_backbone": Ref("models.sam3_1_multiplex.adapter", "propagation_backbone"),

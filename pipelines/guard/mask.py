@@ -277,10 +277,11 @@ class _LimbEvidence:
     the run (`on_run`) they cross it too, or a limb that crosses it on an end frame is lost by the
     pose as well - not drawn, and no undrawn end of it out of the shot - so the pose cannot say
     where the limb went (a limb that moved away is drawn elsewhere; one that left the shot is
-    placed at the edge). `body` is the frames' (keypoints in pixels, drawn) (common._body)."""
+    placed at the edge). The frames' body keypoints are those of `pose_metas` drawn at
+    `draw_threshold`, in pixels (common._body)."""
 
-    def __init__(self, body, W, H):
-        self.body, self.W, self.H = body, W, H
+    def __init__(self, pose_metas: list[PoseMeta], W, H, draw_threshold):
+        self.body, self.W, self.H = [_body(meta, W, H, draw_threshold) for meta in pose_metas], W, H
 
     def crossing(self, f, piece, corner):
         import cv2
@@ -329,13 +330,17 @@ class _KeypointEvidence:
         return all(self.at_end(f, piece, corner) for f in run)
 
 
-def dropouts(masks, read, evidence=None):
-    """mask_loss: per frame, the largest share of her mask the model loses on it (0.0 without one).
+def lost_regions(masks, read, evidence=None, open_runs=True):
+    """mask_loss's detection: every region of her the model loses, as (run, anchors, piece, corner,
+    share) - the frames of the run (a range), the frames that hold the region around it (the frame
+    before and the frame after a closed run; the one end an open run has), the region as a connected
+    piece ([h, w] booleans) with its top-left pixel `corner` (y, x), and its share of her mask.
 
     A dropout is a region the mask holds on the frame before a run and drops on every frame of the
-    run: a closed run of up to LOSS_WINDOW frames the frame after holds again, or, with a pose, an
-    open run to the last frame of a stretch of frames with a mask (the clip's end, or before an
-    empty stretch) or from its first. Each connected piece of it is her body the model loses when:
+    run: a closed run of up to LOSS_WINDOW frames the frame after holds again, or, with a pose and
+    `open_runs`, an open run to the last frame of a stretch of frames with a mask (the clip's end, or
+    before an empty stretch) or from its first. Each connected piece of it is her body the model
+    loses when:
 
     - the model reads it as lost: `read(f)` is (what the model reads of frame f's mask, [H, W]
       booleans or None for the mask itself; the grid it reads it on, (row edges, column edges)):
@@ -355,19 +360,21 @@ def dropouts(masks, read, evidence=None):
       only closed runs count: an open run is a limb leaving the shot as often as a lost one;
     - it is hand-sized or bigger: LOSS_HAND of her mask or more.
 
-    `masks` is [N, H, W] booleans. The share is the piece's area over the mask of the frame before
-    the run (after, for a run from a stretch's first frame)."""
+    `masks` is [N, H, W] booleans, or anything that gives a frame's booleans by the same indexing
+    (masks[f], masks[f, y0:y1, x0:x1]) and has their `shape`. The share is the piece's area over the
+    mask of the frame before the run (after, for a run from a stretch's first frame). A generator:
+    the regions come run by run, the closed runs first."""
     N, H, W = masks.shape
     S = min(H, W)
-    loss = [0.0] * N
     views = {}                             # frame -> (both hold, either holds, grid)
-    present = masks.reshape(N, H * W).any(axis=1)
+    present = np.array([masks[f].any() for f in range(N)], dtype=bool)
 
     def view(f):
         if f not in views:
             reading, grid = read(f)
-            reading = masks[f] if reading is None else reading
-            views[f] = (masks[f] & reading, masks[f] | reading, grid)
+            frame = masks[f]
+            reading = frame if reading is None else reading
+            views[f] = (frame & reading, frame | reading, grid)
         return views[f]
 
     def held(f, piece, corner):
@@ -390,8 +397,7 @@ def dropouts(masks, read, evidence=None):
                 continue
             if not hers(anchors, beyond, piece, corner) or _gain(masks, anchors, run, piece, corner, reach) >= LOSS_GAIN:
                 continue
-            for f in run:
-                loss[f] = max(loss[f], share)
+            yield run, anchors, piece, corner, share
 
     # closed runs: t..t+g-1, held on t-1 and on t+g
     for t in range(1, N - 1):
@@ -409,10 +415,10 @@ def dropouts(masks, read, evidence=None):
                 break                                  # nothing held before the run is left to drop
             lost = before & view(t + g)[0] & ~gone
             if lost.any():
-                judge(lost, range(t, t + g), (t - 1, t + g),
-                      (range(max(0, t - LOSS_WINDOW), t - 1), range(t + g + 1, min(N, t + g + LOSS_WINDOW))))
-    if evidence is None:
-        return loss
+                yield from judge(lost, range(t, t + g), (t - 1, t + g),
+                                 (range(max(0, t - LOSS_WINDOW), t - 1), range(t + g + 1, min(N, t + g + LOSS_WINDOW))))
+    if evidence is None or not open_runs:
+        return
     # open runs, with a pose: within each stretch a..b of frames with a mask, t..b held on t-1, and a..e held on e+1
     views.clear()
     f = 0
@@ -429,7 +435,7 @@ def dropouts(masks, read, evidence=None):
             gone |= view(t)[1]
             lost = view(t - 1)[0] & ~gone
             if lost.any():
-                judge(lost, range(t, b + 1), (t - 1,), (range(max(0, t - LOSS_WINDOW), t - 1),))
+                yield from judge(lost, range(t, b + 1), (t - 1,), (range(max(0, t - LOSS_WINDOW), t - 1),))
             views.pop(t, None)
         views.clear()
         gone = np.zeros((H, W), bool)
@@ -437,10 +443,30 @@ def dropouts(masks, read, evidence=None):
             gone |= view(e)[1]
             lost = view(e + 1)[0] & ~gone
             if lost.any():
-                judge(lost, range(a, e + 1), (e + 1,), (range(e + 2, min(N, e + 1 + LOSS_WINDOW)),))
+                yield from judge(lost, range(a, e + 1), (e + 1,), (range(e + 2, min(N, e + 1 + LOSS_WINDOW)),))
             views.pop(e, None)
         views.clear()
+
+
+def dropouts(masks, read, evidence=None):
+    """mask_loss: per frame, the largest share of her mask the model loses on it (0.0 without one),
+    over every region `lost_regions` finds."""
+    loss = [0.0] * masks.shape[0]
+    for run, _, _, _, share in lost_regions(masks, read, evidence):
+        for f in run:
+            loss[f] = max(loss[f], share)
     return loss
+
+
+def closed_losses(masks, pose_metas: list[PoseMeta], draw_threshold):
+    """prompt_pose's mask-driven trigger (sam3_1_multiplex.prompt_pose): `lost_regions` of the raw
+    `masks` as the Wan Animate workflow's final reads them (GrowMaskWithBlur expand FINAL_GROW,
+    BlockifyMask FINAL_BLOCK), the body evidence of `pose_metas` at `draw_threshold` (a raw mask's),
+    closed runs only - a region of her the mask drops for up to LOSS_WINDOW frames and holds on both
+    sides. A generator, as lost_regions."""
+    _, H, W = masks.shape
+    evidence = _LimbEvidence(pose_metas, W, H, draw_threshold)
+    return lost_regions(masks, lambda f: _final_mask(masks[f]), evidence, open_runs=False)
 
 
 # --- the head and a whole limb outside the mask -------------------------------------------------
@@ -503,8 +529,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
     if posed:
         envelopes = box_envelopes(detections, N, W, H)
         whole = [_whole_body(meta, W, H, draw_threshold) for meta in pose_metas]
-        evidence = (_KeypointEvidence(whole) if final
-                    else _LimbEvidence([_body(meta, W, H, draw_threshold) for meta in pose_metas], W, H))
+        evidence = _KeypointEvidence(whole) if final else _LimbEvidence(pose_metas, W, H, draw_threshold)
         limbs = limbs_out(seen, masks.shape, pose_metas, draw_threshold)
     loss = dropouts(masks, read, evidence) if posed else (dropouts(masks, read) if loss_without_pose else [None] * N)
     alone = {}                             # frame -> its mask_regions by that frame alone
