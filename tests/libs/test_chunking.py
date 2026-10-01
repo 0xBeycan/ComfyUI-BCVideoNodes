@@ -126,7 +126,7 @@ def test_format_plan():
 
 @pytest.mark.parametrize("policy, plan", [("fit", [81, 81, 81, 13]), ("full", [81, 81, 81, 81])])
 def test_last_chunk_policies_240_at_81_overlap_5(policy, plan):
-    # the README example: fit -> 241 produced, full -> 309 produced, both cut to 240
+    # the docs/long-video-samplers.md example: fit -> 241 produced, full -> 309 produced, both cut to 240
     chunk_length, _ = LAST_CHUNK[policy]
     assert plan_chunks(240, 81, 5, chunk_length) == plan
     assert produced_frames(plan, 5) == {"fit": 241, "full": 309}[policy]

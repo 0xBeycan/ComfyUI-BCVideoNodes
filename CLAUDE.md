@@ -70,6 +70,7 @@ web/js/              player.js (the player the previews share), load_video.js, s
                      get_video_info.js (the output groups' colours and dividers)
 scripts/             offline model conversion and upload (ComfyUI-free)
 tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test
+docs/                the user documentation, one page per category, linked from README.md
 ```
 
 ## The layer rule
