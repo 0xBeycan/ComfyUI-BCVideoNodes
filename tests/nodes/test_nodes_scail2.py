@@ -61,12 +61,14 @@ def test_the_preprocess_wrapper_is_the_nodes_chained(fake_models, replacement_mo
     (mask,) = nodes.BCVSAM3VideoTrack().track(images, mode, "person", 1, -1, pose_data=pose_data)
     (reference_mask,) = nodes.BCVSAM3VideoTrack().track(reference, "prompt", "person", 1, -1)
     pose_video_mask, reference_image_mask = nodes.BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask)
-    chained = (images, pose_video_mask, reference_image_mask, mask, reference_mask)
+    # replacement_mode: the widget's value, for the sampler's replacement_mode
+    chained = (images, pose_video_mask, reference_image_mask, mask, reference_mask, replacement_mode)
 
     assert len(wrapped) == len(nodes.BCVSCAIL2Preprocess.RETURN_NAMES)
     for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES, wrapped, chained):
         assert same(a, b), name
     assert wrapped[0] is images  # the driving video is the pose input, unchanged
+    assert wrapped[5] is replacement_mode
     # the whole driving clip once in the mode, with the pose where the mode reads it; then the
     # reference from the prompt alone in every mode
     calls = fake_models.calls[:2]

@@ -31,7 +31,8 @@ PREPROCESS = {
                                      ("mask", "pose_data", "report", "metrics", "timeline")),
     "BCVSCAIL2ColoredMask": ("SCAIL-2 Colored Mask", "BCVideoNodes/SCAIL", ("pose_video_mask", "reference_image_mask")),
     "BCVSCAIL2Preprocess": ("SCAIL-2 Preprocess", "BCVideoNodes/SCAIL",
-                            ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")),
+                            ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask",
+                             "replacement_mode")),
     "BCVSCAIL2PreprocessGuard": ("SCAIL-2 Preprocess Guard", "BCVideoNodes/SCAIL",
                                  ("pose_video_mask", "reference_image_mask", "report", "metrics", "timeline")),
     # the video input nodes

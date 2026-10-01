@@ -312,10 +312,10 @@ def test_the_stamp_says_what_is_wanted_and_a_missed_link_is_kept(caplog):
 def test_a_dropped_output_is_a_new_empty_tensor_of_its_kind():
     cls = nodes.BCVSCAIL2Preprocess
     full = (torch.rand(3, 4, 5, 3), torch.rand(3, 4, 5, 3), torch.rand(1, 4, 5, 3), torch.rand(3, 4, 5).half(),
-            torch.rand(1, 4, 5))
+            torch.rand(1, 4, 5), True)
     out = unused.drop_unwanted(cls, full, {"pose_video_mask"})
     check_outputs(cls, out, full, {"pose_video", "mask"})
-    assert out[1] is full[1] and out[2] is full[2]
+    assert out[1] is full[1] and out[2] is full[2] and out[5] is True
 
 
 # --- each node ---------------------------------------------------------------------------------------
@@ -441,7 +441,7 @@ def test_scail2_preprocess_draws_no_pose_images(fake_models, monkeypatch, mode):
     pose_data = nodes.BCVPoseDetection().detect(images, **WIDGETS)[1]  # drawn, as before
     (mask,) = nodes.BCVSAM3VideoTrack().track(images, mode, "person", 1, -1, pose_data=pose_data)
     (reference_mask,) = nodes.BCVSAM3VideoTrack().track(reference, "prompt", "person", 1, -1)
-    chained = (images, *nodes.BCVSCAIL2ColoredMask().render(mask, False, reference_mask), mask, reference_mask)
+    chained = (images, *nodes.BCVSCAIL2ColoredMask().render(mask, False, reference_mask), mask, reference_mask, False)
     drawn = calls(monkeypatch, "draw")
     tracked, track = [], nodes.BCVSAM3VideoTrack.track
     monkeypatch.setattr(nodes.BCVSAM3VideoTrack, "track",

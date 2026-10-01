@@ -76,8 +76,8 @@ class BCVSCAIL2Preprocess:
             "hidden": dict(LINK_INPUTS),
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "MASK", "MASK")
-    RETURN_NAMES = ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "MASK", "MASK", "BOOLEAN")
+    RETURN_NAMES = ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask", "replacement_mode")
     # nodes/unused_outputs.py: pose_video (a new clip with black_background, else the input) and
     # pose_video_mask are not computed when nothing links them; mask, which both are cut by, is
     # dropped at return. The reference masks are one frame.
@@ -114,7 +114,8 @@ class BCVSCAIL2Preprocess:
         pose_video_mask, reference_image_mask = BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask=reference_mask,
                                                                               wanted=wanted)
         pose_video = scail2.driving_on_black(images, mask) if black_background and wants(wanted, "pose_video") else images
-        return drop_unwanted(type(self), (pose_video, pose_video_mask, reference_image_mask, mask, reference_mask), wanted)
+        return drop_unwanted(type(self), (pose_video, pose_video_mask, reference_image_mask, mask, reference_mask,
+                                          bool(replacement_mode)), wanted)
 
 
 SCAIL2_GUARD_TOOLTIP = "Stop the workflow when a SCAIL-2 check fails: no driving frame has the person, a driving frame's mask is torn (a detached piece of 5% of her or more), the reference mask has no character; with pose_data also the driving mask empty on a frame with a person, the head or a whole limb outside it, or a hand-sized region of her the latent grid loses. Warnings never stop. Off still measures and reports every check."

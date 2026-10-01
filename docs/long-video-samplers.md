@@ -233,7 +233,7 @@ scheduler. The other references are in the table below.
 | `clip_vision`               | CLIP_VISION         | `clip_vision_h`. The reference is encoded once per run, stretched (crop `none`) as SCAIL-2 was trained; in replacement mode with the character on black (pixels whose reference mask has no channel above 0.1, core's rule for the VAE reference), as the authors require (issue #30). |
 | `pose_video_mask`           | IMAGE               | Colored driving mask, as long as `pose_video` (a mismatch is an error). Extended past its end like the pose (`tail_padding`). |
 | `reference_image_mask`      | IMAGE               | Colored reference mask.                                               |
-| `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for.                     |
+| `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for: link SCAIL-2 Preprocess's `replacement_mode` output. |
 | `pose_strength`             | FLOAT, default 1.0  | Passed to `WanSCAILToVideo`.                                          |
 | `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Passed as `pose_start` / `pose_end`. start > end is an error. |
 | `previous_frame_count`      | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off. SCAIL-2 was trained with 5. Snapped down to the 4k+1 grid. |

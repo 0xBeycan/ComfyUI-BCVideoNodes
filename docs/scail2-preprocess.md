@@ -37,7 +37,8 @@ is a later phase).
   `sam3_config`. Outputs: `pose_video` (the driving video, which SCAIL-2's
   end-to-end mode reads as its pose input in animation and replacement mode
   alike), `pose_video_mask`, `reference_image_mask`, `mask`,
-  `reference_mask`.
+  `reference_mask`, `replacement_mode` (the widget's value, to link to the
+  SCAIL-2 Long Video Sampler's `replacement_mode`, so the two always match).
 - `black_background` (animation mode only): `pose_video` becomes the driving
   video with every pixel outside the person's mask black, as SCAIL-2's
   training pose videos were (zai-org/SCAIL-2 issue #17; SCAIL-Pose's
