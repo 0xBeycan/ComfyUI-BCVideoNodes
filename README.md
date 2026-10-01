@@ -1,7 +1,7 @@
 # ComfyUI-BCVideoNodes
 
 Video nodes for ComfyUI: a Wan Animate preprocess built from small nodes that
-are usable in any video pipeline (wholebody pose, SAM 3.1 person tracking,
+are usable in any video pipeline (wholebody pose with ViTPose-H or Sapiens2, SAM 3.1 person tracking,
 face crops, pose and mask checks), a SCAIL-2 preprocess, and three samplers
 that turn a reference image plus a driving video of any length into a Wan
 Animate or SCAIL-2 video of exactly that length.
@@ -23,6 +23,7 @@ Animate or SCAIL-2 video of exactly that length.
 | **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Preprocess Guard** | `BCVSCAIL2PreprocessGuard` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/SCAIL` |
+| **Sapiens2 Pose** | `BCVSapiens2Pose` | `BCVideoNodes` |
 
 ## Preprocess nodes
 
@@ -46,6 +47,27 @@ boxes of the frames around it and extend it to a frame edge it nearly touches.
   person box per frame as everything downstream sees it),
   `key_frame_body_points` (STRING: frame 0's confident body keypoints in the
   KJNodes PointsEditor / easy-sam3 `positive_coords` JSON format)
+
+### Sapiens2 Pose
+
+Pose Detection with Meta's Sapiens2 for the body, the feet and the hands:
+the same person box (YOLOv10x, or the connected `bboxes`), the same
+`pose_config`, drawing and outputs, but Sapiens2 gives the body, feet and
+hand keypoints on its own 1024x768 crop, mapped to COCO-WholeBody by name.
+The 68 face keypoints come from ViTPose-H on the same box, so Face Crop, the
+guards and `back_view_face` read the same face as after Pose Detection.
+
+- in, widgets and out: Pose Detection's, plus `model` after `images`:
+  `5b int8 convrot` (default), `5b bf16`, `1b int8 convrot`, `1b bf16`,
+  `0.8b int8 convrot`, `0.8b bf16`, `0.4b int8 convrot`, `0.4b bf16`.
+  `int8 convrot` is the int8 ConvRot quantized file, computing in bf16.
+- The model is downloaded on first use (see Models).
+
+WanAnimate Preprocess and SCAIL-2 Preprocess have a `pose_model` widget, their
+last: `ViTPose-H` (default) runs Pose Detection, `Sapiens2 <model>` runs
+Sapiens2 Pose with that model. A workflow saved before the widget existed
+loads with `ViTPose-H` and runs as before. SCAIL-2 Preprocess reads it only in
+the modes that run the pose.
 
 ### Pose Config
 
@@ -436,9 +458,10 @@ the head, the nose or two or more of the eyes and ears were out.
 The wrappers call the individual nodes, so a wrapper produces exactly what
 the chained nodes produce with the same settings.
 
-- **WanAnimate Preprocess** = Pose Detection -> SAM 3.1 Multiplex Video Track -> Face
-  Crop. Widgets: the drawing widgets, `face_padding`, `mode`,
-  `prompt`; optional `pose_config`, `sam3_config`. In `box_keypoint` mode the
+- **WanAnimate Preprocess** = Pose Detection (or Sapiens2 Pose, by `pose_model`) -> SAM 3.1
+  Multiplex Video Track -> Face Crop. Widgets: the drawing widgets, `face_padding`, `mode`,
+  `prompt`, `pose_model` (last; `ViTPose-H` default, or `Sapiens2 <model>`); optional
+  `pose_config`, `sam3_config`. In `box_keypoint` mode the
   mask is prompted from the pose; in `prompt_pose` mode the pose's drawn
   keypoints add points on the frames where the track lost a limb, and a region
   the mask drops for a few frames adds points inside it (`pose_data`
@@ -484,13 +507,14 @@ is a later phase).
   segment). `mode` is the Video Track's widget (`prompt` default,
   `box_keypoint`, `prompt_pose`), so the mask comes from the chosen mode and
   switching needs no rewiring: in `box_keypoint` and `prompt_pose` the node
-  first runs Pose Detection on the driving frames, at its default widgets
+  first runs Pose Detection (or Sapiens2 Pose, by `pose_model`) on the driving frames, at its default widgets
   (SCAIL-2 draws no pose; the pose only shapes the mask) with `pose_config`
   when connected, and passes its `pose_data` to the track; `prompt` runs no
   pose. The reference image is tracked in prompt mode whatever the mode: the
   pose modes are video modes, and the reference is one image, so `prompt` is
   read in every mode. Widgets: `replacement_mode`, `mode`, `prompt`,
-  `black_background` (default off); optional `reference_mask`, `pose_config`,
+  `black_background` (default off), `pose_model` (last; `ViTPose-H` default, or
+  `Sapiens2 <model>`, read only in the pose modes); optional `reference_mask`, `pose_config`,
   `sam3_config`. Outputs: `pose_video` (the driving video, which SCAIL-2's
   end-to-end mode reads as its pose input in animation and replacement mode
   alike), `pose_video_mask`, `reference_image_mask`, `mask`,
@@ -565,6 +589,12 @@ Everything is downloaded on first use; nothing has to be fetched by hand.
   `scripts/convert_models.py` rebuilds them from the upstream ONNX exports.
 - SAM 3.1: ComfyUI's own `sam3.1_multiplex_fp16.safetensors`, from
   `Comfy-Org/sam3.1` into `ComfyUI/models/checkpoints/` when it is missing.
+- Sapiens2 pose: from
+  [huggingface.co/beycanai/sapiens2-convrot](https://huggingface.co/beycanai/sapiens2-convrot)
+  into `ComfyUI/models/detection/`, the file of the chosen model only
+  (`sapiens2_pose_<size>_<bf16|int8_convrot>.safetensors`).
+  `scripts/convert_sapiens2.py` writes the bf16 file from the transformers
+  checkpoint; the int8 ConvRot file is made from it with convert_to_quant.
 
 ## Long video samplers
 
@@ -1007,6 +1037,7 @@ The model weights keep their own licences:
 | ViTPose-H wholebody | `vitpose_h_wholebody_fp16.safetensors` | Apache-2.0 |
 | YOLOv10x | `yolov10x_fp32.safetensors` | AGPL-3.0 |
 | SAM 3.1 | `sam3.1_multiplex_fp16.safetensors` | Meta's SAM License |
+| Sapiens2 pose | `sapiens2_pose_*.safetensors` | Sapiens2 License (Meta) |
 
 The person detector's weights (YOLOv10x) are AGPL-3.0. Running them locally
 is unaffected; offering a service over a network that runs them (a hosted
@@ -1017,3 +1048,7 @@ detector.
 
 SAM 3.1 is fetched by ComfyUI from `Comfy-Org/sam3.1` under Meta's SAM
 License; this package does not redistribute it.
+
+The Sapiens2 pose weights are Meta's, under the Sapiens2 License; the
+converted files are fetched from `beycanai/sapiens2-convrot`, whose
+`LICENSE.md` carries it.

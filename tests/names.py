@@ -159,6 +159,7 @@ nodes = Names("nodes", {
     **refs("nodes.preprocess", "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard"),
     **refs("nodes.scail2", "BCVSCAIL2ColoredMask", "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard"),
     "_config_inputs": Ref("libs.config_widgets", "config_inputs"),
+    **refs("nodes.pose", "BCVSapiens2Pose"),
 })
 
 

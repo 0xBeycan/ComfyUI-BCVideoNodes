@@ -139,3 +139,17 @@ def test_a_refused_request_is_not_retried_and_leaves_no_model(tmp_path):
         assert not path.exists()
     finally:
         server.shutdown()
+
+
+def test_a_missing_file_is_fetched_from_its_repo(tmp_path, monkeypatch):
+    # the pack's repo by default; a model registered with its own repo (Sapiens2) from that one
+    fetched = []
+    monkeypatch.setattr(dl.folder_paths, "get_full_path", lambda folder, filename: None)
+    monkeypatch.setattr(dl, "_detection_path", str(tmp_path))
+    monkeypatch.setattr(dl, "download", lambda url, path: fetched.append((url, path)))
+    assert dl.detection_model_path("a.safetensors") == str(tmp_path / "a.safetensors")
+    dl.detection_model_path("b.safetensors", "beycanai/sapiens2-convrot")
+    assert fetched == [
+        ("https://huggingface.co/beycanai/BCVideoNodes-models/resolve/main/a.safetensors", str(tmp_path / "a.safetensors")),
+        ("https://huggingface.co/beycanai/sapiens2-convrot/resolve/main/b.safetensors", str(tmp_path / "b.safetensors")),
+    ]

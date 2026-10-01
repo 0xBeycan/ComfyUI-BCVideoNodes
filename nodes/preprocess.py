@@ -4,7 +4,7 @@ calls the individual nodes, so it computes exactly what the chained nodes comput
 from .common import _config
 from .face import BCVFaceCrop
 from .guard import BCVMaskGuard, BCVPoseGuard
-from .pose import BCVPoseDetection
+from .pose import POSE_MODEL_TOOLTIP, POSE_MODELS, VITPOSE, BCVPoseDetection, detect_pose
 from .sam3_1_multiplex import BCVSAM3VideoTrack
 
 
@@ -26,6 +26,8 @@ class BCVWanAnimatePreprocess:
             "optional": {
                 "pose_config": pose_types["optional"]["pose_config"],
                 "sam3_config": sam3_types["optional"]["sam3_config"],
+                # the last widget, so a workflow saved before it keeps its widget values and runs ViTPose-H
+                "pose_model": (list(POSE_MODELS), {"default": VITPOSE, "tooltip": POSE_MODEL_TOOLTIP}),
             },
         }
 
@@ -33,12 +35,12 @@ class BCVWanAnimatePreprocess:
     RETURN_NAMES = ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes")
     FUNCTION = "process"
     CATEGORY = "BCVideoNodes/Wan/Animate"
-    DESCRIPTION = "The whole WanAnimate preprocess in one node: Pose Detection, SAM 3.1 Multiplex Video Track and Face Crop chained, computing exactly what the three nodes compute when wired by hand. In prompt mode the mask comes from the text prompt alone (one track, repaired from the mask alone where it lost a part of her for good or dropped one for up to 8 frames); in box_keypoint mode from the pose, with no extra boxes or points; in prompt_pose mode from the text prompt, with the pose's drawn keypoints as points on each frame where the track lost a whole forearm-and-hand or lower leg, and points inside a hand-sized region of her the mask drops for up to 8 frames between two that hold it. The models are downloaded on first use. Feed it frames already at the generation size."
+    DESCRIPTION = "The whole WanAnimate preprocess in one node: Pose Detection (Sapiens2 Pose when pose_model is a Sapiens2 model), SAM 3.1 Multiplex Video Track and Face Crop chained, computing exactly what the three nodes compute when wired by hand. In prompt mode the mask comes from the text prompt alone (one track, repaired from the mask alone where it lost a part of her for good or dropped one for up to 8 frames); in box_keypoint mode from the pose, with no extra boxes or points; in prompt_pose mode from the text prompt, with the pose's drawn keypoints as points on each frame where the track lost a whole forearm-and-hand or lower leg, and points inside a hand-sized region of her the mask drops for up to 8 frames between two that hold it. The models are downloaded on first use. Feed it frames already at the generation size."
 
     def process(self, images, body_stick_width, hand_stick_width, draw_head, draw_threshold, face_padding,
-                mode, prompt, pose_config=None, sam3_config=None):
-        pose_images, pose_data, bboxes, key_points = BCVPoseDetection().detect(
-            images, body_stick_width, hand_stick_width, draw_head, draw_threshold, pose_config=pose_config)
+                mode, prompt, pose_config=None, sam3_config=None, pose_model=VITPOSE):
+        pose_images, pose_data, bboxes, key_points = detect_pose(
+            pose_model, images, body_stick_width, hand_stick_width, draw_head, draw_threshold, pose_config=pose_config)
         from ..pipelines.sam3_1_multiplex import track as sam3
 
         # prompt mode segments from the text alone; pose_data is connected only where it is read

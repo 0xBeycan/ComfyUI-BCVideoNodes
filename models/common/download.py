@@ -8,10 +8,15 @@ import folder_paths
 
 from ...libs import log
 
-# Every detection and pose model the pack runs is fetched from here, as the safetensors
-# file scripts/convert_models.py writes.
+# The detection and pose models the pack converts are fetched from here, as the safetensors
+# file scripts/convert_models.py writes; a model registered with another repo
+# (models/common/registry.py Entry.repo: Sapiens2) is fetched from that one.
 MODEL_REPO = "beycanai/BCVideoNodes-models"
-MODEL_REPO_URL = f"https://huggingface.co/{MODEL_REPO}/resolve/main/"
+
+
+def repo_url(repo):
+    """The URL prefix of the files of the Hugging Face repository `repo`."""
+    return f"https://huggingface.co/{repo}/resolve/main/"
 
 # The models live in ComfyUI's own models/detection folder.
 DETECTION_FOLDER = "detection"
@@ -99,13 +104,13 @@ def download(url, path):
     os.replace(part, path)
 
 
-def detection_model_path(filename):
-    """Full path of `filename` in models/detection, downloaded from the model repository
-    first when it is not there."""
+def detection_model_path(filename, repo=None):
+    """Full path of `filename` in models/detection, downloaded from the Hugging Face repository
+    `repo` (None: MODEL_REPO) first when it is not there."""
     found = folder_paths.get_full_path(DETECTION_FOLDER, filename)
     if found:
         return found
     os.makedirs(_detection_path, exist_ok=True)
     path = os.path.join(_detection_path, filename)
-    download(MODEL_REPO_URL + filename, path)
+    download(repo_url(MODEL_REPO if repo is None else repo) + filename, path)
     return path

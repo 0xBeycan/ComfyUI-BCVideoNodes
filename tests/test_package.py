@@ -33,6 +33,7 @@ PREPROCESS = {
                             ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")),
     "BCVSCAIL2PreprocessGuard": ("SCAIL-2 Preprocess Guard", "BCVideoNodes/SCAIL",
                                  ("pose_video_mask", "reference_image_mask", "report", "metrics", "timeline")),
+    "BCVSapiens2Pose": ("Sapiens2 Pose", "BCVideoNodes", ("pose_images", "pose_data", "bboxes", "key_frame_body_points")),
 }
 
 

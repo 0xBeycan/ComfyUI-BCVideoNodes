@@ -139,7 +139,8 @@ def test_the_preprocess_widgets_mode_before_prompt_and_black_background_last():
     spec = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()
     required, optional = spec["required"], spec["optional"]
     assert list(required) == ["images", "reference_image", "replacement_mode", "mode", "prompt", "black_background"]
-    assert list(optional) == ["reference_mask", "pose_config", "sam3_config"]
+    # pose_model after them: the node's last widget (tests/nodes/test_nodes_sapiens2.py)
+    assert list(optional) == ["reference_mask", "pose_config", "sam3_config", "pose_model"]
     # mode is SAM 3.1 Multiplex Video Track's widget, as on WanAnimate Preprocess
     track = nodes.BCVSAM3VideoTrack.INPUT_TYPES()["required"]
     assert required["mode"] == track["mode"]

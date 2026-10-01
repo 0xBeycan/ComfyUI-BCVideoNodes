@@ -57,6 +57,7 @@ NODE_KEYS = [
     "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop", "BCVPoseGuard", "BCVMaskGuard",
     "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
     "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard",
+    "BCVSapiens2Pose",
 ]
 # check 3: every module under libs/, pipelines/ and models/
 CHECK3_MODULES = [
@@ -127,6 +128,12 @@ CHECK3_MODULES = [
     "models.wan_animate2.attention",
     "models.scail2",
     "models.scail2.adapter",
+    "pipelines.sapiens2_pose",
+    "models.sapiens2",
+    "models.sapiens2.net",
+    "models.sapiens2.decode",
+    "models.sapiens2.keypoints",
+    "models.sapiens2.wrapper",
 ]
 # check 3: the heavy modules a checked module may pull in; every other module may pull in none.
 # "cv2" is the vendored pose_utils' cv2 and its submodules (E2).

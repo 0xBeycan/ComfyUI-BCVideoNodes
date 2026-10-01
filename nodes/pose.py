@@ -1,4 +1,4 @@
-"""Pose Config and Pose Detection."""
+"""Pose Config, Pose Detection and Sapiens2 Pose, and the pose model the preprocess wrappers pick."""
 
 from .common import PREPROCESS, _ConfigNode
 
@@ -48,3 +48,62 @@ class BCVPoseDetection:
         return tuple(pose.pose_detection(images, detector, model, bboxes=bboxes, config=pose_config,
                                          body_stick_width=body_stick_width, hand_stick_width=hand_stick_width,
                                          draw_head=draw_head, draw_threshold=draw_threshold))
+
+
+# The Sapiens2 Pose `model` widget: size and precision, the largest model first. models/sapiens2
+# registers each as the pose estimator "Sapiens2 <value>" (not imported here: the lazy rule; the
+# tests tie the two lists).
+SAPIENS2_MODELS = ("5b int8 convrot", "5b bf16", "1b int8 convrot", "1b bf16", "0.8b int8 convrot", "0.8b bf16",
+                   "0.4b int8 convrot", "0.4b bf16")
+SAPIENS2 = "Sapiens2 "
+VITPOSE = "ViTPose-H"
+# the preprocess wrappers' `pose_model` widget: Pose Detection's ViTPose-H, or a Sapiens2 Pose model
+POSE_MODELS = (VITPOSE, *(SAPIENS2 + model for model in SAPIENS2_MODELS))
+POSE_MODEL_TOOLTIP = ("The pose model: ViTPose-H runs Pose Detection; a Sapiens2 model runs Sapiens2 Pose (body, feet and "
+                      "hands from Sapiens2, the 68 face points from ViTPose-H on the same box). int8 convrot is the "
+                      "int8 ConvRot quantized file, computing in bf16. The models are downloaded on first use.")
+
+
+class BCVSapiens2Pose:
+    @classmethod
+    def INPUT_TYPES(cls):
+        pose = BCVPoseDetection.INPUT_TYPES()
+        return {
+            "required": {
+                "images": pose["required"]["images"],
+                "model": (list(SAPIENS2_MODELS), {"default": SAPIENS2_MODELS[0], "tooltip": "The Sapiens2 pose model: its size, and bf16 weights or int8 convrot (int8 ConvRot quantized) weights computing in bf16. Downloaded into models/detection on first use, from beycanai/sapiens2-convrot"}),
+                **{name: kind for name, kind in pose["required"].items() if name != "images"},
+            },
+            "optional": pose["optional"],
+        }
+
+    RETURN_TYPES = BCVPoseDetection.RETURN_TYPES
+    RETURN_NAMES = BCVPoseDetection.RETURN_NAMES
+    FUNCTION = "detect"
+    CATEGORY = PREPROCESS
+    DESCRIPTION = "Pose Detection with Sapiens2 (Meta) for the body, the feet and the hands: YOLOv10x finds the person (skipped when bboxes are connected), Sapiens2 gives the body, feet and hand keypoints on its own 1024x768 crop, and the 68 face keypoints come from ViTPose-H on the same box, so Face Crop and the guards read the face Pose Detection gives. The outputs, pose_config and the drawing are Pose Detection's. The models are downloaded on first use."
+
+    def detect(self, images, model, body_stick_width, hand_stick_width, draw_head, draw_threshold, bboxes=None,
+               pose_config=None):
+        from ..models.common import loader
+
+        # supplied boxes skip the detector, so it is not loaded either; ViTPose-H gives the face
+        detector, vitpose = loader.load_pose_models(detector=bboxes is None)
+        sapiens2 = loader.load_pose_estimator(SAPIENS2 + model)
+        from ..pipelines import sapiens2_pose
+
+        return tuple(sapiens2_pose.sapiens2_pose(images, detector, sapiens2, vitpose, bboxes=bboxes, config=pose_config,
+                                                 body_stick_width=body_stick_width, hand_stick_width=hand_stick_width,
+                                                 draw_head=draw_head, draw_threshold=draw_threshold))
+
+
+def detect_pose(pose_model, images, body_stick_width, hand_stick_width, draw_head, draw_threshold, pose_config=None):
+    """What the preprocess wrappers run for their `pose_model` widget (a POSE_MODELS value): Pose
+    Detection for ViTPose-H, Sapiens2 Pose with that model otherwise."""
+    if pose_model not in POSE_MODELS:
+        raise ValueError(f"pose_model {pose_model!r}: expected one of {', '.join(POSE_MODELS)}")
+    widgets = dict(body_stick_width=body_stick_width, hand_stick_width=hand_stick_width, draw_head=draw_head,
+                   draw_threshold=draw_threshold, pose_config=pose_config)
+    if pose_model == VITPOSE:
+        return BCVPoseDetection().detect(images, **widgets)
+    return BCVSapiens2Pose().detect(images, pose_model[len(SAPIENS2):], **widgets)

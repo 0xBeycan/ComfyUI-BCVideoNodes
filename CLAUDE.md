@@ -4,7 +4,7 @@
 
 ComfyUI custom nodes for Wan Animate and SCAIL-2: the preprocess (pose, SAM 3.1 Multiplex person
 mask, face crops, pose and mask guards, SCAIL-2 colored masks and their guard) and three
-long-video samplers. The 15 node keys are locked, and so is everything ComfyUI reads from a node
+long-video samplers. The 16 node keys are locked, and so is everything ComfyUI reads from a node
 (inputs, types, order, defaults, ranges, return types, categories, display names), because saved
 workflows depend on it: a change to it needs the owner. `tests/test_package.py` and the gate's
 `NODE_KEYS` pin the keys, their order, display names and categories.
@@ -27,16 +27,19 @@ Four layers, `nodes -> pipelines -> models -> libs`:
 - `libs/`: model-independent code.
 
 ```
-__init__.py          registration only: the 15 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
-nodes/               common (category, _config, _ConfigNode), sampler, pose, sam3_1_multiplex, face, guard,
+__init__.py          registration only: the 16 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+nodes/               common (category, _config, _ConfigNode), sampler, pose (Pose Detection, Pose Config,
+                     Sapiens2 Pose), sam3_1_multiplex, face, guard,
                      preprocess (the two WanAnimate wrappers, composed of the nodes above),
                      scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard)
-pipelines/           long_video (the chunk loop), pose, face, scail2 (the colored masks, the driving video
+pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Sapiens2 Pose: Sapiens2 body, feet and
+                     hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
                      on black), guard/ (config, common, pose, mask, report, timeline, combine, scail2),
                      sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry the node calls)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
-                     core_nodes, animate), vitpose/, yolo/, sam3_1_multiplex/ (adapter, loader,
+                     core_nodes, animate), vitpose/, yolo/, sapiens2/ (net, wrapper, decode, keypoints),
+                     sam3_1_multiplex/ (adapter, loader,
                      postprocess), wan_animate/, wan_animate2/, scail2/
 libs/                log, bbox, keypoints, mask, chunking, sigmas, video, color, config_widgets, pose_data,
                      draw_rules (the Pose Config draw rules: parts left out of the pose images),
@@ -174,7 +177,7 @@ and patch underscore names through the `Names` tables.
     so importing either package triggers neither E1 nor E3.
 - The gate, with the ComfyUI venv's Python: `PYTHONPATH=/path/to/ComfyUI python
   tests/test_import_time.py`. A standalone script (pytest does not collect it). It checks the
-  package import (under 0.1 s, no heavy module, the 15 keys in order), each node module, each
+  package import (under 0.1 s, no heavy module, the 16 keys in order), each node module, each
   module against its allowed heavy set, and the ComfyUI-free set.
 - Code outside the pack binds the repo root as a package and imports through it: tests and
   `scripts/` as `bcvideonodes` (`tests/conftest.py` runs the root `__init__` as ComfyUI does; the
@@ -215,8 +218,7 @@ and patch underscore names through the `Names` tables.
 Do not reopen or "improve" them. They live in the owner's closed-decision documents (outside the
 repo: the plan, the guard, pose-process and mask-process specs, and the review report whose open
 items are decided elsewhere). In short: the guard judges pose and mask only and counts at
-`draw_threshold`; the guard's warning set; ViTPose-H is the only pose model (RTMW-l was
-removed: not good enough); the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
+`draw_threshold`; the guard's warning set; the pose models are ViTPose-H and Sapiens2; the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
 multi-person) default to "ours" and are bit-identical there; features the owner did not adopt
 (the ViTPose flip test, the other SAM A/B switches, the M4 mask-threshold options) are removed;
 multi-person is phase 2; a failed download keeps its `.part` file.

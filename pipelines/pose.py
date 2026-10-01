@@ -177,20 +177,44 @@ def detect(detector, pose_model, images, bboxes=None, config=None
     people the detector was fairly sure of) and `pose_config`, the config the pose was made with.
     boxes are the same boxes as (x1, y1, x2, y2) tuples, one per frame.
     """
-    from comfy.utils import ProgressBar
+    resolution = _input_resolution(pose_model)
+    return detect_with(detector, [pose_model], lambda frames, boxes, progress: crop_keypoints(
+        pose_model, frames, boxes, resolution, progress), images, bboxes=bboxes, config=config)
+
+
+def crop_keypoints(pose_model, images_np, boxes, resolution, progress=None):
+    """[B, 133, 3]: `pose_model` (models/common/interfaces.PoseEstimator) on each frame's crop around
+    its box, sampled at `resolution` (height, width). `progress(done)` after each frame."""
     from tqdm import tqdm
+
+    kp2ds = []
+    for i, (img, bbox) in enumerate(tqdm(zip(images_np, boxes), total=len(boxes), desc="Extracting keypoints")):
+        img_norm, center, scale = pose_crop(img, bbox, resolution)
+        kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
+        if progress is not None:
+            progress(i + 1)
+    return np.concatenate(kp2ds, 0)
+
+
+def detect_with(detector, pose_models, keypoints, images, bboxes=None, config=None
+                ) -> tuple[PoseData, list[tuple[float, float, float, float]]]:
+    """`detect` with another keypoint step: `keypoints(images_np, boxes, progress)` -> [B, 133, 3]
+    COCO-WholeBody keypoints in frame pixels, on the frames as numpy [B, H, W, 3] 0..1 and the person
+    boxes (x1, y1, x2, y2, score) the detector, the supplied bboxes and the config give, calling
+    `progress(done)` as frames are done. `pose_models` are the models it runs, brought to the device
+    with the detector. Returns what `detect` returns."""
+    from comfy.utils import ProgressBar
 
     from ..libs.pose_utils.pose2d_utils import AAPoseMeta, load_pose_metas_from_kp2ds_seq
     config = config or PoseConfig()
     B, H, W, C = images.shape
     images_np = as_numpy(images)
-    resolution = _input_resolution(pose_model)
     log.info(f"preprocessing {B} frames of {W}x{H}")
     unused = unused_config_fields(config, bboxes is not None)
     if unused:
         log.info(", ".join(f"pose_config.{name} ({why})" for name, why in unused) + " not used")
     with log.step("loading the detection models"):
-        _to_device(*((pose_model,) if bboxes is not None else (detector, pose_model)))
+        _to_device(*(pose_models if bboxes is not None else (detector, *pose_models)))
 
     pbar = ProgressBar(B * 2)
     result = {}
@@ -208,13 +232,8 @@ def detect(detector, pose_model, images, bboxes=None, config=None
     if config.edge_snap:
         boxes = [snap_to_frame(b, W, H) for b in boxes]
 
-    kp2ds = []
     with log.step(f"extracting keypoints on {B} frames"):
-        for i, (img, bbox) in enumerate(tqdm(zip(images_np, boxes), total=B, desc="Extracting keypoints")):
-            img_norm, center, scale = pose_crop(img, bbox, resolution)
-            kp2ds.append(pose_model(img_norm[None], np.array(center)[None], np.array(scale)[None]))
-            pbar.update_absolute(B + i + 1)
-    kp2ds = np.concatenate(kp2ds, 0)
+        kp2ds = keypoints(images_np, boxes, lambda done: pbar.update_absolute(B + done))
     pose_metas = load_pose_metas_from_kp2ds_seq(kp2ds, width=W, height=H)
 
     pose_data = {
@@ -320,6 +339,14 @@ def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_
     draw_head off or a 0 stick width leave out of the pose images."""
     config = config or PoseConfig()
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
+    return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold)
+
+
+def pose_outputs(pose_data: PoseData, boxes, config, body_stick_width=-1, hand_stick_width=-1, draw_head=True,
+                 draw_threshold=0.5) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
+    """(pose_images, pose_data, boxes, key_frame_body_points) of a pose node from what `detect` or
+    `detect_with` returned: `draw_threshold` added to pose_data, the pose images drawn with the draw
+    rules of `config` (a PoseConfig)."""
     pose_data["draw_threshold"] = draw_threshold
     pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold,
                        forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup,

@@ -126,7 +126,7 @@ def test_the_loader_builds_a_model_file_once(monkeypatch):
             pass
 
     monkeypatch.setattr(loader, "_loaded", {})
-    monkeypatch.setattr(loader, "detection_model_path", lambda filename: f"<detection>/{filename}")
+    monkeypatch.setattr(loader, "detection_model_path", lambda filename, repo=None: f"<detection>/{filename}")
     first = loader._load(Model, "a.safetensors")
     again = loader._load(Model, "a.safetensors")
     other = loader._load(Model, "b.safetensors")

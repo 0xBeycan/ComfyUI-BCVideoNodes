@@ -46,23 +46,28 @@ def read_metadata(path):
         return f.metadata() or {}
 
 
+def model_config(metadata, path, architecture, converter="scripts/convert_models.py"):
+    """The module config in a model file's `metadata`, after checking the file holds an
+    `architecture` module of this format version; `converter` is the script the error names."""
+    found = metadata.get("architecture")
+    if found != architecture:
+        raise ValueError(f"{path}: expected a {architecture} model file, found "
+                         f"{'no architecture in its metadata' if found is None else repr(found)}")
+    version = metadata.get("format_version")
+    if version != str(FORMAT_VERSION):
+        raise ValueError(f"{path}: expected model file format {FORMAT_VERSION}, found {version!r}; "
+                         f"convert the model again with {converter}")
+    if "config" not in metadata:
+        raise ValueError(f"{path}: expected the model config in the file metadata, found none")
+    return json.loads(metadata["config"])
+
+
 def load(path, architecture, device="cpu"):
     """The module stored in `path`, which has to be an `architecture` file, with its
     weights on `device` in the file's own precision."""
     from safetensors import safe_open
     with safe_open(path, framework="pt", device=str(device)) as f:
-        metadata = f.metadata() or {}
-        found = metadata.get("architecture")
-        if found != architecture:
-            raise ValueError(f"{path}: expected a {architecture} model file, found "
-                             f"{'no architecture in its metadata' if found is None else repr(found)}")
-        version = metadata.get("format_version")
-        if version != str(FORMAT_VERSION):
-            raise ValueError(f"{path}: expected model file format {FORMAT_VERSION}, found {version!r}; "
-                             f"convert the model again with scripts/convert_models.py")
-        if "config" not in metadata:
-            raise ValueError(f"{path}: expected the model config in the file metadata, found none")
-        net = build(architecture, json.loads(metadata["config"]))
+        net = build(architecture, model_config(f.metadata() or {}, path, architecture))
         state = {name: f.get_tensor(name) for name in f.keys()}
     check_state(net, state, path)
     net.load_state_dict(state, strict=True, assign=True)

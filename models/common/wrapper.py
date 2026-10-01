@@ -2,7 +2,7 @@
 """The detector and pose models as the preprocess calls them: each wraps a native torch
 module loaded from its safetensors file, managed by ComfyUI like any other model, and
 decodes the raw output into boxes or keypoints in frame coordinates. The wrappers are
-models/{vitpose,yolo}/wrapper.py; this module holds what they share."""
+models/{vitpose,yolo,sapiens2}/wrapper.py; this module holds what they share."""
 import numpy as np
 import torch
 
@@ -26,16 +26,21 @@ class NativeModel:
         from comfy import model_management as mm
         from comfy.model_patcher import ModelPatcher
         self.path = path
-        self.net = checkpoint.load(path, self.architecture)
+        self.net, self.input_dtype = self.load_net(path)
         self.config = self.net.config
         # (height, width) of the model input, and the [N, C, H, W] shape the preprocess
         # reads the crop resolution from
         self.input_size = tuple(self.config["input_size"])
         self.input_shape = [1, 3, *self.input_size]
-        # the module runs in its weights' precision; float frames are cast to it (ViTPose-H: fp16,
-        # where Wan and Kijai run fp32 - see models/vitpose/__init__.py)
-        self.input_dtype = next(self.net.parameters()).dtype
         self.patcher = ModelPatcher(self.net, load_device=mm.get_torch_device(), offload_device=mm.unet_offload_device())
+
+    def load_net(self, path):
+        """(the module in `path`, the dtype its input is cast to). The module runs in its weights'
+        precision; float frames are cast to it (ViTPose-H: fp16, where Wan and Kijai run fp32 - see
+        models/vitpose/__init__.py). A model whose file checkpoint.load cannot build overrides this
+        (models/sapiens2/wrapper.py)."""
+        net = checkpoint.load(path, self.architecture)
+        return net, next(net.parameters()).dtype
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)

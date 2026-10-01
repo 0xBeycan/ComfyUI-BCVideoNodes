@@ -1,4 +1,4 @@
-"""The model registry: family -> name -> Entry(implementation, file).
+"""The model registry: family -> name -> Entry(implementation, file, repo).
 
 Each model package registers its names in its __init__.py, after all of its imports, so an import
 that fails leaves nothing half-registered; models/__init__.py imports the packages in registration
@@ -14,6 +14,9 @@ FAMILIES = ("architecture", "person_detector", "pose_estimator", "animate")
 class Entry(NamedTuple):
     implementation: type
     file: Optional[str] = None
+    # the Hugging Face repository the file is downloaded from; None is the pack's own
+    # (models/common/download.py MODEL_REPO)
+    repo: Optional[str] = None
 
 
 _entries = {family: {} for family in FAMILIES}
@@ -25,13 +28,14 @@ def _family(family):
     return _entries[family]
 
 
-def register(family: str, name: str, implementation: type, file: Optional[str] = None) -> None:
+def register(family: str, name: str, implementation: type, file: Optional[str] = None,
+             repo: Optional[str] = None) -> None:
     """Adds `name` to `family`, after the names registered before it."""
     entries = _family(family)
     if name in entries:
         raise ValueError(f"{family} {name!r} is registered twice; a model package registers its names once, "
                          f"in its __init__.py")
-    entries[name] = Entry(implementation, file)
+    entries[name] = Entry(implementation, file, repo)
 
 
 def names(family: str) -> list[str]:
