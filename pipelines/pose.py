@@ -282,7 +282,11 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
     pose_metas = pose_data["pose_metas"]
     pbar = ProgressBar(len(pose_metas))
     enabled = {"limb_dedup": limb_dedup, "forearm_rule": forearm_limit > 0, "back_view_face": back_view_face}
-    pose_images = []
+    if not pose_metas:
+        # the error np.stack raised here before the output was preallocated
+        raise ValueError("need at least one array to stack")
+    # filled frame by frame from each uint8 drawing, scaled to 0..1 in place once at the end
+    pose_images = torch.empty(len(pose_metas), pose_metas[0].height, pose_metas[0].width, 3, dtype=torch.float32)
     result = {}
     with log.step(f"drawing {len(pose_metas)} pose images", result):
         duplicates, mirrored, overlong, back_view, hidden = hidden_by_rules(
@@ -294,7 +298,7 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
                                             draw_body=body_stick_width != 0, draw_hand=hand_stick_width != 0,
                                             draw_head=draw_head, body_stick_width=body_stick_width,
                                             hand_stick_width=hand_stick_width)
-            pose_images.append(image)
+            pose_images[i] = torch.from_numpy(image)
             pbar.update_absolute(i + 1)
         for rule in RULES:
             if enabled[rule]:
@@ -312,7 +316,7 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
     if back_view:
         log.warning(f"back_view_face: nose and eyes left out of the pose images on {_frames(back_view)}: seen from "
                     f"behind; pose_data keeps the keypoints")
-    return torch.from_numpy(np.stack(pose_images, 0)).float() / 255.0
+    return pose_images.div_(255.0)
 
 
 def key_frame_body_points(pose_data: PoseData, threshold=0.5):

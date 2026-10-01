@@ -2,9 +2,11 @@
 
 Video nodes for ComfyUI: a Wan Animate preprocess built from small nodes that
 are usable in any video pipeline (wholebody pose with ViTPose-H or Sapiens2, SAM 3.1 person tracking,
-face crops, pose and mask checks), a SCAIL-2 preprocess, and three samplers
+face crops, pose and mask checks), a SCAIL-2 preprocess, three samplers
 that turn a reference image plus a driving video of any length into a Wan
-Animate or SCAIL-2 video of exactly that length.
+Animate or SCAIL-2 video of exactly that length, and the video nodes around
+them: load a video at the model's generation size, fit a reference image to
+it, save the result, compare two videos in the node.
 
 | Node | Id | Category |
 |------|----|----------|
@@ -24,11 +26,207 @@ Animate or SCAIL-2 video of exactly that length.
 | **SCAIL-2 Preprocess Guard** | `BCVSCAIL2PreprocessGuard` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/SCAIL` |
 | **Sapiens2 Pose** | `BCVSapiens2Pose` | `BCVideoNodes` |
+| **Load Video** | `BCVLoadVideo` | `BCVideoNodes/Video` |
+| **Get Video Info** | `BCVGetVideoInfo` | `BCVideoNodes/Video` |
+| **Load Reference Image** | `BCVLoadReferenceImage` | `BCVideoNodes/Video` |
+| **Conform Video** | `BCVConformVideo` | `BCVideoNodes/Video` |
+| **Save Video** | `BCVSaveVideo` | `BCVideoNodes/Video` |
+| **Video Comparer** | `BCVVideoComparer` | `BCVideoNodes/Video` |
+
+## Video nodes
+
+Load a video at the generation size of the model it is for, fit the reference
+image to it, save the result, compare two videos. Decoding and encoding use
+PyAV, which comes with ComfyUI. Load Video, Save Video and the Video Comparer
+play in the node: the pack's player, drawn on the node, with a play button, a
+seek bar and, when the clip has sound, a mute button. Nothing plays until
+asked, the clip loops, and the node keeps the size you give it.
+
+### Load Video
+
+Loads a video one frame at a time, cropped and resized to the model's
+generation size straight into the output, which is allocated once at its
+final frame count: the full-resolution clip never sits in memory.
+
+- in: `video` (a video file of ComfyUI's input folder; the node's `choose
+  video to upload` button, or a video file dropped on the node, uploads one
+  there and selects it)
+- widgets: `model` `Wan`, `resolution` `720p`, `orientation` `auto`,
+  `force_fps` (empty), `start_frame` 1, `frame_count` (empty)
+- out: `images` (IMAGE), `audio` (AUDIO of the loaded range; none when the
+  file has no audio), `video_info` (BCV_VIDEO_INFO, for Get Video Info and
+  Load Reference Image)
+
+The sizes are the models' generation sizes, portrait (width x height):
+
+| `model` | `resolution` | Size | Frames |
+|---------|--------------|------|--------|
+| `Wan`   | `480p`, `720p` | 480 x 832, 720 x 1280 | 4n+1 |
+| `SCAIL` | `512p`, `704p` | 512 x 896, 704 x 1280 | 4n+1 |
+
+`resolution` offers the chosen model's labels; a label of the other model is
+an error. `orientation` `auto` is portrait when the video is taller than wide,
+otherwise landscape (a square video is landscape); `landscape` and `portrait`
+force one. Landscape swaps width and height. The frame is cut centred to the
+size's aspect ratio, then resized with lanczos.
+
+Which frames are loaded:
+
+- `force_fps`: empty keeps the video's own frame rate. A number above 0, at
+  most the video's rate, keeps or drops real frames on that rate's time grid;
+  it never blends or repeats a frame, so it only lowers the frame rate: a
+  rate above the video's is an error, and one within 0.01% of it is the
+  video's rate (29.97 on a 30000/1001 clip keeps every frame).
+- `start_frame` (counted from 1) and `frame_count` (empty: every frame from
+  `start_frame` on) count the frames `force_fps` kept. A `start_frame` past
+  the last frame, or a `frame_count` that runs past it, is an error that says
+  how many frames there are and what to set.
+- The count is then cut down to the model's 4n+1 (a 100-frame range loads 97).
+- A `force_fps` or a `frame_count` that is not a number is an error.
+
+Colour: YUV is converted to RGB with the stream's own colour matrix and range,
+as the file is tagged; an untagged stream is read as BT.601 limited range,
+FFmpeg's default. A video stored rotated is turned upright.
+
+Audio: the first audio stream, from `start_frame`'s time for the loaded
+frames' duration.
+
+`video_info` holds the `model`, the `resolution` and the resolved
+`orientation`, then the source's `source_fps`, `source_frame_count`,
+`source_duration`, `source_width` and `source_height` (as displayed), then
+the loaded batch's `loaded_fps` (`force_fps`, or the source's rate),
+`loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`.
+
+The preview plays the source file in the browser as the loader will take it,
+with no server work: sampled at `force_fps`, looping over `start_frame` /
+`frame_count`, the part the crop cuts away dimmed. The browser's frame at a
+tick can be one off the loader's. Without `force_fps` the range needs the
+source's frame rate, which the browser tells only while the clip plays: until
+then the whole clip loops.
+
+### Get Video Info
+
+- in: `video_info`
+- out: its 13 fields in the order above: `model`, `resolution`,
+  `orientation` (STRING), `source_fps` (FLOAT), `source_frame_count` (INT),
+  `source_duration` (FLOAT), `source_width`, `source_height` (INT),
+  `loaded_fps` (FLOAT), `loaded_frame_count` (INT), `loaded_duration`
+  (FLOAT), `loaded_width`, `loaded_height` (INT). `loaded_fps` is the rate to
+  give Save Video.
+
+### Load Reference Image
+
+Loads an image as core's Load Image does (EXIF orientation applied, the alpha
+channel as the mask, 1 - alpha; without alpha core's empty 64 x 64 mask) and
+fits it to `video_info`'s `loaded_width` x `loaded_height` with the crop and
+lanczos resize Load Video applies to the frames, so the reference matches the
+video's model, resolution and orientation. The mask is fitted the same way.
+The node shows the fitted image. With the sampler at the same size, core's
+placement of the reference (a centre crop to the generation's aspect ratio,
+then a resize) changes nothing.
+
+- in: `image` (an image of the input folder, with core's upload), `video_info`
+- out: `image` (IMAGE), `mask` (MASK)
+
+### Conform Video
+
+Fits a video to the nearest standard size: 480p (480 x 854), 720p (720 x
+1280) or 1080p (1080 x 1920), portrait, landscape swapped. A pixel resize, not
+diffusion.
+
+- in: `images`
+- widgets: `fit` `crop` (default: resized to cover the size, the overflow cut
+  off centred) or `pad` (resized to fit inside it, centred between black
+  bars); `method` `lanczos` (default), `bicubic`, `bilinear`, `area`,
+  `nearest-exact`, `bislerp` (comfy.utils.common_upscale's)
+- out: `images`
+
+The target is automatic. The orientation is the frames' (portrait when taller
+than wide, otherwise landscape, as Load Video's `auto`); the size is the one
+whose scale on the short edge is closest to 1, measured as |log(target /
+short edge)|: a short edge of 512 goes to 480p, 600 and 704 to 720p, anything
+above 1080 to 1080p. The boundaries (about 588 and 882) are not whole numbers,
+so no short edge ties. The frames are resized one at a time into one output;
+a video already at its target size is returned untouched, with no work done.
+
+### Save Video
+
+Writes the frames as a video file, one frame at a time.
+
+- in: `images`; optional `audio` (muxed in and cut to the video's length)
+- widgets: `fps` 24 (wire Get Video Info's `loaded_fps` to keep the source's
+  timing), `filename_prefix` `video/ComfyUI` (subfolders and ComfyUI's name
+  tokens work; a counter is appended: `video/ComfyUI_00001_.mp4`), `codec`
+  `h264-mp4`, `crf`, `preset`, `pix_fmt` (defaults: the codec's, below),
+  `save_output` (on: the output folder; off: the
+  temp folder, which ComfyUI empties when it starts), `save_metadata` (on: the
+  workflow and the prompt are written into the file, so dropping it on
+  ComfyUI loads the workflow; ComfyUI's `--disable-metadata` turns it off)
+- out: none; the node plays the saved file
+
+`codec` picks the encoder and the container. `crf`, `preset` and `pix_fmt`
+offer that codec's values; changing the codec resets them to its defaults (a
+loaded workflow keeps its values):
+
+| `codec`    | Encoder | `crf` (default) | `preset` (default) | `pix_fmt` (default first) | Audio |
+|------------|---------|-----------------|--------------------|---------------------------|-------|
+| `h264-mp4` | libx264 | 0-51 (19) | `ultrafast` ... `placebo` (`medium`) | `yuv420p`, `yuv420p10le`, `yuv444p` | AAC |
+| `h265-mp4` | libx265, tagged `hvc1` | 0-51 (22) | `ultrafast` ... `placebo` (`medium`) | `yuv420p10le`, `yuv420p` | AAC |
+| `av1-webm` | SVT-AV1 | 1-63 (23) | `0` (slowest) ... `13` (`8`) | `yuv420p10le`, `yuv420p` | Opus |
+| `vp9-webm` | libvpx-vp9 | 0-63 (20) | cpu-used `0` (slowest) ... `5` (`1`) | `yuv420p` | Opus |
+
+- `crf`: constant quality; lower is better quality and a larger file.
+- `preset`: encode speed against file size at the same `crf`; a slower
+  preset gives a smaller file.
+- `pix_fmt`: `yuv420p` plays everywhere; `yuv420p10le` is 10 bits, less
+  banding, not every player; `yuv444p` keeps the full colour resolution, for
+  editing.
+
+h264-mp4 plays everywhere; h265-mp4 is smaller at the same quality; av1-webm
+smaller still and slower to encode; vp9-webm plays in every browser.
+
+Colour: the frames are written as BT.709 YUV in limited (tv) range and tagged
+BT.709 (matrix, primaries and transfer), so players show the pixels as they
+are. 8-bit formats go through FFmpeg's scaler (bicubic) from the frames
+rounded to 8 bits; 10-bit ones are computed with the BT.709 formula from the
+float frames (FFmpeg's scaler writes 10-bit white 0.3% too bright). Odd frame
+sides are padded to even, as 4:2:0 needs, by repeating the last row or column.
+
+Audio: the first item of the `audio` batch, AAC in mp4 (96 kbit/s per
+channel), Opus in webm (64 kbit/s per channel), always cut to the video's
+length. An mp4 keeps its index at the front, so the browser plays it while it
+loads.
+
+A `crf`, `preset` or `pix_fmt` the codec does not take is an error naming the
+widget, before anything is written. A codec whose encoder the PyAV in
+ComfyUI's Python lacks is an error naming the missing encoder and listing the
+ones it has.
+
+Browsers do not play `yuv444p` or 10-bit H.264 (`h264-mp4` with
+`yuv420p10le`): the preview then says it cannot play the file, which is saved
+and correct.
+
+### Video Comparer
+
+Two videos in one node with a divider: A fills the node; while the pointer is
+over the picture, B is drawn from the left edge up to the pointer. Both are
+written side by side into one temporary H.264 file (crf 18, a keyframe every
+second), so they play in step from one decoder.
+
+- in: `fps` 24; optional `video_a`, `video_b` (IMAGE), `audio` (played with
+  them, cut to their length)
+- out: none
+
+Clips of different length are cut to the shorter one, and the node says so;
+a smaller frame is scaled to fit the larger and letterboxed on black. Nothing
+is saved into the workflow: like Preview Image, the comparison lives with the
+run.
 
 ## Preprocess nodes
 
-Feed them frames already at the generation size; the pose images, masks and
-boxes come out at the size of the frames that went in.
+Feed them frames already at the generation size (Load Video loads them so);
+the pose images, masks and boxes come out at the size of the frames that went
+in.
 
 ### Pose Detection
 
@@ -432,7 +630,9 @@ The fails, damage the models cannot restore:
 The warnings, which never stop: a torso jump (`pose_jump`), a limb spike
 (`pose_spike`), a subject switch (`subject_switch`), a mask leaking outside
 the box (`mask_leak`), background attached to the body
-(`mask_attached_leak`). The thresholds are widgets generated from
+(`mask_attached_leak`), and with `reference_image` connected a reference not
+placed like the first frame (`reference_misaligned`, see Reference check
+below). The thresholds are widgets generated from
 `PoseGuardConfig` / `MaskGuardConfig` in `pipelines/guard/config.py`; the
 Pose Guard has no fail and so no switch. `head_out_eyes_ears` (INT, default
 2, 1 to 4) is the last widget of the Mask Guard and the WanAnimate Preprocess
@@ -445,7 +645,8 @@ the head, the nose or two or more of the eyes and ears were out.
 
 - Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
   `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
-- Mask Guard: in `mask`, optional `pose_data`; out `mask` (unchanged),
+- Mask Guard: in `mask`, optional `pose_data`, `min_reference_iou` (0.4) and
+  `reference_image` (the last input); out `mask` (unchanged),
   `report`, `metrics`, `timeline`. `pose_data` gives the best result: without
   it the guard runs only `mask_fragmented` and `mask_loss` (runs between two
   frames that hold the region), and the report names the checks it did not
@@ -468,7 +669,8 @@ the chained nodes produce with the same settings.
   is passed whenever the mode is not `prompt`). Outputs: `pose_images`, `face_images`,
   `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
-  report. Inputs `mask`, `pose_data`, the `mask_guard` switch and all thresholds;
+  report. Inputs `mask`, `pose_data`, the `mask_guard` switch and all thresholds,
+  optional `min_reference_iou` (0.5) and `reference_image` (the last input);
   outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`. Its `mask` is
   the final mask the sampler gets: the preprocess mask through
   GrowMaskWithBlur (expand 10) and BlockifyMask (32). BlockifyMask lays its
@@ -480,6 +682,37 @@ the chained nodes produce with the same settings.
   holding a keypoint inside the raw mask is always on). The Mask Guard on the
   raw mask judges the mask at its own precision, and its `mask_loss` by what
   the final leaves out.
+
+### Reference check
+
+The Mask Guard and the WanAnimate Preprocess Guard check the reference of a
+replacement run when `reference_image` is connected: the reference image the
+Wan Animate node gets (Load Reference Image's). The guard finds the character
+on it with SAM 3.1 Multiplex in prompt mode with the default prompt (`main
+person in the foreground`), the call SCAIL-2 Preprocess makes for its
+reference, places it as core's Wan Animate node places the reference (a
+center crop to the mask's aspect ratio, resized nearest-exact to the mask's
+size) and measures it against mask frame 0. The Mask Guard compares raw with
+raw; the WanAnimate Preprocess Guard checks the final mask, so it grows and
+blockifies the placed character the same way first (GrowMaskWithBlur expand
+10, BlockifyMask 32).
+
+An IoU below `min_reference_iou` is `reference_misaligned`, a warning, which
+never stops: replacement expects the reference posed and placed like the
+first frame. The defaults are first values, set on a small set of clips: 0.4
+on the raw mask (Mask Guard), 0.5 on the final (WanAnimate Preprocess Guard),
+since the grow and the blockify raise every IoU. Wan Animate uses the mask in
+replacement mode only, so the check has no mode switch.
+
+A reference on which SAM finds no person (a back view, say) leaves the check
+silent: the report says SAM 3.1 Multiplex found no person on it, and nothing
+is flagged. Not connected, no SAM runs and the report and the metrics are
+exactly as without the check. Connected, the report gains a line with the
+measurements, and the metrics a `"reference"` record: `area` (the
+character's share of the reference), `cropped` (the share of it the crop cuts
+off), `iou_first_frame`, `scale_first_frame` (the placed character's height
+over the person's on mask frame 0) and `flags`; `min_reference_iou` joins the
+thresholds.
 
 ### SCAIL-2 Colored Mask and SCAIL-2 Preprocess
 
@@ -629,7 +862,8 @@ time grow with the whole video.)
 
 These nodes are the per-segment method with the loop inside. Each chunk is a
 complete, independent sample of `frames_per_chunk` frames; VRAM is that of one
-chunk no matter how long the video is; decoded frames accumulate on CPU. The
+chunk no matter how long the video is; decoded frames accumulate on CPU, in
+one output allocated at `total_frames`. The
 seam between chunks is the frames the core node carries over and trims back
 off (1 for Animate 2, `continue_motion_max_frames` for Animate,
 `previous_frame_count` for SCAIL-2), so there is no cross-window blending and
@@ -722,7 +956,9 @@ official Wan 2.2 Animate template; the template samples 77-frame windows with
 | `background_video`            | IMAGE (optional)    | Background to place the character into (replacement mode), same offset. |
 | `character_mask`              | MASK (optional)     | Where the character goes in the background video (replacement mode). One frame is repeated; a video is read from the same offset. |
 
-The optional videos are handed to `WanAnimateToVideo` as they are; the core
+The optional videos are handed to `WanAnimateToVideo` as they are (a chunk
+that reads past the end of a driving input gets its window of them, see Tail
+padding); the core
 node seeks all of them by `video_frame_offset`, so they only need to be
 aligned with the pose video at frame 0. A face video shorter than the pose
 video is zero-padded by the model for the remaining frames.
@@ -915,6 +1151,9 @@ not new.
   Animate, chunk 77, overlap 5: `77 + 77 + 77 + 77 + 73 -> 361 produced -> 360 frames`.
 - The loop is driven by the frames actually decoded, not by the plan, so the
   output is exactly `total_frames` long.
+- The last chunk decodes only the latent frames `total_frames` needs: the Wan
+  VAE decodes causally, so the frames past `total_frames` are sampled with the
+  chunk but never decoded.
 - If `total_frames` exceeds the pose video, a warning is printed and the
   driving inputs are extended for the remainder (see Tail padding); those
   frames are part of the output.
@@ -923,12 +1162,15 @@ not new.
 
 Whenever a chunk needs driving frames past the end of an input (the `fit`
 snap-up of at most 3 frames, `last_chunk` `full` or `min29`, or
-`total_frames` longer than the input) the loop extends the driving inputs up
-front: the pose, and
-face and background for Animate, the pose mask for SCAIL-2. The Animate
-`character_mask` is never extended: past its end the character may be
-anywhere, so core leaves those mask rows unknown. The `tail_padding` widget
-picks how:
+`total_frames` longer than the input) the loop extends the driving inputs: the
+pose, and
+face and background for Animate, the pose mask for SCAIL-2. Only the frames a
+chunk reads are extended, never a copy of a whole input: a chunk that reads
+past the end of an input gets its own window of each driving input, extended
+past the end, and the core node the offset into that window. The Animate
+`character_mask` is never extended: it is cut to the same window, and past its
+end the character may be anywhere, so core leaves those mask rows unknown. The
+`tail_padding` widget picks how:
 
 - `last_frame` (default of all three samplers): the last frame is repeated;
   the motion stops.
@@ -994,7 +1236,9 @@ pip install -r requirements.txt
 ```
 
 The only runtime dependency beyond ComfyUI is `opencv-python`; torch, numpy,
-scipy, safetensors and tqdm come with ComfyUI. `onnx` and `huggingface_hub`
+scipy, safetensors, tqdm and PyAV (`av`, the video nodes' decoder and encoder)
+come with ComfyUI, so the video nodes add no requirement. The previews are
+plain JavaScript in `web/js/`, which ComfyUI serves; nothing to build. `onnx` and `huggingface_hub`
 are needed only for the offline conversion and upload scripts
 (`pip install .[dev]`).
 
@@ -1005,7 +1249,7 @@ python -m pytest tests
 ```
 
 `tests/libs/test_chunking.py` covers the length math and
-`tests/test_package.py` the node contract of all fifteen nodes, both without
+`tests/test_package.py` the node contract of all twenty-two nodes, both without
 torch or ComfyUI:
 `python -m pytest tests/test_package.py tests/libs/test_chunking.py`.
 `tests/pipelines/test_long_video*.py` run the samplers' chunk loop against
@@ -1014,7 +1258,10 @@ installed. The preprocess tests (`tests/nodes/test_nodes_*.py`,
 `tests/pipelines/test_pose.py`, `tests/pipelines/test_sam3_1_multiplex_*.py`,
 `tests/pipelines/test_guard*.py`, `tests/models/test_models_*.py`, ...) need
 torch and, for most, ComfyUI on the path:
-`PYTHONPATH=/path/to/ComfyUI python -m pytest tests`.
+`PYTHONPATH=/path/to/ComfyUI python -m pytest tests`. The video node tests
+(`tests/libs/test_video_*.py`, `tests/libs/test_resize.py`,
+`tests/pipelines/test_video_input.py`, `tests/nodes/test_video_*.py`) write
+small synthetic clips with PyAV; none reads a real clip.
 
 ## Licences
 

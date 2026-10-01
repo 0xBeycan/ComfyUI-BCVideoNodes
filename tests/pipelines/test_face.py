@@ -37,6 +37,24 @@ def test_the_boxes_come_from_the_face_keypoints():
     assert 0 <= x1 < 0.5 * W < x2 <= W and 0 <= y1 < 0.3 * H < y2 <= H
 
 
+def test_the_crops_are_the_resized_boxes_and_the_fallback_centre_crop():
+    # frame 2's face keypoints lie off the frame, so its box is empty and the upper centre of the
+    # frame is cut instead; every crop is cv2.resize'd to FACE_SIZE, the crops stacked in order
+    import cv2
+    data = pose_data()
+    data["pose_metas_original"][2]["keypoints_face"][:, 0] += 10.0
+    images = frames()
+    crops, boxes = face.crop_faces(images, data)
+    size = int(min(H, W) * 0.3)
+    fx, fy = (W - size) // 2, int(H * 0.1)
+    expected = []
+    for image, (x1, y1, x2, y2) in zip(images.numpy(), boxes):
+        cut = image[y1:y2, x1:x2]
+        expected.append(cv2.resize(cut if cut.size else image[fy:fy + size, fx:fx + size], (face.FACE_SIZE, face.FACE_SIZE)))
+    assert [bool(images[i, y1:y2, x1:x2].numel()) for i, (x1, y1, x2, y2) in enumerate(boxes)] == [True, True, False, True]
+    assert crops.dtype == images.dtype and torch.equal(crops, torch.from_numpy(np.stack(expected, 0)))
+
+
 def test_padding_grows_the_computed_boxes_inside_the_frame():
     _, plain = face.crop_faces(frames(), pose_data())
     _, padded = face.crop_faces(frames(), pose_data(), face_padding=10)

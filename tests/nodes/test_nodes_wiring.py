@@ -89,7 +89,9 @@ def test_the_guard_widgets_are_the_guard_configs():
     # the Pose Guard has no fail, so no switch
     assert list(spec("BCVPoseGuard")["required"]) == ["pose_data"] + [f.name for f in dataclasses.fields(guard.PoseGuardConfig)]
     assert list(spec("BCVMaskGuard")["required"]) == ["mask", "mask_guard"] + [f.name for f in dataclasses.fields(guard.MaskGuardConfig)]
-    assert list(spec("BCVMaskGuard")["optional"]) == ["pose_data"]
+    # the reference check's threshold, then the reference image, last
+    assert list(spec("BCVMaskGuard")["optional"]) == (["pose_data"] + [f.name for f in dataclasses.fields(guard.ReferenceGuardConfig)]
+                                                     + ["reference_image"])
     assert "Optional, but it gives the best result" in spec("BCVMaskGuard")["optional"]["pose_data"][1]["tooltip"]
     both = spec("BCVWanAnimatePreprocessGuard")["required"]
     assert list(both)[:3] == ["mask", "pose_data", "mask_guard"]
@@ -240,3 +242,98 @@ def test_the_preprocess_wrapper_is_the_three_nodes_chained(fake_models, mode):
         assert same(a, b), name
     call = fake_models.calls[0]
     assert call["mode"] == mode and call["pose_data"] == (mode != sam3.MODE_PROMPT)
+
+
+# --- the guards' reference check ---------------------------------------------------------------
+
+def reference_image(x1=60):
+    """A reference IMAGE [1, H, W, 3] whose red channel holds a 100 x 240 character at column
+    `x1`, row 40 - frame 0's person at x1 60 - which FakeSAM3 finds as its mask."""
+    masks, _ = clip()
+    image = torch.zeros(1, masks.shape[1], masks.shape[2], 3)
+    image[0, 40:280, x1:x1 + 100, 0] = 1.0
+    return image
+
+
+@pytest.mark.parametrize("key", ["BCVMaskGuard", "BCVWanAnimatePreprocessGuard"])
+def test_the_guard_nodes_segment_the_reference_as_scail2_preprocess_does(fake_models, key):
+    # SAM 3.1 Multiplex once, on the reference, in prompt mode with the default prompt and no pose;
+    # the check is the pipeline's on that mask, the Preprocess Guard's on the final mask
+    masks, pose_data = clip()
+    image = reference_image(x1=140)
+    values = {**thresholds(POSE_THRESHOLDS), **thresholds(MASK_THRESHOLDS)}
+    if key == "BCVMaskGuard":
+        out = nodes.BCVMaskGuard().check(masks, True, pose_data=pose_data, reference_image=image, **values)
+        metrics = out[2]
+    else:
+        out = nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, True, reference_image=image, **values)
+        metrics = out[3]
+    assert fake_models.calls == [{"mode": sam3.MODE_PROMPT, "prompt": sam3.PROMPT, "pose_data": False, "config": None}]
+    (reference,) = nodes.BCVSAM3VideoTrack().track(image, sam3.MODE_PROMPT, sam3.PROMPT, 1, -1)
+    direct = guard.check_mask(masks, pose_data, MASK_THRESHOLDS, stop_on_fail=False, final=key != "BCVMaskGuard",
+                              reference=reference)
+    record = json.loads(metrics)
+    assert record["reference"] == json.loads(direct[2])["reference"]
+    # each guard's own default: 0.4 on the raw mask, 0.5 on the final
+    assert record["reference"]["flags"] == ["reference_misaligned"]
+    assert record["thresholds"]["min_reference_iou"] == (0.4 if key == "BCVMaskGuard" else 0.5)
+    if key == "BCVMaskGuard":
+        assert out[0] is masks and out[1:3] == direct[1:3] and torch.equal(out[3], direct[3])
+
+
+@pytest.mark.parametrize("key", ["BCVMaskGuard", "BCVWanAnimatePreprocessGuard"])
+def test_the_guard_nodes_read_the_reference_widget_and_run_no_sam_without_a_reference(fake_models, key):
+    masks, pose_data = clip()
+    for iou, flags in ((0.4, ["reference_misaligned"]), (0.1, [])):
+        values = {**thresholds(POSE_THRESHOLDS), **thresholds(MASK_THRESHOLDS), "min_reference_iou": iou}
+        if key == "BCVMaskGuard":
+            metrics = nodes.BCVMaskGuard().check(masks, True, pose_data=pose_data, reference_image=reference_image(140),
+                                                 **values)[2]
+        else:
+            metrics = nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, True, reference_image=reference_image(140),
+                                                                 **values)[3]
+        assert json.loads(metrics)["reference"]["flags"] == flags, iou
+    fake_models.calls.clear()
+    values = {**thresholds(POSE_THRESHOLDS), **thresholds(MASK_THRESHOLDS), "min_reference_iou": 0.4}
+    if key == "BCVMaskGuard":
+        metrics = nodes.BCVMaskGuard().check(masks, True, pose_data=pose_data, **values)[2]
+    else:
+        metrics = nodes.BCVWanAnimatePreprocessGuard().check(masks, pose_data, True, **values)[3]
+    assert fake_models.calls == [] and "reference" not in json.loads(metrics)
+
+
+def test_the_reference_image_is_the_last_optional_input():
+    for key, default in (("BCVMaskGuard", 0.4), ("BCVWanAnimatePreprocessGuard", 0.5)):
+        optional = spec(key)["optional"]
+        assert list(optional)[-2:] == ["min_reference_iou", "reference_image"], key
+        assert optional["reference_image"][0] == "IMAGE" and "SAM 3.1 Multiplex" in optional["reference_image"][1]["tooltip"]
+        iou = optional["min_reference_iou"]
+        assert iou[0] == "FLOAT" and {**iou[1], "tooltip": None} == {"default": default, "min": 0.0, "max": 1.0,
+                                                                     "step": 0.05, "tooltip": None}
+        assert iou[1]["tooltip"] == spec("BCVMaskGuard")["optional"]["min_reference_iou"][1]["tooltip"]
+    assert list(spec("BCVWanAnimatePreprocessGuard")["optional"]) == (
+        [f.name for f in dataclasses.fields(guard.FinalReferenceGuardConfig)] + ["reference_image"])
+
+
+def test_the_guard_nodes_input_types_import_no_sam_tracker():
+    # the SAM call is lazy: listing the guards' inputs on a fresh interpreter loads neither the
+    # pack's SAM 3.1 Multiplex track module nor core's tracker (E3)
+    import os
+    import subprocess
+    import sys
+
+    pack = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    code = (
+        "import importlib.util, os, sys\n"
+        f"spec = importlib.util.spec_from_file_location('bcv_fresh', {os.path.join(pack, '__init__.py')!r}, "
+        f"submodule_search_locations=[{pack!r}])\n"
+        "package = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['bcv_fresh'] = package\n"
+        "spec.loader.exec_module(package)\n"
+        "for key in ('BCVMaskGuard', 'BCVWanAnimatePreprocessGuard'):\n"
+        "    package.NODE_CLASS_MAPPINGS[key].INPUT_TYPES()\n"
+        "print(sorted(m for m in sys.modules if m.endswith('sam3_1_multiplex.track') or m.startswith('comfy.ldm.sam3')))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=pack)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "[]"

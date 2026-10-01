@@ -66,10 +66,17 @@ def check_black_background(black_background, replacement_mode):
                          "replacement_mode off to animate the reference character instead.")
 
 
-def driving_on_black(images, driving_mask):
+def driving_on_black(images, driving_mask, chunk=16):
     """The driving video `images` [T, H, W, C] with every pixel outside the person's MASK
-    [T, H, W] (on above 0.5, as the colored masks cut it) black, the rest unchanged: the pose
-    video SCAIL-2 was trained on in animation mode (black backgrounds, zai-org/SCAIL-2 issue #17),
-    as SCAIL-Pose's --crop_e2e_mask writes it (the union of the person silhouettes kept)."""
-    keep = (_frames(driving_mask) > MASK_THRESHOLD).unsqueeze(-1).to(images.device)
-    return torch.where(keep, images, torch.zeros((), dtype=images.dtype, device=images.device))
+    [T, H, W] (on above 0.5, as the colored masks cut it; a single mask is every frame's) black,
+    the rest unchanged: the pose video SCAIL-2 was trained on in animation mode (black
+    backgrounds, zai-org/SCAIL-2 issue #17), as SCAIL-Pose's --crop_e2e_mask writes it (the union
+    of the person silhouettes kept). Cut and filled `chunk` frames at a time, so the cut, a boolean
+    copy of the mask, never covers the whole clip."""
+    mask = _frames(driving_mask).expand(len(images), -1, -1)
+    out = torch.empty_like(images)
+    black = torch.zeros((), dtype=images.dtype, device=images.device)
+    for s in range(0, len(images), chunk):
+        keep = (mask[s:s + chunk] > MASK_THRESHOLD).unsqueeze(-1).to(images.device)
+        torch.where(keep, images[s:s + chunk], black, out=out[s:s + chunk])
+    return out

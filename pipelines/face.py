@@ -170,7 +170,7 @@ def crop_faces(images, pose_data: PoseData, face_padding=0, face_bboxes=None, sm
         if len(boxes) != B:
             raise ValueError(f"pose_data holds {len(boxes)} frames and images {B}; they must be the same frames")
     images_np = as_numpy(images)
-    face_images = []
+    face_images = np.empty((B, FACE_SIZE, FACE_SIZE, C), dtype=images_np.dtype)
     result = {"fallback crops": 0}
     with log.step(f"cropping the faces on {B} frames", result):
         for i, (x1, y1, x2, y2) in enumerate(boxes):
@@ -184,5 +184,5 @@ def crop_faces(images, pose_data: PoseData, face_padding=0, face_bboxes=None, sm
                 face = images_np[i][fy:fy + size, fx:fx + size]
                 if face.size == 0:
                     face = np.zeros((size, size, C), dtype=images_np.dtype)
-            face_images.append(cv2.resize(face, (FACE_SIZE, FACE_SIZE)))
-    return torch.from_numpy(np.stack(face_images, 0)), boxes
+            face_images[i] = cv2.resize(face, (FACE_SIZE, FACE_SIZE))
+    return torch.from_numpy(face_images), boxes

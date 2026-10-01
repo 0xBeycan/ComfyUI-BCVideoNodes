@@ -53,18 +53,20 @@ def test_output_frame_i_shows_driving_frame_i(aligned, total):
         " + ".join(["81"] * chunks), 81 + 76 * (chunks - 1), total, total)
 
 
-def test_core_gets_the_full_pose_and_the_chained_offsets(aligned):
+def test_core_gets_the_pose_and_the_chained_offsets(aligned):
     run(aligned, pose_frames=357, node=SCAIL2, vae=IndexVAE())
     # every chunk runs the full 81 frames, the last one too, on a pose held up to its end
     assert [c["length"] for c in Calls.animate] == [81] * 5
-    assert [c["pose_in"] for c in Calls.animate] == [385] * 5
     assert [c["pose_frames"] for c in Calls.animate] == [81] * 5
     # the loop passes the returned offset (0, 81, 157, ...); core keeps 5 previous frames and
     # moves back by them, so the pose is read from 0, 76, 152, ...
     assert [c["previous"] for c in Calls.animate] == [None, 5, 5, 5, 5]
-    assert [c["offset_in"] + (c["previous"] or 0) for c in Calls.animate] == [0, 81, 157, 233, 309]
-    assert [c["offset_in"] for c in Calls.animate] == [0, 76, 152, 228, 304]
+    assert [c["offset_in"] + (c["previous"] or 0) for c in Calls.animate[:4]] == [0, 81, 157, 233]
     assert [c["pose"] for c in Calls.animate] == [0.0, 76.0, 152.0, 228.0, 304.0]
+    # the pose itself while a chunk is inside it; the last chunk runs past frame 356 and gets
+    # just the window it reads, held past the end, with the offset into it
+    assert [c["pose_in"] for c in Calls.animate] == [357] * 4 + [81]
+    assert [c["offset_in"] for c in Calls.animate] == [0, 76, 152, 228, 0]
     # the previous frames the model is seeded with are the driving frames the pose window starts on
     assert all(c["previous_first"] == c["pose"] for c in Calls.animate[1:])
     assert [s["seed"] for s in Calls.sampler] == [7, 8, 9, 10, 11]

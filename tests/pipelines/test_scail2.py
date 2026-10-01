@@ -123,6 +123,32 @@ def test_the_driving_video_on_black_takes_a_single_frame_mask():
     assert torch.equal(scail2.driving_on_black(images, person(1)[0]), scail2.driving_on_black(images, person(1)))
 
 
+def clip(frames=37, height=12, width=10):
+    """A MASK clip over two chunks and a part of a third of what the fills cut at once (16 frames),
+    with values at the 0.5 cut on every fifth frame."""
+    mask = torch.rand(frames, height, width, generator=torch.Generator().manual_seed(3))
+    mask[::5, 0, 0] = 0.5
+    return mask
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_the_colored_driving_mask_is_the_whole_clip_cut_and_coloured_at_once(replacement_mode):
+    driving = clip()
+    pose_video_mask, _ = scail2.colored_masks(driving, replacement_mode, driving[:1])
+    background = scail2.backgrounds(replacement_mode)[0]
+    expected = torch.where((driving > 0.5).unsqueeze(-1), torch.tensor(scail2.PALETTE[0]), torch.tensor(background))
+    assert pose_video_mask.dtype == torch.float32 and torch.equal(pose_video_mask, expected)
+
+
+def test_the_driving_video_on_black_is_the_whole_clip_cut_at_once():
+    images = torch.rand(37, 12, 10, 3, generator=torch.Generator().manual_seed(4))
+    driving = clip()
+    black = torch.zeros(())
+    assert torch.equal(scail2.driving_on_black(images, driving), torch.where((driving > 0.5).unsqueeze(-1), images, black))
+    # a single mask is every frame's, as the whole-clip select broadcasts it
+    assert torch.equal(scail2.driving_on_black(images, driving[0]), torch.where((driving[0] > 0.5).unsqueeze(-1), images, black))
+
+
 @pytest.mark.parametrize("black_background, replacement_mode", [(False, False), (False, True), (True, False)])
 def test_black_background_is_allowed_outside_replacement_mode(black_background, replacement_mode):
     scail2.check_black_background(black_background, replacement_mode)

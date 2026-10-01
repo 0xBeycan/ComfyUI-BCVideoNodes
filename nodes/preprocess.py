@@ -1,9 +1,10 @@
 """The Wan Animate wrappers: WanAnimate Preprocess and WanAnimate Preprocess Guard. Each one
 calls the individual nodes, so it computes exactly what the chained nodes compute."""
 
+from ..libs.config_widgets import config_inputs
 from .common import _config
 from .face import BCVFaceCrop
-from .guard import BCVMaskGuard, BCVPoseGuard
+from .guard import BCVMaskGuard, BCVPoseGuard, _reference_mask
 from .pose import POSE_MODEL_TOOLTIP, POSE_MODELS, VITPOSE, BCVPoseDetection, detect_pose
 from .sam3_1_multiplex import BCVSAM3VideoTrack
 
@@ -57,8 +58,11 @@ FINAL_MASK_TOOLTIP = "The final mask the sampler gets: the WanAnimate Preprocess
 class BCVWanAnimatePreprocessGuard:
     @classmethod
     def INPUT_TYPES(cls):
+        from ..pipelines import guard
+
         pose = BCVPoseGuard.INPUT_TYPES()["required"]
-        mask = BCVMaskGuard.INPUT_TYPES()["required"]
+        mask_types = BCVMaskGuard.INPUT_TYPES()
+        mask = mask_types["required"]
         return {
             "required": {
                 "mask": (mask["mask"][0], {"tooltip": FINAL_MASK_TOOLTIP}),
@@ -67,20 +71,24 @@ class BCVWanAnimatePreprocessGuard:
                 **{k: v for k, v in pose.items() if k != "pose_data"},
                 **{k: v for k, v in mask.items() if k not in ("mask", "mask_guard")},
             },
+            # the Mask Guard's reference check, its threshold the final mask's (pose_data is required here)
+            "optional": {**config_inputs(guard.FinalReferenceGuardConfig),
+                         "reference_image": mask_types["optional"]["reference_image"]},
         }
 
     RETURN_TYPES = ("MASK", "POSEDATA", "STRING", "STRING", "IMAGE")
     RETURN_NAMES = ("mask", "pose_data", "report", "metrics", "timeline")
     FUNCTION = "check"
     CATEGORY = "BCVideoNodes/Wan/Animate"
-    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler, on the final mask the sampler gets (the preprocess mask through GrowMaskWithBlur expand 10 and BlockifyMask 32): background attached to the body, detached pieces and dropped regions are measured allowing for its blocks; the box-based checks and the keypoints inside the mask read the final as it is. The mask fails when it is empty on a frame with a person, torn (a detached piece of 5% of her or more), leaves the head out (the drawn nose, or head_out_eyes_ears of the drawn eyes and ears, default 2) or a whole forearm-and-hand or lower leg, or drops a hand-sized region of her (a whole block, holding a drawn keypoint on every frame it is gone); a failed check stops the workflow with the report when mask_guard is on. The pose checks are warnings, and warnings never stop. 'metrics' has every measurement per frame and 'timeline' plots them."
+    DESCRIPTION = "Pose Guard and Mask Guard in one node, with one report: checks the pose and the mask of WanAnimate Preprocess frame by frame. Wire it between the preprocess and the sampler, on the final mask the sampler gets (the preprocess mask through GrowMaskWithBlur expand 10 and BlockifyMask 32): background attached to the body, detached pieces and dropped regions are measured allowing for its blocks; the box-based checks and the keypoints inside the mask read the final as it is. The mask fails when it is empty on a frame with a person, torn (a detached piece of 5% of her or more), leaves the head out (the drawn nose, or head_out_eyes_ears of the drawn eyes and ears, default 2) or a whole forearm-and-hand or lower leg, or drops a hand-sized region of her (a whole block, holding a drawn keypoint on every frame it is gone); a failed check stops the workflow with the report when mask_guard is on. The pose checks are warnings, and warnings never stop; so is, with reference_image connected, a reference not placed like the first frame (the character SAM 3.1 Multiplex finds on it, placed as the Wan Animate node places the reference and grown and blockified as the final mask, overlapping the mask on frame 0 by an IoU below min_reference_iou). 'metrics' has every measurement per frame and 'timeline' plots them."
 
-    def check(self, mask, pose_data, mask_guard, **thresholds):
+    def check(self, mask, pose_data, mask_guard, reference_image=None, **thresholds):
         from ..pipelines import guard
 
         # each group measures without stopping; the combined report decides
         _, _, pose_metrics, _ = guard.check_pose(pose_data, _config(guard.PoseGuardConfig, thresholds), stop_on_fail=False)
         _, _, mask_metrics, _ = guard.check_mask(mask, pose_data, _config(guard.MaskGuardConfig, thresholds), enabled=mask_guard,
-                                                 stop_on_fail=False, final=True)
+                                                 stop_on_fail=False, final=True, reference=_reference_mask(reference_image),
+                                                 reference_config=_config(guard.FinalReferenceGuardConfig, thresholds))
         report, metrics, timeline = guard.combine_guards(pose_metrics, mask_metrics)
         return (mask, pose_data, report, metrics, timeline)

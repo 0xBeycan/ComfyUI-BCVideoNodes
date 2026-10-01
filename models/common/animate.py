@@ -36,7 +36,12 @@ def mask_window(mask, first, length, height, width):
 
 class AnimateAdapter:
     """The hooks of one core conditioning node, for one run: the loop creates an instance per
-    generate call, so per-run state set in ``prepare`` lives on it."""
+    generate call, so per-run state set in ``prepare`` lives on it.
+
+    The per-chunk hooks see the chunk as the core node sees it: ``offset`` is the
+    video_frame_offset of its call and ``animate_inputs`` the inputs it gets. On a chunk that
+    reads past the end of a held video those are the chunk's window of the videos it seeks and
+    the offset into that window (pipelines/long_video.py), so a hook indexes what it is handed."""
 
     ANIMATE_NODE = ""  # the core node id it adapts, and its registry name
     # the fewest outputs the core node must return, and what to tell the user when it returns fewer
@@ -46,6 +51,9 @@ class AnimateAdapter:
     # last frame the plan samples, as the tail_padding widget says (libs/video.TAIL_PADDING)
     # ("pose_video" is the loop's own input, the rest pass through)
     HELD_VIDEOS = ("pose_video", "face_video", "background_video")
+    # the other videos the core node seeks by video_frame_offset, never extended: a chunk that
+    # reads past the end of a held video gets them cut to its window with the held ones
+    SEEKED_VIDEOS = ()
 
     def __init__(self, node_name, last_chunk):
         self.node_name = node_name  # the node's class name, for the log lines
@@ -67,7 +75,7 @@ class AnimateAdapter:
 
     def continuation(self, anchor, offset):
         """The core-node inputs that chain a chunk to the one before: the previous decoded
-        frames (None on the first chunk) and the offset the previous call returned."""
+        frames (None on the first chunk) and the chunk's video_frame_offset."""
         return {"continue_motion": anchor, "video_frame_offset": offset}
 
     def chunk_inputs(self, index, offset, anchor, pose_video, animate_inputs):

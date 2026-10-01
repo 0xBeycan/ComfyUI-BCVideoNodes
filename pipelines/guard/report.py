@@ -1,10 +1,11 @@
 """The report of a guard run, and the step that finishes one: the report text, the metrics JSON,
-the timeline, and the stop on a failed enabled check."""
+the timeline, and the stop on a failed enabled check; with a reference image, the reference
+record's lines and its place in the metrics."""
 import json
 from typing import Union
 
 from ...libs import log
-from .common import WARNINGS, GuardFailed, MaskRow, PoseRow, PreprocessRow, Scail2Row
+from .common import WARNINGS, GuardFailed, MaskReference, MaskRow, PoseRow, PreprocessRow, Scail2Row
 from .timeline import timeline_image
 
 
@@ -47,16 +48,45 @@ def write_report(title, rows: Union[list[PoseRow], list[MaskRow], list[Preproces
     return "\n".join(lines), not failed
 
 
+def _value(value):
+    return "n/a" if value is None else f"{value:.3f}"
+
+
+# What the Mask Guard's reference check says (reference.mask_reference), from its record.
+MASK_REFERENCE_LINES = {
+    "reference_misaligned": "IoU {iou} with mask frame 0; replacement expects the reference posed and placed like the "
+                            "first frame",
+}
+
+
+def reference_report(reference: MaskReference, enabled):
+    """The report lines of the Mask Guard's reference record: its measurements, then its checks."""
+    line = (f"reference image: area {_value(reference['area'])}, cropped {_value(reference['cropped'])}, "
+            f"IoU with mask frame 0 {_value(reference['iou_first_frame'])}, "
+            f"scale vs mask frame 0 {_value(reference['scale_first_frame'])}")
+    if not reference["area"]:
+        line += "; SAM 3.1 Multiplex found no person on it"
+    iou = _value(reference["iou_first_frame"])
+    return "\n".join([line] + [f"- {name} ({_kind(name, enabled)}): " + MASK_REFERENCE_LINES[name].format(iou=iou)
+                               for name in reference["flags"]])
+
+
 def _finish(title, guard, rows: Union[list[PoseRow], list[MaskRow], list[PreprocessRow]], flags, thresholds,
-            enabled, panels, stop_on_fail, note=None):
+            enabled, panels, stop_on_fail, note=None, reference: MaskReference = None):
     """Report, metrics and timeline of one guard run; stops the workflow on a failed enabled
     check when `stop_on_fail`. `guard` names the group in the metrics (None for the combined
-    run, whose metrics keep the layout they always had); `note` is a last report line."""
+    run, whose metrics keep the layout they always had); `note` is a report line after the checks.
+    `reference`, the record of a connected reference image, adds its lines last and its
+    "reference" key before "frames"; without one the report and the metrics are as they were."""
     report, passed = write_report(title, rows, flags, enabled)
     if note:
         report += f"\n- {note}"
     record = {"guard": guard} if guard else {}
-    record.update({"thresholds": thresholds, "enabled": sorted(enabled), "flags": flags, "frames": rows})
+    record.update({"thresholds": thresholds, "enabled": sorted(enabled), "flags": flags})
+    if reference is not None:
+        report += "\n" + reference_report(reference, enabled)
+        record["reference"] = reference
+    record["frames"] = rows
     metrics = json.dumps(record)
     timeline = timeline_image(rows, flags, panels)
     _stop(report, passed, stop_on_fail)

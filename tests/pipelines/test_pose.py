@@ -142,6 +142,25 @@ def test_at_draw_threshold_0_draw_head_off_and_0_stick_widths_still_leave_their_
                            pose.draw(pose_data, draw_threshold=0.0))
 
 
+def test_the_pose_images_are_the_uint8_drawings_scaled_to_0_1():
+    # each frame drawn on a black uint8 canvas, the frames stacked, converted to float32 and
+    # divided by 255: the same bits
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.6), frames())
+    drawn = [pose.draw_aapose_by_meta_new(np.zeros((meta.height, meta.width, 3), dtype=np.uint8), meta, threshold=0.5,
+                                          draw_body=True, draw_hand=True, draw_head=True, body_stick_width=-1,
+                                          hand_stick_width=-1)
+             for meta in pose_data["pose_metas"]]
+    expected = torch.from_numpy(np.stack(drawn, 0)).float() / 255.0
+    images = pose.draw(pose_data, draw_threshold=0.5)
+    assert images.dtype == torch.float32 and images.shape == (B, H, W, 3)
+    assert expected.sum() > 0 and torch.equal(images, expected)
+
+
+def test_pose_data_without_frames_raises_what_stacking_no_drawings_raised():
+    with pytest.raises(ValueError, match="^need at least one array to stack$"):
+        pose.draw({"pose_metas": [], "pose_metas_original": []})
+
+
 def test_the_draw_threshold_travels_in_pose_data():
     # the guards count the keypoints at the threshold the pose images were drawn at
     _, pose_data, _, _ = pose.pose_detection(frames(), FakeDetector(), FakePose(0.6), draw_threshold=0.65)

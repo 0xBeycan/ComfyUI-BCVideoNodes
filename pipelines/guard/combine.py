@@ -9,8 +9,9 @@ from .timeline import PREPROCESS_PANELS
 def combine_guards(pose_metrics, mask_metrics, stop_on_fail=True):
     """The one report of the whole preprocess from the `metrics` of `check_pose` and
     `check_mask` on the same clip: every frame's measurements side by side, the checks of both
-    groups in the order they first fired, one timeline. With `stop_on_fail` a failed enabled
-    check of either group raises GuardFailed with the combined report.
+    groups in the order they first fired, one timeline, and the mask's reference record when it
+    has one. With `stop_on_fail` a failed enabled check of either group raises GuardFailed with
+    the combined report.
 
     Returns (report, metrics JSON, timeline IMAGE)."""
     pose, mask = json.loads(pose_metrics), json.loads(mask_metrics)
@@ -34,4 +35,5 @@ def combine_guards(pose_metrics, mask_metrics, stop_on_fail=True):
     flags = {name: both[name] for name in sorted(both, key=lambda name: (both[name][0], order.index(name)))}
     thresholds = {**pose["thresholds"], **mask["thresholds"]}
     enabled = set(pose["enabled"]) | set(mask["enabled"])
-    return _finish("Preprocess guard", None, rows, flags, thresholds, enabled, PREPROCESS_PANELS, stop_on_fail)
+    return _finish("Preprocess guard", None, rows, flags, thresholds, enabled, PREPROCESS_PANELS, stop_on_fail,
+                   reference=mask.get("reference"))

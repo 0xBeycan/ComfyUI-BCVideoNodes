@@ -10,6 +10,7 @@ chained nodes compute.
 from ..libs.config_widgets import config_inputs
 
 PREPROCESS = "BCVideoNodes"
+VIDEO = "BCVideoNodes/Video"
 
 
 def _config(config_cls, values):

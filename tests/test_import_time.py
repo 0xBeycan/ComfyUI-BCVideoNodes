@@ -58,6 +58,8 @@ NODE_KEYS = [
     "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
     "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard",
     "BCVSapiens2Pose",
+    "BCVLoadVideo", "BCVGetVideoInfo", "BCVLoadReferenceImage", "BCVConformVideo",
+    "BCVSaveVideo", "BCVVideoComparer",
 ]
 # check 3: every module under libs/, pipelines/ and models/
 CHECK3_MODULES = [
@@ -76,6 +78,8 @@ CHECK3_MODULES = [
     "libs.pose_utils",
     "libs.pose_utils.pose2d_utils",
     "libs.pose_utils.human_visualization",
+    "libs.video_encode",
+    "libs.video_compare",
     "pipelines",
     "pipelines.long_video",
     "pipelines.pose",
@@ -89,6 +93,7 @@ CHECK3_MODULES = [
     "pipelines.guard.timeline",
     "pipelines.guard.combine",
     "pipelines.guard.scail2",
+    "pipelines.guard.reference",
     "pipelines.sam3_1_multiplex",
     "pipelines.sam3_1_multiplex.config",
     "pipelines.sam3_1_multiplex.prompt",
@@ -134,6 +139,11 @@ CHECK3_MODULES = [
     "models.sapiens2.decode",
     "models.sapiens2.keypoints",
     "models.sapiens2.wrapper",
+    "libs.video_sizes",
+    "libs.video_info",
+    "libs.resize",
+    "libs.video_decode",
+    "pipelines.video_input",
 ]
 # check 3: the heavy modules a checked module may pull in; every other module may pull in none.
 # "cv2" is the vendored pose_utils' cv2 and its submodules (E2).

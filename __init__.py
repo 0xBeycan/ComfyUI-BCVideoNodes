@@ -7,6 +7,8 @@ from .nodes.guard import BCVMaskGuard, BCVPoseGuard
 from .nodes.preprocess import BCVWanAnimatePreprocess, BCVWanAnimatePreprocessGuard
 from .nodes.scail2 import BCVSCAIL2ColoredMask, BCVSCAIL2Preprocess, BCVSCAIL2PreprocessGuard
 from .nodes.pose import BCVSapiens2Pose
+from .nodes.video_input import BCVConformVideo, BCVGetVideoInfo, BCVLoadReferenceImage, BCVLoadVideo
+from .nodes.video_output import BCVSaveVideo, BCVVideoComparer
 
 NODE_CLASS_MAPPINGS = {
     "BCVWanAnimateLongVideoSampler": BCVWanAnimateLongVideoSampler,
@@ -25,6 +27,12 @@ NODE_CLASS_MAPPINGS = {
     "BCVSCAIL2Preprocess": BCVSCAIL2Preprocess,
     "BCVSCAIL2PreprocessGuard": BCVSCAIL2PreprocessGuard,
     "BCVSapiens2Pose": BCVSapiens2Pose,
+    "BCVLoadVideo": BCVLoadVideo,
+    "BCVGetVideoInfo": BCVGetVideoInfo,
+    "BCVLoadReferenceImage": BCVLoadReferenceImage,
+    "BCVConformVideo": BCVConformVideo,
+    "BCVSaveVideo": BCVSaveVideo,
+    "BCVVideoComparer": BCVVideoComparer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -44,6 +52,15 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BCVSCAIL2Preprocess": "SCAIL-2 Preprocess",
     "BCVSCAIL2PreprocessGuard": "SCAIL-2 Preprocess Guard",
     "BCVSapiens2Pose": "Sapiens2 Pose",
+    "BCVLoadVideo": "Load Video",
+    "BCVGetVideoInfo": "Get Video Info",
+    "BCVLoadReferenceImage": "Load Reference Image",
+    "BCVConformVideo": "Conform Video",
+    "BCVSaveVideo": "Save Video",
+    "BCVVideoComparer": "Video Comparer",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+# the frontend: the video player of Save Video, Video Comparer and Load Video
+WEB_DIRECTORY = "./web"
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

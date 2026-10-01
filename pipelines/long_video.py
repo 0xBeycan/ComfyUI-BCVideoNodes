@@ -20,7 +20,7 @@ import logging
 
 # torch and comfy.* are imported inside the functions that use them, so this
 # module (and the package __init__) imports without a ComfyUI install.
-from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frames, snap_down
+from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frames, snap_down, snap_up
 from ..libs.color import apply_transfer, feather, lab_transfer
 from ..libs.log import active_bar, log_beside_bar
 from ..libs.sigmas import WAN_BETA, WAN_DPMPP, wan_beta_sigmas
@@ -122,22 +122,16 @@ def generate(
     # only the pose within a chunk; once the offset runs past a video it errors (Animate 2
     # pose) or drops it (Animate: pose, face, background, mask; SCAIL-2: pose, pose mask), and
     # inside the last chunk a short face video loses its motion, a background turns grey and
-    # the mask rows turn unknown. Extend the adapter's HELD_VIDEOS up front instead, as
-    # tail_padding says (the last frame held, or the video played backwards from its end). The
-    # Animate character mask is not extended: past its end the character may be anywhere, so
-    # core leaves those rows unknown.
+    # the mask rows turn unknown. The adapter's HELD_VIDEOS are extended up to that frame
+    # instead, as tail_padding says (the last frame held, or the video played backwards from its
+    # end), but never as a whole: a chunk that reads past the end of one gets the window it reads
+    # (in the loop below). The Animate character mask is not extended: past its end the
+    # character may be anywhere, so core leaves those rows unknown.
     adapter.check_videos(pose_video, animate_inputs)
     reach = max(total, produced_frames(plan, overlap))
-    short = {}
-    for name in adapter.HELD_VIDEOS:
-        video = pose_video if name == "pose_video" else animate_inputs.get(name)
-        if video is None or video.shape[0] >= reach:
-            continue
-        short[name] = int(video.shape[0])
-        if name == "pose_video":
-            pose_video = pad(video, reach)
-        else:
-            animate_inputs[name] = pad(video, reach)
+    videos = dict(animate_inputs, pose_video=pose_video)  # the core node's inputs, by their names
+    short = {name: int(videos[name].shape[0]) for name in adapter.HELD_VIDEOS
+             if videos.get(name) is not None and videos[name].shape[0] < reach}
     if short:
         shorter_than_total = [name for name, frames in short.items() if frames < total]
         why = ["total_frames ({}) exceeds {}".format(total, ", ".join(shorter_than_total))] if shorter_than_total else []
@@ -146,6 +140,10 @@ def generate(
         (logging.warning if shorter_than_total else logging.info)(
             "%s %s to %d frames: %s (%s).", log_prefix, padded, reach,
             ", ".join("{} +{}".format(name, reach - frames) for name, frames in short.items()), "; ".join(why))
+    # the videos the core node seeks but that are not held, by their frames; a single frame is
+    # not seeked (core repeats it over the chunk), so it is not among them
+    seeked = {name: int(videos[name].shape[0]) for name in adapter.SEEKED_VIDEOS
+              if videos.get(name) is not None and videos[name].ndim >= 3 and videos[name].shape[0] > 1}
 
     patched = adapter.patch_model(call_node("ModelSamplingSD3", model=model, shift=shift)[0], animate_inputs)
     if sigmas_override is not None:
@@ -166,10 +164,12 @@ def generate(
     sampler = _StepLogger(inner, log_prefix)
 
     progress = comfy.utils.ProgressBar(len(plan))
-    chunks = []
+    seed_frames = snap_down(frames_per_chunk)  # the last output frames every chained chunk is seeded with
+    output = None  # [total, H, W, C], allocated at the first decode of a run of more than one chunk
     lengths = []
     produced = 0
     anchor = None
+    moved = None  # how far the core node moved the offset back by the frames it kept, once seen
     offset = 0
     while produced < total:
         comfy.model_management.throw_exception_if_processing_interrupted()
@@ -177,7 +177,29 @@ def generate(
         length = chunk_length(produced, total, frames_per_chunk, overlap)
         chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
         pose_offset = offset
-        chunk_inputs = dict(animate_inputs, **adapter.chunk_inputs(index, offset, anchor, pose_video, animate_inputs))
+        start, inputs = 0, videos
+        if any(offset + length > frames for frames in short.values()):
+            # The chunk reads past the end of a held video: every video the core node seeks is cut
+            # to the window it reads, a held one extended there as tail_padding says, and the core
+            # node gets the offset into that window. Before it seeks, the core node moves the offset
+            # back by the frames of the anchor it keeps: as far as on the last chained chunk once
+            # seen, and until then by at most the whole anchor. Nor is a seeked video cut to one
+            # frame, which core would repeat over the chunk.
+            if anchor is not None and moved is None:
+                start, stop = max(0, offset - int(anchor.shape[0])), offset + length
+            else:
+                start = max(0, offset - (moved or 0))
+                stop = start + length
+            while any(frames - start == 1 for frames in seeked.values()):
+                start -= 1
+            inputs = dict(videos)
+            for name in adapter.HELD_VIDEOS:
+                if videos.get(name) is not None:
+                    inputs[name] = pad(videos[name], start, min(stop, max(reach, int(videos[name].shape[0]))))
+            for name in seeked:
+                inputs[name] = videos[name][start:stop]
+        seek = offset - start
+        chunk_inputs = dict(inputs, **adapter.chunk_inputs(index, seek, anchor, inputs["pose_video"], inputs))
 
         animate = call_node(
             animate_node,
@@ -189,14 +211,16 @@ def generate(
             length=length,
             batch_size=1,
             reference_image=reference_image,
-            pose_video=pose_video,
-            **adapter.continuation(anchor, offset),
+            **adapter.continuation(anchor, seek),
             **chunk_inputs,
         )
         if len(animate) < adapter.OUTPUTS:
             raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), adapter.OUTPUTS, update_hint))
-        chunk_positive, chunk_negative, latent, trim_latent, trim_image, offset = adapter.unpack(animate, anchor)
-        adapter.after_animate(chunk_positive, chunk_negative, trim_image, length, pose_offset, animate_inputs)
+        chunk_positive, chunk_negative, latent, trim_latent, trim_image, returned = adapter.unpack(animate, anchor)
+        if anchor is not None:
+            moved = seek - (returned - length)  # core returns the offset it seeked from + length
+        offset = start + returned
+        adapter.after_animate(chunk_positive, chunk_negative, trim_image, length, seek, inputs)
 
         # 1-based frame span this chunk adds to the output, as the plan expects it.
         sampler.label = "chunk {}/{} (frames {}-{}/{})".format(index + 1, len(plan), produced + 1, min(total, produced + length - trim_image), total)
@@ -214,14 +238,22 @@ def generate(
             sigmas=sigmas,
             latent_image=latent,
         )[0]
+        del animate, chunk_positive, chunk_negative, chunk_inputs, latent  # nothing reads the conditioning after sampling
         if trim_latent > 0:
             sampled = call_node("TrimVideoLatent", samples=sampled, trim_amount=trim_latent)[0]
+        decoded = 4 * int(sampled["samples"].shape[2]) - 3  # the frames the chunk decodes to: 4 per latent frame after the first
+        needed = snap_up(trim_image + total - produced)
+        if needed < decoded:
+            # the last chunk runs past total: the Wan VAE decodes causally, so the latent frames
+            # that decode only to frames past total are left out instead of decoded and cut
+            sampled = dict(sampled, samples=sampled["samples"][:, :, :(needed - 1) // 4 + 1])
         images = call_node("VAEDecode", vae=vae, samples=sampled)[0]
+        del sampled
         if color_anchor_strength > 0 and anchor is not None and trim_image > 0:
             # one Lab transform from the chunk's regenerated overlap frames onto the frames it was
             # seeded with, applied to the whole chunk before it is trimmed and carried: the next
             # chunk is seeded with corrected frames, so the chain stays anchored to the first
-            region = adapter.anchor_region(max(0, pose_offset - trim_image), length, images.shape[1], images.shape[2], animate_inputs)
+            region = adapter.anchor_region(max(0, seek - trim_image), images.shape[0], images.shape[1], images.shape[2], inputs)
             weight = None if region is None else feather(region).to(images.device)
             transfer = lab_transfer(images[:trim_image], anchor[-trim_image:].to(images.device), None if weight is None else weight[:trim_image])
             if transfer is None:
@@ -232,28 +264,33 @@ def generate(
                 logging.info("%s %s color anchor %.2f on the %s: mean dL %+.2f da %+.2f db %+.2f, std ratio L %.3f a %.3f b %.3f",
                              log_prefix, sampler.label, color_anchor_strength, "whole frame" if region is None else "character region",
                              *(transfer.target_mean - transfer.source_mean).tolist(), *transfer.ratio.tolist())
-        if trim_image > 0:
-            images = images[trim_image:]
-        images = images.cpu()
-        del sampled, latent
+        del inputs
+        images = images[trim_image:]
         adapter.after_chunk(index)
 
-        if images.shape[0] == 0:
+        added = decoded - trim_image  # the frames the chunk adds, the ones past total included, as the plan counts them
+        if added <= 0:
             raise RuntimeError("Chunk {} (length {}) contributed no frames after trimming {}; the overlap exceeds the chunk.".format(index, length, trim_image))
-        chunks.append(images)
+        if output is None and added >= total:
+            output = images[:total].cpu()  # the only chunk: its frames are the output, not copied
+        else:
+            if output is None:
+                output = torch.empty((total, *images.shape[1:]), dtype=images.dtype, device="cpu")
+            kept = min(added, total - produced)
+            output[produced:produced + kept] = images[:kept]
+        del images
         lengths.append(length)
-        produced += int(images.shape[0])
-        # a middle chunk adds only chunk - overlap frames; keep enough for a full overlap seed
-        anchor = images if anchor is None else torch.cat((anchor, images), dim=0)[-snap_down(frames_per_chunk):]
+        produced += added
+        # the output's last frames, for the next chunk's seed: a middle chunk adds only
+        # chunk - overlap frames, so this reaches back into the chunks before it
+        anchor = output[max(0, produced - seed_frames):produced]
         if index > 0 and trim_image != overlap:
             logging.warning("%s %s trimmed %d frames, planner assumed %d; using %d from here on.", log_prefix, animate_node, trim_image, overlap, trim_image)
             overlap = trim_image
-        logging.info("%s %s done: %d new frames, %d/%d total", log_prefix, sampler.label, int(images.shape[0]), min(produced, total), total)
+        logging.info("%s %s done: %d new frames, %d/%d total", log_prefix, sampler.label, added, min(produced, total), total)
         progress.update(1)
 
-    images = torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0]
-    images = images[:total]
     plan_text = format_plan(lengths, produced, total, pose_frames, overlap)
     if lengths != plan:
         logging.info("%s ran: %s", log_prefix, plan_text)
-    return (images, int(images.shape[0]), plan_text)
+    return (output, int(output.shape[0]), plan_text)

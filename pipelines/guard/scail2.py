@@ -55,8 +55,9 @@ from ...models.scail2.adapter import ON, REPLACEMENT, mask_convention
 from .common import (FRAGMENT_FRACTION, LATENT_READ, SCAIL2_CHECKS, SCAIL2_DRIVING_CHECKS, SCAIL2_POSE_FREE_CHECKS,
                      SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
 from .config import MaskGuardConfig, SCAIL2GuardConfig, _config
-from .mask import _iou, mask_flags, mask_frame_metrics, mask_regions, pose_of
-from .report import _kind, _stop, write_report
+from .mask import mask_flags, mask_frame_metrics, mask_regions, pose_of
+from .reference import reference_fit
+from .report import _kind, _stop, _value, write_report
 from .timeline import SCAIL2_PANELS, timeline_image
 
 
@@ -71,18 +72,6 @@ def _colored(name, image):
         raise ValueError(f"{name} must be a colored mask IMAGE [frames, height, width, 3], got a tensor of shape "
                          f"{tuple(image.shape)}; connect the {name} output of SCAIL-2 Preprocess or SCAIL-2 Colored Mask")
     return image
-
-
-def center_crop(width, height, new_width, new_height):
-    """(x, y): the columns and the rows comfy.utils.common_upscale's center crop cuts off each
-    side of a `width` x `height` image to reach the aspect ratio of `new_width` x `new_height`."""
-    old_aspect, new_aspect = width / height, new_width / new_height
-    x = y = 0
-    if old_aspect > new_aspect:
-        x = round((width - width * (new_aspect / old_aspect)) / 2)
-    elif old_aspect < new_aspect:
-        y = round((height - height * (old_aspect / new_aspect)) / 2)
-    return x, y
 
 
 def _half(frame):
@@ -183,32 +172,19 @@ def scail2_flags(rows: list[Scail2Row], t, posed):
     return {name: both[name] for name in sorted(both, key=lambda name: (both[name][0], SCAIL2_DRIVING_CHECKS.index(name)))}
 
 
-def _height(mask):
-    """The number of rows from the top to the bottom of `mask`'s pixels."""
-    rows = np.flatnonzero(mask.any(axis=1))
-    return int(rows[-1] - rows[0] + 1)
-
-
 def reference_record(reference_image_mask, width, height, first_frame, t) -> Scail2Reference:
     """The measurements and the flags of the reference mask's first frame against a `width` x
     `height` generation and the person on the first driving frame (`first_frame`, [H, W]
-    booleans, None without driving frames). `t` has the thresholds."""
+    booleans, None without driving frames), placed as core places it (reference.reference_fit).
+    `t` has the thresholds."""
     mode = mask_convention(reference_image_mask)
     person = _person(reference_image_mask[0, ..., :3].float().cpu()).numpy()
-    Hr, Wr = person.shape
-    area = int(person.sum())
-    fragments = mask_regions(person, None)[1] if area else []
-    # what core makes of it: the center crop to the generation's aspect, resized nearest-exact
-    x, y = center_crop(Wr, Hr, width, height)
-    kept = person[y:Hr - y, x:Wr - x]
-    cropped = 1.0 - float(kept.sum()) / area if area else 0.0
-    placed = F.interpolate(torch.from_numpy(kept)[None, None].float(), size=(height, width), mode="nearest-exact")[0, 0].numpy() > 0.5
-    against = area and first_frame is not None and first_frame.any() and placed.any()
-    record = {"mode": mode, "area": area / (Hr * Wr), "fragments": fragments, "cropped": cropped,
-              "iou_first_frame": _iou(placed, first_frame) if against else None,
-              "scale_first_frame": _height(placed) / _height(first_frame) if against else None}
+    fit = reference_fit(person, width, height, first_frame)
+    fragments = mask_regions(person, None)[1] if fit["area"] else []
+    record = {"mode": mode, "area": fit["area"], "fragments": fragments, "cropped": fit["cropped"],
+              "iou_first_frame": fit["iou_first_frame"], "scale_first_frame": fit["scale_first_frame"]}
     flags = []
-    if not area:
+    if not fit["area"]:
         flags.append("reference_empty")
     if any(f >= FRAGMENT_FRACTION for f in fragments):
         flags.append("reference_fragmented")
@@ -216,10 +192,6 @@ def reference_record(reference_image_mask, width, height, first_frame, t) -> Sca
         flags.append("reference_misaligned")
     record["flags"] = flags
     return record
-
-
-def _value(value):
-    return "n/a" if value is None else f"{value:.3f}"
 
 
 # What each reference check's report line says, from the reference record.

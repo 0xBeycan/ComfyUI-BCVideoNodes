@@ -81,6 +81,18 @@ Without pose_data the Mask Guard runs only the checks that do not read it: mask_
 largest region, and the pieces the frame edge cut from it, are the person) and mask_loss on closed
 runs.
 
+With a reference image (the node finds the character on it with SAM 3.1 Multiplex, prompt mode,
+the default prompt) the Mask Guard and the WanAnimate Preprocess Guard also check the reference of
+the replacement run (reference.py), a warning:
+
+  reference_misaligned  the character on the reference, placed as core's Wan Animate node places
+                        the reference (center crop to the mask's aspect ratio, resized to its size),
+                        overlaps the mask on frame 0 by an IoU below `min_reference_iou`:
+                        replacement expects the reference posed and placed like the first frame.
+                        The Preprocess Guard compares final with final: the placed character grown
+                        and blockified as the final mask first, which raises every IoU, so its
+                        default is higher (ReferenceGuardConfig 0.4, FinalReferenceGuardConfig 0.5)
+
 Each group's fails are switched on separately (the Pose Guard has none). Everything measured is
 always reported and plotted; a failed check of an enabled group stops the workflow, since sampling
 on a wrong mask is wasted.
@@ -91,8 +103,9 @@ grid. It is imported from its module, not from here: it reads the colored-mask c
 models/scail2, which the pose and mask guards do not need.
 """
 from .combine import combine_guards  # noqa: F401
-from .common import (MASK_CHECKS, MASK_ROW, POSE_CHECKS, POSE_FREE_MASK_CHECKS, POSE_ROW, PREPROCESS_ROW,  # noqa: F401
-                     SCAIL2_CHECKS, SCAIL2_ROW, TORSO, WARNINGS, GuardFailed)
-from .config import MaskGuardConfig, PoseGuardConfig, SCAIL2GuardConfig  # noqa: F401
+from .common import (MASK_CHECKS, MASK_REFERENCE, MASK_ROW, POSE_CHECKS, POSE_FREE_MASK_CHECKS, POSE_ROW,  # noqa: F401
+                     PREPROCESS_ROW, SCAIL2_CHECKS, SCAIL2_ROW, TORSO, WARNINGS, GuardFailed)
+from .config import (FinalReferenceGuardConfig, MaskGuardConfig, PoseGuardConfig, ReferenceGuardConfig,  # noqa: F401
+                     SCAIL2GuardConfig)
 from .mask import check_mask  # noqa: F401
 from .pose import check_pose  # noqa: F401

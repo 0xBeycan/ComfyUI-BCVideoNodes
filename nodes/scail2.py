@@ -7,7 +7,7 @@ from ..libs.config_widgets import config_inputs
 from .common import _config
 from .guard import _guard_inputs
 from .pose import POSE_MODEL_TOOLTIP, POSE_MODELS, VITPOSE, BCVPoseDetection, detect_pose
-from .sam3_1_multiplex import BCVSAM3VideoTrack
+from .sam3_1_multiplex import BCVSAM3VideoTrack, track_reference
 
 SCAIL = "BCVideoNodes/SCAIL"
 
@@ -93,7 +93,7 @@ class BCVSCAIL2Preprocess:
         tracker = BCVSAM3VideoTrack()
         (mask,) = tracker.track(images, mode, prompt, 1, -1, pose_data=pose_data, sam3_config=sam3_config)
         if reference_mask is None:
-            (reference_mask,) = tracker.track(reference_image, sam3.MODE_PROMPT, prompt, 1, -1, sam3_config=sam3_config)
+            reference_mask = track_reference(reference_image, prompt, sam3_config)
         pose_video_mask, reference_image_mask = BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask=reference_mask)
         pose_video = scail2.driving_on_black(images, mask) if black_background else images
         return (pose_video, pose_video_mask, reference_image_mask, mask, reference_mask)

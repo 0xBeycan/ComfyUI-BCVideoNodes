@@ -1,5 +1,5 @@
-"""The thresholds of the two groups and of the SCAIL-2 guard, as config dataclasses (the guard
-nodes build their widgets from them), and the config a check runs with."""
+"""The thresholds of the two groups, of the reference check and of the SCAIL-2 guard, as config
+dataclasses (the guard nodes build their widgets from them), and the config a check runs with."""
 from dataclasses import dataclass, field
 
 # pose_spike's jump, the Pose Guard's default.
@@ -35,6 +35,26 @@ class MaskGuardConfig:
 class SCAIL2GuardConfig:
     """Thresholds of the SCAIL-2 reference checks. A first value, not calibrated on real clips yet."""
     min_reference_iou: float = _threshold(0.4, 0.0, 1.0, "reference_misaligned (warning, replacement mode only): the character on the reference, center-cropped and resized as the core node does, overlaps the person on the first driving frame by less than this IoU (SCAIL-2 expects the reference posed like the first driving frame). Uncalibrated first value.")
+
+
+def _reference_iou(default):
+    """The reference check's threshold field, its default the guard's own (ReferenceGuardConfig,
+    FinalReferenceGuardConfig): one field, one tooltip for both guards."""
+    return _threshold(default, 0.0, 1.0, "reference_misaligned (warning, with reference_image only): the character SAM 3.1 Multiplex finds on the reference image, center-cropped and resized to the mask's size as the Wan Animate node places the reference, overlaps the mask on frame 0 by less than this IoU: replacement expects the reference posed and placed like the first frame. First values, set on a small set of clips: 0.4 for the Mask Guard on the raw mask, 0.5 for the WanAnimate Preprocess Guard on the final mask. The final mask grows and blockifies both the mask and the placed character, which raises every IoU, so its threshold is higher.")
+
+
+@dataclass
+class ReferenceGuardConfig:
+    """Threshold of the Mask Guard's reference check on the raw mask, run when a reference image
+    is connected (reference.mask_reference)."""
+    min_reference_iou: float = _reference_iou(0.4)
+
+
+@dataclass
+class FinalReferenceGuardConfig:
+    """Threshold of the WanAnimate Preprocess Guard's reference check on the final mask, where the
+    grow and the blockify raise every IoU: the same field as ReferenceGuardConfig's, a higher default."""
+    min_reference_iou: float = _reference_iou(0.5)
 
 
 def _config(config, cls):

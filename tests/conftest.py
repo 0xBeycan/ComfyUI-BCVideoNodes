@@ -6,10 +6,19 @@ anchors pytest's rootdir at tests/, so pytest itself never imports the repo root
 Standard library only at module level: tests/test_package.py and tests/libs/test_chunking.py run
 with nothing but pytest installed. pytest puts this directory on sys.path, which is how the tests
 import names.py and the *_fakes.py modules.
+
+PyAV is imported first when it is installed, as ComfyUI does (its nodes.py imports comfy_api, which
+imports av, before any custom node): an opencv-python that bundles its own FFmpeg and x265, loaded
+before PyAV, makes PyAV's x265 crash the process at its slow presets.
 """
 import importlib.util
 import os
 import sys
+
+try:
+    import av  # noqa: F401
+except ImportError:
+    pass
 
 # a standalone script, run as python tests/test_import_time.py
 collect_ignore = ["test_import_time.py"]

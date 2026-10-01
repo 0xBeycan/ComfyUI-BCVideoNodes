@@ -1,5 +1,6 @@
 """The mask checks: the per-frame measurements of the mask against the pose it belongs to (or
 alone, without pose_data), the flags they raise, and check_mask."""
+from dataclasses import asdict
 from functools import reduce
 
 import numpy as np
@@ -13,7 +14,8 @@ from .common import (BOX_MARGIN, BOX_WINDOW, FINAL_BLOCK, FINAL_GROW, FINAL_PAD,
                      RELIABLE_KEYPOINTS, SPECK_FRACTION, WHOLE_BODY, MaskRow, _body, _box_iou_prev, _flag,
                      _frame_pose, _hand, _keypoint_rows, _pose_inputs, _thresholds, body_scale, box_sides, out_of_shot,
                      out_of_shot_limbs)
-from .config import MaskGuardConfig, _config
+from .config import FinalReferenceGuardConfig, MaskGuardConfig, ReferenceGuardConfig, _config
+from .reference import mask_reference
 from .report import _finish
 from .timeline import MASK_PANELS
 
@@ -24,20 +26,40 @@ HEAD = [BODY_NAMES.index(name) for name in (HEAD_OUT_KEYPOINT,) + HEAD_OUT_SIDES
 NOTHING_HIDDEN = {"body": [], "hands": []}
 
 
-def _iou(a, b):
-    inter = np.logical_and(a, b).sum()
-    union = np.logical_or(a, b).sum()
-    return float(inter / union) if union else 1.0
+class _Booleans:
+    """The [frames, height, width] float mask as the checks read it, a frame's booleans (above 0.5)
+    at a time - masks[f], masks[f, rows, columns], its `shape` and len() - so the clip is never
+    held as booleans whole (0.56 GB over 609 frames at 720p). A frame is cut when it is read and
+    kept while it is one of the WINDOW frames read last: the frame the per-frame measurements are
+    on and LEAK_WINDOW frames either side of it, each cut once as they move along the clip."""
+
+    WINDOW = 2 * LEAK_WINDOW + 1
+
+    def __init__(self, mask):
+        self.mask, self.shape, self.kept = mask, tuple(mask.shape), {}
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, key):
+        f, box = (key[0], key[1:]) if isinstance(key, tuple) else (key, ())
+        frame = self.kept.pop(f, None)
+        if frame is None:
+            frame = (self.mask[f] > 0.5).numpy()
+            if len(self.kept) == self.WINDOW:
+                del self.kept[next(iter(self.kept))]         # the frame read longest ago
+        self.kept[f] = frame
+        return frame[box] if box else frame
 
 
 def _mask_inputs(mask, pose_data: PoseData, final=False):
-    """The mask as [frames, height, width] booleans and the pose it is checked against (None,
-    None without pose_data), checked against each other; `final` says it is the final mask."""
+    """The mask as [frames, height, width] booleans (_Booleans) and the pose it is checked against
+    (None, None without pose_data), checked against each other; `final` says it is the final mask."""
     if mask.dim() == 2:
         mask = mask.unsqueeze(0)
     if mask.dim() != 3:
         raise ValueError(f"mask must be [frames, height, width], got a tensor of shape {tuple(mask.shape)}")
-    masks = (mask.cpu().numpy() > 0.5)
+    masks = _Booleans(mask.cpu())
     hint = ("connect the final mask of the same frames (GrowMaskWithBlur and BlockifyMask keep the size), before any "
             "resize" if final else "connect the mask straight from the tracker, before any resize")
     return (masks, *pose_of(masks, pose_data, hint))
@@ -657,16 +679,17 @@ def keypoints_out(seen, shape, poses, areas, pose_metas: list[PoseMeta], draw_th
 def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detection], draw_threshold, read,
                        final=False, read_keypoints=None, loss_without_pose=True) -> list[MaskRow]:
     """One dict of raw mask measurements per frame (keys MASK_ROW); thresholds are applied
-    afterwards. `masks` is [N, H, W] booleans on the frames the pose was found on; without a pose
-    (`pose_metas` None) the pose-based measurements are None and the lists empty. `read(f)` is what
-    the model reads of frame f's mask and the grid it reads it on (see `dropouts`). `final` says
-    the masks are the final masks of the Wan Animate workflow, measured as common.FINAL_BLOCK
-    describes (it needs a pose). `read_keypoints(f)`, when given, is a reading the keypoint tests
-    count as the mask too: a drawn keypoint SCAIL-2's latent grid reads as her is inside the mask.
+    afterwards. `masks` is [N, H, W] booleans, or reads as them (lost_regions), on the frames the
+    pose was found on; without a pose (`pose_metas` None) the pose-based measurements are None
+    and the lists empty. `read(f)` is what the model reads of frame f's mask and the grid it reads
+    it on (see `dropouts`). `final` says the masks are the final masks of the Wan Animate
+    workflow, measured as common.FINAL_BLOCK describes (it needs a pose). `read_keypoints(f)`, when
+    given, is a reading the keypoint tests count as the mask too: a drawn keypoint SCAIL-2's latent
+    grid reads as her is inside the mask.
     With `loss_without_pose` False, mask_loss is not measured without a pose (None)."""
     N, H, W = masks.shape
     posed = pose_metas is not None
-    areas = masks.reshape(N, H * W).sum(axis=1)
+    areas = np.array([np.count_nonzero(masks[f]) for f in range(N)], dtype=np.int64)
     pad = FINAL_PAD if final else 0
 
     def seen(f):
@@ -769,7 +792,8 @@ def mask_flags(rows: list[MaskRow], t, checks=MASK_CHECKS):
     return flags
 
 
-def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop_on_fail=True, final=False):
+def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop_on_fail=True, final=False,
+               reference=None, reference_config=None):
     """The mask checks on `mask` [frames, H, W] (or one [H, W] frame) against the keypoints and
     boxes in `pose_data`, which must be of the same frames at the same size. Without pose_data
     only the checks that do not read it run (POSE_FREE_MASK_CHECKS), and the report says so.
@@ -781,18 +805,33 @@ def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop
     grown and blockified (the WanAnimate Preprocess Guard's), whose measures allow for its blocks
     (common.FINAL_BLOCK); it needs pose_data. Otherwise `mask` is the raw mask, which the workflow
     grows into that final before any model reads it: what the model loses is judged on the final
-    (`_final_blocks`). Returns (mask unchanged, report, metrics JSON, timeline IMAGE)."""
+    (`_final_blocks`).
+
+    `reference`, when given, is the character on the reference image as a MASK (SAM 3.1 Multiplex
+    on it, [frames, H', W'], its first frame read): it is placed on the mask's frames as core places
+    the reference and measured against mask frame 0 (reference.mask_reference), grown and
+    blockified as the final first when `final`; an IoU below `reference_config`'s
+    min_reference_iou (a ReferenceGuardConfig, with `final` a FinalReferenceGuardConfig; None =
+    defaults) is reference_misaligned, a warning.
+    The threshold joins the metrics' thresholds, the record their "reference"; without a reference
+    both are as they were. Returns (mask unchanged, report, metrics JSON, timeline IMAGE)."""
     config = _config(config, MaskGuardConfig)
     if final and pose_data is None:
         raise ValueError("the final mask is judged against its pose; connect pose_data")
     masks, pose_metas, detections = _mask_inputs(mask, pose_data, final)
     thresholds = _thresholds(pose_data, config)
+    if reference is not None:
+        thresholds.update(asdict(_config(reference_config, FinalReferenceGuardConfig if final else ReferenceGuardConfig)))
     read = (lambda f: (None, block_grid(masks[f]))) if final else _final_reading(masks)
     with log.step(f"mask guard: checking {len(masks)} frames ({'on' if enabled else 'off'})"):
         rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["draw_threshold"], read, final)
         flags = mask_flags(rows, thresholds)
+        # the final grows and blockifies the placed character as the workflow does the raw mask
+        grown = (lambda placed: _final_reading(placed[None])(0)[0]) if final else None
+        record = None if reference is None else mask_reference(reference, masks.shape[1:], masks[0] if len(masks) else None,
+                                                               thresholds, grown)
     note = None if pose_data is not None else (
         "without pose_data, not checked: " + ", ".join(name for name in MASK_CHECKS if name not in POSE_FREE_MASK_CHECKS))
     report, metrics, timeline = _finish("Mask guard", "mask", rows, flags, thresholds,
-                                        set(MASK_CHECKS if enabled else ()), MASK_PANELS, stop_on_fail, note)
+                                        set(MASK_CHECKS if enabled else ()), MASK_PANELS, stop_on_fail, note, record)
     return mask, report, metrics, timeline

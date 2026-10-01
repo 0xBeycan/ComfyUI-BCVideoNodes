@@ -192,6 +192,7 @@ class FakeWanAnimate2ToVideo:
             if pose_video.shape[0] <= video_frame_offset:
                 raise ValueError("pose_video has {} frames but video_frame_offset is {}".format(pose_video.shape[0], video_frame_offset))
         Calls.animate.append({"length": length, "offset_in": video_frame_offset, "continue": None if continue_motion is None else continue_motion.shape[0],
+                              "pose": None if pose_video is None else float(pose_video[video_frame_offset, 0, 0, 0]),
                               "pose_strength": pose_strength, "positive_pose": positive_pose, "clip_pose": clip_vision_output_pose})
         latent = {"samples": torch.zeros(batch_size, 16, latent_length + trim_latent, height // LATENT_DOWN, width // LATENT_DOWN)}
         return FakeNodeOutput(positive, negative, latent, trim_latent, max(0, ref_motion_latent_length * 4 - 3), video_frame_offset + length)
@@ -518,6 +519,31 @@ def animate_aligned(aligned, monkeypatch):
     monkeypatch.setitem(mappings, "WanAnimateToVideo", pose_conditioned(FakeWanAnimateToVideo))
     monkeypatch.setitem(mappings, "WanAnimate2ToVideo", pose_conditioned(FakeWanAnimate2ToVideo))
     return aligned
+
+
+def official_padding(length, target_len):
+    """The frame indices the official padding (Wan 2.2 wan/animate.py inputs_padding,
+    Wan-Animate-2 multiclip_utils.py zigzag_padding) picks for a `length`-frame input padded to
+    `target_len`: its loop, run on the indices. At length 1 the official loop indexes past the
+    end; the degenerate case repeats frame 0."""
+    if length == 1:
+        return [0] * target_len
+    idx, flip, target = 0, False, []
+    while len(target) < target_len:
+        target.append(idx)
+        idx += -1 if flip else 1
+        if idx == 0 or idx == length - 1:
+            flip = not flip
+    return target[:target_len]
+
+
+def held_last(length, target_len):
+    """The frame indices of a `length`-frame input held at its last frame up to `target_len` frames."""
+    return [min(i, length - 1) for i in range(target_len)]
+
+
+# the tail_padding widget's values, each with the frame indices of its extended input
+EXTENDED = {"last_frame": held_last, "ping_pong": official_padding}
 
 
 def driving_videos(frames):

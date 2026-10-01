@@ -612,3 +612,56 @@ def test_single_frame_2d_mask_is_accepted():
                  "pose_config": pose_data["pose_config"], "draw_threshold": DRAW_THRESHOLD}
     passed, flags, _ = run(masks[0], pose_data)
     assert passed
+
+
+# --- the mask read a window of frames at a time --------------------------------------------------
+
+class Reads:
+    """A float mask that counts how often each frame of it is read."""
+
+    def __init__(self, masks):
+        self.masks, self.shape, self.count = masks, masks.shape, [0] * masks.shape[0]
+
+    def __getitem__(self, f):
+        self.count[f] += 1
+        return self.masks[f]
+
+
+def test_the_mask_is_cut_to_booleans_a_window_of_frames_at_a_time():
+    # soft values around the 0.5 cut; a frame reads as the whole clip cut at once would, and walking
+    # the clip frame by frame with LEAK_WINDOW (2) frames either side cuts each frame once and keeps 5
+    masks = torch.rand(12, 20, 16, generator=torch.Generator().manual_seed(0))
+    whole = masks.numpy() > 0.5
+    reads = Reads(masks)
+    view = guard.mask._Booleans(reads)
+    assert view.shape == whole.shape and len(view) == 12
+    for i in range(12):
+        for f in [i] + [j for j in range(i - 2, i + 3) if 0 <= j < 12 and j != i]:
+            assert np.array_equal(view[f], whole[f]) and np.array_equal(view[f, 3:9, 2:11], whole[f, 3:9, 2:11])
+        assert len(view.kept) <= 5
+    assert reads.count == [1] * 12 and sorted(view.kept) == [7, 8, 9, 10, 11]
+
+
+def with_faults():
+    """clip() with a fault of each kind the mask measures: a hand-sized hole on frame 20, an arm
+    held out on frames 5-14 and gone on 9, a speck beside her on 30, a piece torn off on 33 (60 x
+    120 px, a piece of the final too once its padding is off)."""
+    masks, pose_data = clip()
+    block(masks, [20], *HOLE)
+    arm(masks, [i for i in range(5, 15) if i != 9], (60, 100))
+    masks[30, 10:14, 10:14] = 1.0
+    masks[33, 200:320, 0:60] = 1.0
+    return masks, pose_data
+
+
+@pytest.mark.parametrize("final, with_pose", [(False, True), (False, False), (True, True)])
+def test_the_windowed_mask_measures_as_the_whole_clip_cut_at_once(final, with_pose):
+    masks, pose_data = with_faults()
+    metas, detections = (pose_data["pose_metas_original"], pose_data["detections"]) if with_pose else (None, None)
+    whole, view = masks.numpy() > 0.5, guard.mask._Booleans(masks)
+    rows = []
+    for m in (whole, view):
+        read = (lambda f, m=m: (None, guard.mask.block_grid(m[f]))) if final else guard.mask._final_reading(m)
+        rows.append(guard.mask.mask_frame_metrics(m, metas, detections, DRAW_THRESHOLD if with_pose else None, read, final))
+    assert rows[0] == rows[1]
+    assert any(row["mask_loss"] for row in rows[0]) and any(row["fragments"] for row in rows[0])

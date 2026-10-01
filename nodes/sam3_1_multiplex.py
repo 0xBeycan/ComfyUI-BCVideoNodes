@@ -51,3 +51,13 @@ class BCVSAM3VideoTrack:
                           negative_coords=negative_coords, mode=mode, prompt=prompt, max_objects=max_objects,
                           object_index=object_index, config=sam3_config)
         return (mask,)
+
+
+def track_reference(reference_image, prompt, sam3_config=None):
+    """The character on a reference image: SAM 3.1 Multiplex Video Track in prompt mode with `prompt`,
+    whatever mode tracks the driving video - the pose modes are video modes, and the reference is
+    one image. SCAIL-2 Preprocess's reference mask, and the Wan Animate guards' reference check."""
+    from ..pipelines.sam3_1_multiplex import track as sam3
+
+    (mask,) = BCVSAM3VideoTrack().track(reference_image, sam3.MODE_PROMPT, prompt, 1, -1, sam3_config=sam3_config)
+    return mask

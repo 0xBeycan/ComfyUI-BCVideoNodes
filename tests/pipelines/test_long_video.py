@@ -79,8 +79,10 @@ def test_animate2_exact_length_from_pose(node_module):
     # first chunk has no anchor, every later chunk is seeded with the previous batch (core keeps 1 frame)
     assert Calls.animate[0]["continue"] is None
     assert all(c["continue"] == 1 for c in Calls.animate[1:])
-    # offset chain: returned offset feeds the next call, adjusted by the overlap inside the node
-    assert [c["offset_in"] for c in Calls.animate] == [0, 80, 160, 240, 320]
+    # offset chain: returned offset feeds the next call, adjusted by the overlap inside the node,
+    # and the pose is read from exactly there (the last chunk from its window: it runs past frame 359)
+    assert [c["offset_in"] for c in Calls.animate] == [0, 80, 160, 240, 0]
+    assert [c["pose"] for c in Calls.animate] == [0.0, 80.0, 160.0, 240.0, 320.0]
     assert [s["seed"] for s in Calls.sampler] == [7, 8, 9, 10, 11]
     assert FakeProgressBar.instances[0].total == 5
     assert FakeProgressBar.instances[0].current == 5
@@ -196,8 +198,9 @@ def test_animate1_exact_length_from_pose(node_module):
     assert Calls.animate[0]["continue"] is None
     assert all(c["continue"] == 5 for c in Calls.animate[1:])
     assert all(c["max_frames"] == 5 for c in Calls.animate)
-    # offset chain: each chunk starts 5 frames before the previous one ended
-    assert [c["offset_in"] for c in Calls.animate] == [0, 72, 144, 216, 288]
+    # offset chain: each chunk starts 5 frames before the previous one ended (the last one in
+    # its window: it runs past frame 359)
+    assert [c["offset_in"] for c in Calls.animate] == [0, 72, 144, 216, 0]
     # and reads the pose from exactly there
     assert [c["pose"] for c in Calls.animate] == [0.0, 72.0, 144.0, 216.0, 288.0]
     assert [s["seed"] for s in Calls.sampler] == [7, 8, 9, 10, 11]
@@ -215,7 +218,7 @@ def test_animate1_larger_overlap_widget(node_module):
     images, count, plan = run(node_module, pose_frames=200, node=ANIMATE1, frames_per_chunk=77, continue_motion_max_frames=9)
     assert count == 200
     assert plan == "77 + 77 + 65 -> 201 produced -> 200 frames (pose 200, overlap 9)"
-    assert [c["offset_in"] for c in Calls.animate] == [0, 68, 136]
+    assert [c["pose"] for c in Calls.animate] == [0.0, 68.0, 136.0]
     assert all(c["continue"] == 9 for c in Calls.animate[1:])
 
 
@@ -226,7 +229,7 @@ def test_animate1_overlap_above_half_the_chunk_keeps_the_full_seed(node_module, 
     images, count, plan = run(node_module, pose_frames=60, node=ANIMATE1, frames_per_chunk=17, continue_motion_max_frames=13)
     assert count == 60
     assert all(c["continue"] == 13 for c in Calls.animate[1:])
-    assert [c["offset_in"] for c in Calls.animate] == [4 * k for k in range(len(Calls.animate))]
+    assert [c["pose"] for c in Calls.animate] == [min(4.0 * k, 59.0) for k in range(len(Calls.animate))]
     assert "planner assumed" not in caplog.text
 
 
@@ -309,11 +312,14 @@ def test_animate1_total_beyond_inputs_holds_every_video_but_the_mask(node_module
     caplog.set_level("WARNING")
     images, count, plan = run(node_module, pose_frames=100, node=ANIMATE1, total_frames=250, frames_per_chunk=49, **_videos(100))
     assert count == 250
+    first = 0  # the driving frame each chunk reads from: the next one starts 5 frames before this one ends
     for call in Calls.animate:
+        seek, length = call["offset_in"], call["length"]
         for key in ("face", "background"):
-            assert call[key].shape[0] > call["offset_in"] + call["length"] - 1
-            assert (call[key][100:] == 99).all()
-        assert call["mask"].shape[0] == 100
+            read = call[key][seek:seek + length]
+            assert read[:, 0, 0, 0].tolist() == [float(min(i, 99)) for i in range(first, first + length)]
+        assert call["mask"][seek:seek + length][:, 0, 0].tolist() == [float(i) for i in range(first, min(first + length, 100))]
+        first += length - 5
     assert "total_frames (250) exceeds" in caplog.text
 
 
@@ -352,7 +358,7 @@ def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_modu
     assert [c["length"] for c in Calls.animate] == [77, 77, 57]
     for call, sampled in zip(Calls.animate, Calls.sampler):
         mask = sampled["positive"][0][1]["concat_mask"]
-        offset, length = call["offset_in"], call["length"]
+        offset, length = int(call["pose"]), call["length"]  # the driving frame the chunk reads from
         seed = 0 if call["continue"] is None else call["continue"]
         assert torch.equal(mask, reference_concat_mask((length - 1) // 4 + 1, 8, 4, seed, character_mask[offset:offset + length]))
         assert sampled["negative"][0][1]["concat_mask"] is mask  # shared tensor, repaired once

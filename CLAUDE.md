@@ -3,10 +3,12 @@
 ## What this is
 
 ComfyUI custom nodes for Wan Animate and SCAIL-2: the preprocess (pose, SAM 3.1 Multiplex person
-mask, face crops, pose and mask guards, SCAIL-2 colored masks and their guard) and three
-long-video samplers. The 16 node keys are locked, and so is everything ComfyUI reads from a node
-(inputs, types, order, defaults, ranges, return types, categories, display names), because saved
-workflows depend on it: a change to it needs the owner. `tests/test_package.py` and the gate's
+mask, face crops, pose and mask guards, SCAIL-2 colored masks and their guard), three
+long-video samplers, and the video nodes (Load Video, Get Video Info, Load Reference Image, Conform
+Video, Save Video, Video Comparer, with their player in `web/js/`). The 22 node keys are locked,
+and so is everything ComfyUI reads from a node (inputs, types, order, defaults, ranges, return
+types, categories, display names), because saved workflows depend on it: a change to it needs
+the owner. `tests/test_package.py` and the gate's
 `NODE_KEYS` pin the keys, their order, display names and categories.
 
 SAM naming: the SAM nodes and their code are named after the one model they run, SAM 3.1
@@ -26,24 +28,37 @@ Four layers, `nodes -> pipelines -> models -> libs`:
   adapters over ComfyUI core models), plus `models/common/`.
 - `libs/`: model-independent code.
 
+`web/js/` is the frontend, outside the layers: plain ES modules ComfyUI serves from the root
+`WEB_DIRECTORY`, no build step.
+
 ```
-__init__.py          registration only: the 16 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
-nodes/               common (category, _config, _ConfigNode), sampler, pose (Pose Detection, Pose Config,
-                     Sapiens2 Pose), sam3_1_multiplex, face, guard,
+__init__.py          registration only: the 22 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
+                     WEB_DIRECTORY = "./web"
+nodes/               common (the PREPROCESS and VIDEO categories, _config, _ConfigNode), sampler, pose (Pose
+                     Detection, Pose Config, Sapiens2 Pose), sam3_1_multiplex (and track_reference: the
+                     character on a reference image), face, guard,
                      preprocess (the two WanAnimate wrappers, composed of the nodes above),
-                     scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard)
+                     scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard),
+                     video_input (Load Video, Get Video Info, Load Reference Image, Conform Video),
+                     video_output (Save Video, Video Comparer)
 pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Sapiens2 Pose: Sapiens2 body, feet and
                      hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
-                     on black), guard/ (config, common, pose, mask, report, timeline, combine, scail2),
-                     sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry the node calls)
+                     on black), guard/ (config, common, pose, mask, reference, report, timeline, combine,
+                     scail2), sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry
+                     the node calls), video_input (Load Video, Load Reference Image, Conform Video)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, yolo/, sapiens2/ (net, wrapper, decode, keypoints),
                      sam3_1_multiplex/ (adapter, loader,
                      postprocess), wan_animate/, wan_animate2/, scail2/
-libs/                log, bbox, keypoints, mask, chunking, sigmas, video, color, config_widgets, pose_data,
-                     draw_rules (the Pose Config draw rules: parts left out of the pose images),
-                     pose_utils/ (vendored, with its LICENSE)
+libs/                log, bbox, keypoints, mask, chunking, sigmas, video (tail padding), color, config_widgets,
+                     pose_data, draw_rules (the Pose Config draw rules: parts left out of the pose images),
+                     video_sizes (the model table: sizes, frame rule; the orientation rule; the Conform
+                     Video ladder), video_info (the VideoInfo TypedDict), resize (the one fit function: crop
+                     or pad, a frame into a preallocated output), video_decode (PyAV decode, frame
+                     selection, audio), video_encode (the codec table, the writer), video_compare (the
+                     Video Comparer's side by side), pose_utils/ (vendored, with its LICENSE)
+web/js/              player.js (the player the previews share), load_video.js, save_video.js, video_comparer.js
 scripts/             offline model conversion and upload (ComfyUI-free)
 tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test
 ```
@@ -51,7 +66,10 @@ tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the
 ## The layer rule
 
 - Imports go one way: `nodes -> pipelines -> models -> libs`, and within a layer. `nodes -> nodes`
-  is allowed (`nodes/common.py`, and the WanAnimate and SCAIL-2 wrappers composing the other nodes).
+  is allowed (`nodes/common.py`, the WanAnimate and SCAIL-2 wrappers composing the other nodes,
+  and the Mask Guard and the WanAnimate Preprocess Guard calling
+  `nodes/sam3_1_multiplex.track_reference` for their reference check, as SCAIL-2 Preprocess does
+  for its reference mask).
 - A model package imports only itself, `models/common/` and `libs/`. Model packages never import
   each other, and `models/common/` never imports a model package. Inside `models/`, only
   `models/__init__.py` imports the model packages: that is the registration list.
@@ -83,6 +101,7 @@ and patch underscore names through the `Names` tables.
 | an nn.Module, its wrapper, its pre/post-processing | `models/<name>/` |
 | model-independent code | `libs/` |
 | a config dataclass | next to its pipeline; the node generates its widgets from it (`libs/config_widgets.py`) |
+| a node's frontend: its preview, widgets that follow another widget | `web/js/<node>.js`, on `web/js/player.js` |
 
 ## How to add a model
 
@@ -111,14 +130,23 @@ and patch underscore names through the `Names` tables.
   (`models/scail2/adapter.py` overrides all of them):
   - `OUTPUTS` / `UPDATE_HINT`: the fewest outputs the core node must return, and the error hint;
   - `HELD_VIDEOS`: the videos the core node seeks by offset, extended past their end up to the
-    plan's reach as the samplers' `tail_padding` widget says (below);
+    plan's reach as the samplers' `tail_padding` widget says (below), but never as a whole: a
+    chunk that reads past the end of one gets the window it reads, the held videos extended
+    there, and the core node the offset into that window;
+  - `SEEKED_VIDEOS`: the other videos the core node seeks by offset, never extended: on such a
+    chunk they are cut to the same window, never padded (Wan Animate's `character_mask`; a
+    single frame is not seeked, core repeats it over the chunk);
+  - the per-chunk hooks below (`continuation`, `chunk_inputs`, `after_animate`, `anchor_region`)
+    get the chunk's inputs and its offset as the core node gets them: on a windowed chunk the
+    window and the offset into it, so a hook indexes what it is handed;
   - `prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)`:
     validate, rename or pop the node's own inputs, encode what is encoded once per run; returns
     the overlap;
   - `check_videos(pose_video, animate_inputs)`: checks between the videos, before any is held;
   - `patch_model`: model patches, once per run;
   - `continuation(anchor, offset)`: the core call's chaining inputs (default `continue_motion`,
-    `video_frame_offset`), spliced after `pose_video`, before `chunk_inputs`;
+    `video_frame_offset`; `offset` is the chunk's video_frame_offset), spliced before
+    `chunk_inputs`;
   - `chunk_inputs`: per-chunk inputs; `after_animate`: conditioning repairs before sampling;
   - `unpack(outputs, anchor)`: the outputs as (positive, negative, latent, trim_latent,
     trim_image, video_frame_offset);
@@ -137,8 +165,15 @@ and patch underscore names through the `Names` tables.
 - How `HELD_VIDEOS` are extended is not the adapter's either: it is the samplers'
   `tail_padding` widget (the last required widget, after `last_chunk`), `libs/video.TAIL_PADDING`
   (`last_frame`: `hold_last`, the default of all three; `ping_pong`: the official Wan Animate
-  padding, backwards from the end), with the words the hold log line names it by. The Wan
-  Animate `character_mask` is never extended.
+  padding, backwards from the end), with the words the hold log line names it by. The functions
+  take `(video, start, stop)` and give frames `start` to `stop` of the video extended past its
+  end: a view when they lie inside it, else one gather of just those frames. The Wan Animate
+  `character_mask` is never extended.
+- The loop writes each chunk's frames into one output on the CPU, allocated once at
+  `total_frames` (no list joined at the end), and seeds the next chunk from that output's last
+  frames. The last chunk decodes only the latent frames `total_frames` needs: the Wan VAE
+  decodes causally, so the latent frames that decode only to frames past it are left out
+  instead of decoded and cut.
 - The colour anchor is not the adapter's either, beyond its region: it is the samplers'
   `color_anchor_strength` widget (optional, the last widget, after the `sigmas_override` link;
   default 0 = off, and 0 skips the code path), `libs/color.py`.
@@ -149,20 +184,36 @@ and patch underscore names through the `Names` tables.
   the operation, not only the name). If it exists, call it. If the same code would end up in
   two places, move it into one function and call that from both. Never write a second copy.
 - No spaghetti, no duplication; clean, readable, debuggable. Small functions with one job.
-- Explicit data contracts as TypedDict annotations (`libs/pose_data.py`, the guard rows in
-  `pipelines/guard/common.py`, the SAM counts in
-  `pipelines/sam3_1_multiplex/{prompt,pose,prompt_pose,refine}.py`); the values stay plain dicts.
+- Explicit data contracts as TypedDict annotations (`libs/pose_data.py`, the guard rows and
+  reference records in `pipelines/guard/common.py`, the SAM counts in
+  `pipelines/sam3_1_multiplex/{prompt,pose,prompt_pose,refine}.py`, `libs/video_info.py`); the
+  values stay plain dicts.
 - The owner's extraction rule: a new function only if (a) identical code already lives in 2+
   places (reduce it to one) or (b) it is likely (~70-80%) to be reused by future nodes of this
   repo's kind. Otherwise keep it inline. Near-copies that differ in any detail stay separate.
 - Errors say what to do. No silent defaults.
 - Behaviour changes need the owner.
 
+## Optimization principles
+
+- Speed and RAM are equal priorities. No RAM saving that makes generation slower.
+- Bit-exact output is not required, but the output never drifts from the origin. A departure
+  from the origin is a widget setting, never hidden behaviour.
+- A port of a third-party node does the same job in our style: preallocated outputs, no
+  list -> stack/cat, no clones of read-only inputs, no leaks. Read the original first and never
+  reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
+  original.
+- Precision is decided per tensor, by measurement, never globally.
+- Unused heavy outputs are not kept (the mechanism comes in a later change).
+- A node never resizes itself to its content; previews and widgets scale to the node.
+- Values that can differ between uses are widgets, not constants.
+
 ## Imports
 
 - The lazy rule: module level imports only torch, numpy and the standard library. cv2, scipy, PIL,
-  safetensors, torchvision, tqdm, `folder_paths` and `comfy.*` are imported inside the function
-  that uses them. Node modules import their pipeline or model module inside the method.
+  safetensors, torchvision, tqdm, `av` (PyAV), `folder_paths`, `node_helpers`, `comfy_api` and
+  `comfy.*` are imported inside the function that uses them. Node modules import their pipeline
+  or model module inside the method.
 - Exactly three exceptions:
   - E1: `models/common/download.py` imports `folder_paths` and registers ComfyUI's `detection`
     model folder at import. The two loaders (`models/common/loader.py`,
@@ -177,7 +228,7 @@ and patch underscore names through the `Names` tables.
     so importing either package triggers neither E1 nor E3.
 - The gate, with the ComfyUI venv's Python: `PYTHONPATH=/path/to/ComfyUI python
   tests/test_import_time.py`. A standalone script (pytest does not collect it). It checks the
-  package import (under 0.1 s, no heavy module, the 16 keys in order), each node module, each
+  package import (under 0.1 s, no heavy module, the 22 keys in order), each node module, each
   module against its allowed heavy set, and the ComfyUI-free set.
 - Code outside the pack binds the repo root as a package and imports through it: tests and
   `scripts/` as `bcvideonodes` (`tests/conftest.py` runs the root `__init__` as ComfyUI does; the
@@ -198,6 +249,14 @@ and patch underscore names through the `Names` tables.
   intended behaviour change updates the tests that state the old behaviour, in the same commit.
 - Test bodies reach pack names through the `Names` tables (`tests/names.py`, each domain's in
   `tests/*_fakes.py`). Moving code changes table rows, never test bodies.
+- `tests/conftest.py` imports PyAV before anything imports cv2, as ComfyUI does (its `nodes.py`
+  imports `comfy_api`, which imports `av`, before any custom node). The opencv-python of the
+  ComfyUI venv bundles its own FFmpeg; loaded first, it makes PyAV's x265 segfault at the slow
+  presets.
+- `tests/video_input_fakes.py` and `tests/video_output_fakes.py` write small synthetic clips with
+  PyAV into the test's tmp dir (lossless FFV1 with PCM audio for the loader, so a decoded pixel is
+  the pixel written; colour patches on a gradient that shifts a pixel per frame, for the
+  encoder). No test reads a real clip.
 
 ## Contracts at the boundary
 
@@ -205,8 +264,24 @@ and patch underscore names through the `Names` tables.
   `Detection`) are annotations only, and `tests/pipelines/test_pose_data.py` ties them to the keys
   the pose pipeline writes. The guard rows and the SAM counts work the same way
   (`test_guard_rows.py`, `test_sam3_1_multiplex_counts.py`).
+- BCV_VIDEO_INFO is a plain dict at runtime too: `libs/video_info.VideoInfo` is its annotation
+  and fixes its key order, which is Get Video Info's output order.
+- What the frontend reads from the node definitions: Load Video's `resolution` input carries
+  `bcv_sizes` (model -> label -> [width, height], portrait) and `bcv_frames` (model -> the n of
+  its n*k + 1 frame rule), from `libs/video_sizes.MODELS`, so the table has no second copy in JS;
+  Save Video's `codec` input carries `bcv_codecs` (codec -> the values of its crf, preset and
+  pix_fmt, `libs/video_encode.widget_values`).
+- The codec names (`h264-mp4`, `h265-mp4`, `av1-webm`, `vp9-webm`) are stored in saved
+  workflows: add codecs, never rename or remove one.
+- The ui payload the players read, `bcv_video` (`UI_KEY` in `nodes/video_output.py`): a list of
+  one entry {filename, subfolder, type, fps, frames, audio, then `format` for Save Video or
+  `sides` for the Video Comparer, whose `frames` is per side}.
 - Locked, because code outside the repo reads them: the guard metrics JSON (the SCAIL-2 guard
-  writes a record of its own, `"guard": "scail2"`, beside the pose and mask records); the log
+  writes a record of its own, `"guard": "scail2"`, beside the pose and mask records; with a
+  `reference_image` connected, the mask record and the combined record also carry `"reference"`,
+  before `"frames"` (area, cropped, iou_first_frame, scale_first_frame, flags), and
+  `min_reference_iou` in their thresholds: the Mask Guard's default 0.4 on the raw mask, the
+  WanAnimate Preprocess Guard's 0.5 on the final mask; added keys, nothing renamed); the log
   format the owner's A/B test scripts parse (the `BCVideoNodes` logger, its `[BCVideoNodes]`
   prefix and the " done in " / " failed after " step lines in `libs/log.py`); the model file format
   (`models/common/checkpoint.py`); and `LOGITS_SINK` in `pipelines/sam3_1_multiplex/track.py`,
@@ -218,10 +293,15 @@ and patch underscore names through the `Names` tables.
 Do not reopen or "improve" them. They live in the owner's closed-decision documents (outside the
 repo: the plan, the guard, pose-process and mask-process specs, and the review report whose open
 items are decided elsewhere). In short: the guard judges pose and mask only and counts at
-`draw_threshold`; the guard's warning set; the pose models are ViTPose-H and Sapiens2; the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
+`draw_threshold`; the guard's warning set (the owner reopened both once, for one warning:
+`reference_misaligned` of the Mask Guard and the WanAnimate Preprocess Guard, with their
+optional `reference_image`); the pose models are ViTPose-H and Sapiens2; the two remaining SAM A/B switches (`anchor_matching`, `unmatched_counting`, for
 multi-person) default to "ours" and are bit-identical there; features the owner did not adopt
 (the ViTPose flip test, the other SAM A/B switches, the M4 mask-threshold options) are removed;
-multi-person is phase 2; a failed download keeps its `.part` file.
+multi-person is phase 2; a failed download keeps its `.part` file; Load Video decodes with PyAV,
+YUV -> RGB with the stream's own colour tags (cv2 ignores them); `force_fps` only lowers the
+frame rate (real frames kept or dropped, never repeated); the video player is not a node (it lives
+in the Load Video, Save Video and Video Comparer previews).
 
 ## Roadmap
 

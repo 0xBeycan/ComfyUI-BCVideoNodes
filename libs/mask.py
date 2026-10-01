@@ -74,10 +74,15 @@ def clean_mask(mask, config):
     return drop_islands(fill_holes(mask.astype(np.uint8), config.max_hole_fraction), config.min_island_fraction)
 
 
-def render_identity(mask, color, background, threshold=0.5):
+def render_identity(mask, color, background, threshold=0.5, chunk=16):
     """A [T, H, W] mask as a [T, H, W, 3] float32 image: `color` where the mask is above
-    `threshold`, `background` elsewhere. Both colours are RGB in 0..1."""
-    on = (mask.float() > threshold).unsqueeze(-1)
+    `threshold`, `background` elsewhere. Both colours are RGB in 0..1. Cut and filled `chunk` frames
+    at a time: the cut is a boolean copy of what it reads, over the whole clip about half a GB on a
+    609-frame 720p clip."""
     color = torch.tensor(color, dtype=torch.float32, device=mask.device)
     background = torch.tensor(background, dtype=torch.float32, device=mask.device)
-    return torch.where(on, color, background)
+    out = torch.empty(*mask.shape, 3, dtype=torch.float32, device=mask.device)
+    for s in range(0, len(mask), chunk):
+        on = (mask[s:s + chunk].float() > threshold).unsqueeze(-1)
+        torch.where(on, color, background, out=out[s:s + chunk])
+    return out

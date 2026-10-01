@@ -34,13 +34,28 @@ PREPROCESS = {
     "BCVSCAIL2PreprocessGuard": ("SCAIL-2 Preprocess Guard", "BCVideoNodes/SCAIL",
                                  ("pose_video_mask", "reference_image_mask", "report", "metrics", "timeline")),
     "BCVSapiens2Pose": ("Sapiens2 Pose", "BCVideoNodes", ("pose_images", "pose_data", "bboxes", "key_frame_body_points")),
+    # the video input nodes
+    "BCVLoadVideo": ("Load Video", "BCVideoNodes/Video", ("images", "audio", "video_info")),
+    "BCVGetVideoInfo": ("Get Video Info", "BCVideoNodes/Video",
+                        ("model", "resolution", "orientation", "source_fps", "source_frame_count", "source_duration",
+                         "source_width", "source_height", "loaded_fps", "loaded_frame_count", "loaded_duration",
+                         "loaded_width", "loaded_height")),
+    "BCVLoadReferenceImage": ("Load Reference Image", "BCVideoNodes/Video", ("image", "mask")),
+    "BCVConformVideo": ("Conform Video", "BCVideoNodes/Video", ("images",)),
+}
+
+# id -> (display name, category, output names): the video output nodes return nothing
+VIDEO_OUTPUT = {
+    "BCVSaveVideo": ("Save Video", "BCVideoNodes/Video", ()),
+    "BCVVideoComparer": ("Video Comparer", "BCVideoNodes/Video", ()),
 }
 
 
 def test_mappings():
     nodes = importlib.import_module("bcvideonodes")
-    assert set(nodes.NODE_CLASS_MAPPINGS) == set(SAMPLERS) | set(PREPROCESS)
-    assert set(nodes.NODE_DISPLAY_NAME_MAPPINGS) == set(SAMPLERS) | set(PREPROCESS)
+    assert set(nodes.NODE_CLASS_MAPPINGS) == set(SAMPLERS) | set(PREPROCESS) | set(VIDEO_OUTPUT)
+    assert set(nodes.NODE_DISPLAY_NAME_MAPPINGS) == set(SAMPLERS) | set(PREPROCESS) | set(VIDEO_OUTPUT)
+    assert nodes.WEB_DIRECTORY == "./web"
 
 
 @pytest.mark.parametrize("node_id", sorted(SAMPLERS))
@@ -75,6 +90,21 @@ def test_preprocess_node_contract(node_id):
     assert cls.DESCRIPTION
     assert cls.RETURN_NAMES == outputs
     assert len(cls.RETURN_TYPES) == len(cls.RETURN_NAMES)
+    assert callable(getattr(cls, cls.FUNCTION))
+    assert inspect.ismethod(cls.INPUT_TYPES)
+
+
+@pytest.mark.parametrize("node_id", sorted(VIDEO_OUTPUT))
+def test_video_output_node_contract(node_id):
+    nodes = importlib.import_module("bcvideonodes")
+    display_name, category, outputs = VIDEO_OUTPUT[node_id]
+    assert nodes.NODE_DISPLAY_NAME_MAPPINGS[node_id] == display_name
+
+    cls = nodes.NODE_CLASS_MAPPINGS[node_id]
+    assert cls.__name__ == node_id
+    assert cls.CATEGORY == category
+    assert cls.DESCRIPTION
+    assert cls.RETURN_TYPES == outputs and cls.OUTPUT_NODE is True
     assert callable(getattr(cls, cls.FUNCTION))
     assert inspect.ismethod(cls.INPUT_TYPES)
 

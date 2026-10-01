@@ -85,32 +85,34 @@ def test_full_holds_pose_face_and_background_for_animate(animate_aligned):
                               **driving_videos(240))
     assert count == 240 and images[:, 0, 0, 0].tolist() == [float(i) for i in range(240)]
     last = Calls.animate[-1]
-    assert last["length"] == 81 and last["offset_in"] + last["length"] == 309
-    assert last["pose_in"] == 309
+    # the last chunk reads driving frames 228-308, handed as just that window
+    assert last["length"] == 81 and last["pose"] == 228.0
+    assert last["pose_in"] == 81 and last["offset_in"] == 0
     for key in ("face", "background"):
-        assert last[key].shape[0] == 309
-        assert (last[key][240:] == 239).all()  # the last frame, held
+        assert last[key].shape[0] == 81
+        assert last[key][:, 0, 0, 0].tolist() == [float(min(i, 239)) for i in range(228, 309)]  # the last frame, held
 
 
 def test_full_holds_the_pose_for_animate2(animate_aligned):
     run(animate_aligned, pose_frames=250, node=ANIMATE2, vae=IndexVAE(), last_chunk="full")
     last = Calls.animate[-1]
-    assert last["length"] == 81 and last["offset_in"] + last["length"] == 321
-    assert last["pose_in"] == 321
+    # the last chunk reads driving frames 240-320, handed as just that window
+    assert last["length"] == 81 and last["pose"] == 240.0
+    assert last["pose_in"] == 81 and last["offset_in"] == 0
 
 
 def test_full_holds_pose_and_pose_mask_for_scail2(node_module):
     run(node_module, pose_frames=240, node=SCAIL2, last_chunk="full")
     last = Calls.animate[-1]
-    assert last["length"] == 81 and last["pose_in"] == 309
+    assert last["length"] == 81 and last["pose_in"] == 81  # driving frames 228-308, handed as just that window
     assert last["pose_frames"] == last["mask_frames"] == 81  # a full window of both, held past frame 239
-    assert last["offset_in"] == 228 and last["pose"] == last["mask"] == 228.0
+    assert last["offset_in"] == 0 and last["pose"] == last["mask"] == 228.0
 
 
 def test_fit_runs_a_short_last_chunk_for_scail2(node_module):
     run(node_module, pose_frames=240, node=SCAIL2, last_chunk="fit")
     last = Calls.animate[-1]
-    assert last["length"] == 13 and last["pose_in"] == 241
+    assert last["length"] == 13 and last["pose_in"] == 13 and last["pose"] == 228.0  # driving frames 228-240
     assert last["pose_frames"] == last["mask_frames"] == 13
 
 

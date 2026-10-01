@@ -11,6 +11,7 @@ from .mask_repair import fix_replacement_mask, replacement_mask_rows
 
 class WanAnimateAdapter(AnimateAdapter):
     ANIMATE_NODE = "WanAnimateToVideo"
+    SEEKED_VIDEOS = ("character_mask",)
 
     def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         # The overlap is a widget here (continue_motion_max_frames): the core

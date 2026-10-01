@@ -1,6 +1,6 @@
 """What the pose and the mask checks share: the guard constants, the metrics rows of each group
-and of both, and of the SCAIL-2 guard, GuardFailed, the pose_data readers and the per-frame
-geometry both groups measure."""
+and of both, and of the SCAIL-2 guard, the reference records, GuardFailed, the pose_data readers
+and the per-frame geometry both groups measure."""
 from dataclasses import asdict
 from typing import Optional, TypedDict
 
@@ -129,6 +129,9 @@ SCAIL2_ROW = ("frame", "mask_area", "fragments", "latent_kept", "mask_loss", "ma
 # and its one record of the reference mask; `cropped` is data: core center-crops the reference
 # to the generation's aspect ratio whatever the guard says
 SCAIL2_REFERENCE = ("mode", "area", "fragments", "cropped", "iou_first_frame", "scale_first_frame", "flags")
+# The Mask Guard's record of the character on a connected reference image (reference.mask_reference),
+# the "reference" of its metrics and of the WanAnimate Preprocess Guard's
+MASK_REFERENCE = ("area", "cropped", "iou_first_frame", "scale_first_frame", "flags")
 
 # The rows above as the dicts the checks build: the same keys in the same order, which is the
 # order the metrics JSON lists them in (tests/pipelines/test_guard_rows.py holds each to its tuple).
@@ -201,6 +204,15 @@ class Scail2Reference(TypedDict):
     mode: Optional[str]
     area: float
     fragments: list[float]
+    cropped: float
+    iou_first_frame: Optional[float]
+    scale_first_frame: Optional[float]
+    flags: list[str]
+
+
+class MaskReference(TypedDict):
+    """The Mask Guard's measurements of the character on the reference image (one record per run)."""
+    area: float
     cropped: float
     iou_first_frame: Optional[float]
     scale_first_frame: Optional[float]
