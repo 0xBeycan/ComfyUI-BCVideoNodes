@@ -6,7 +6,9 @@ PyAV, which comes with ComfyUI. Load Video, Save Video and the Video Comparer
 play in the node: the pack's player, drawn on the node, with a play button, a
 seek bar and, when the clip has sound, a mute button. Nothing plays until
 asked, the clip loops, and the node keeps the size you give it. A press on
-the seek bar seeks and a drag that starts on it scrubs; the seek bar stops
+the seek bar pauses the clip and seeks, a drag that starts on it scrubs
+(the picture stays on screen while each seek lands), and the clip plays on
+from there on release when it was playing; the seek bar stops
 short of the node's bottom corners, which resize it. Labels are cut to the
 node's width.
 

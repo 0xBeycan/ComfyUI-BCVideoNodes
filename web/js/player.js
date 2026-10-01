@@ -5,11 +5,18 @@ import { api } from "../../../scripts/api.js";
 // never lags behind it. Used by the Save Video and Load Video previews and the Video Comparer.
 //
 // One hidden <video> per node. Nothing plays until asked: the play button at the left of the top
-// row or a click on the picture toggles playback, a press on the seek bar at the bottom seeks
-// there and scrubs while it is held, the clip loops, a speaker button mutes it when it has sound.
+// row or a click on the picture toggles playback, a press on the seek bar at the bottom pauses the
+// clip, seeks there and scrubs while it is held (the knob follows the pointer), and on release the
+// clip plays on if it was playing; the clip loops, a speaker button mutes it when it has sound.
 // The seek bar stops short of the node's bottom resize corners, and a drag that began anywhere
 // else never seeks. The picture is letterboxed inside the node; the node keeps whatever size the
 // user gives it, and every text drawn on it is cut to fit it.
+//
+// One seek is in flight at a time. Setting currentTime while the <video> seeks aborts that seek and
+// starts over from the previous keyframe, so a drag that seeks on every move would never land a
+// frame; a target that comes during a seek waits for it to land instead, and only the newest one
+// waits. A seeking <video> has no frame to draw (its readyState drops to HAVE_METADATA until the
+// seek lands), so the frame shown before the seek stays on screen until the new one is decoded.
 //
 // Two options for Load Video: `range` loops playback inside [start, end] seconds (the seek bar
 // then spans the range), and `step` samples the picture at that many frames per second: the frame
@@ -102,9 +109,12 @@ export class Player {
 		this.hits = [];
 		this.range = null; // [start, end] seconds, or null for the whole clip
 		this.step = null; // frames per second the picture is sampled at, or null for every frame
-		this.still = null; // the sampled picture while step is set
+		this.still = null; // the sampled picture while step is set, else the frame held during a seek
+		this.held = false; // the still holds the frame shown before the seek in flight
 		this.tick = -1;
-		this.scrubbing = false; // a press that began on the seek bar is held
+		this.scrub = null; // while a press that began on the seek bar is held: that bar's seek(x)
+		this.target = null; // the newest seek target, waiting for the seek in flight to land
+		this.resume = false; // the clip was playing at the press on the seek bar: it plays on after the scrub
 	}
 
 	dirty() {
@@ -124,7 +134,7 @@ export class Player {
 		v.loop = true;
 		v.muted = this.muted;
 		v.addEventListener("loadeddata", () => this.resample());
-		v.addEventListener("seeked", () => this.resample());
+		v.addEventListener("seeked", () => this.landed());
 		v.addEventListener("error", () => {
 			this.failed = true;
 			this.dirty();
@@ -142,7 +152,10 @@ export class Player {
 		this.url = null;
 		this.failed = false;
 		this.still = null;
+		this.held = false;
 		this.tick = -1;
+		this.target = null;
+		this.resume = false;
 	}
 
 	// The <video> once it has metadata, else null.
@@ -165,8 +178,7 @@ export class Player {
 		const same = range && this.range && range[0] === this.range[0] && range[1] === this.range[1];
 		if (same || (!range && !this.range)) return;
 		this.range = range;
-		const v = this.clip();
-		if (v && range) v.currentTime = range[0];
+		if (range) this.seek(range[0]);
 		this.resample();
 	}
 
@@ -187,20 +199,26 @@ export class Player {
 		this.dirty();
 	}
 
-	// Called on every paint: keeps playback inside the range and, with a step, takes the frame
-	// under the playhead into the still when the playhead enters a new tick.
+	// Called on every paint: keeps playback inside the range (not during a scrub, which may hold the
+	// playhead at the range's end) and, with a step, takes the frame under the playhead into the
+	// still when the playhead enters a new tick.
 	update() {
 		const v = this.clip();
 		if (!v) return;
 		const [start, end] = this.bounds();
-		if (this.range && end > start && (v.currentTime < start - 1e-3 || v.currentTime >= end)) {
-			v.currentTime = start;
+		if (this.range && !this.scrub && end > start && (v.currentTime < start - 1e-3 || v.currentTime >= end)) {
+			this.seek(start);
 			return;
 		}
 		if (!this.step || v.readyState < 2) return;
 		const tick = Math.floor((v.currentTime - start) * this.step + 1e-6);
 		if (tick === this.tick && this.still) return;
 		this.tick = tick;
+		this.grab(v);
+	}
+
+	// Copies the <video>'s current frame into the still.
+	grab(v) {
 		this.still ??= document.createElement("canvas");
 		if (this.still.width !== v.videoWidth || this.still.height !== v.videoHeight) {
 			this.still.width = v.videoWidth;
@@ -209,11 +227,13 @@ export class Player {
 		this.still.getContext("2d").drawImage(v, 0, 0);
 	}
 
-	// What to paint: the still with a step, else the <video> itself.
+	// What to paint: the still with a step (the last sampled frame, also while a seek is on its way);
+	// else the <video>, or during a seek the frame it showed before; null while there is no frame.
 	picture() {
 		const v = this.clip();
-		if (!v || v.readyState < 2) return null;
-		return this.step && this.still ? this.still : v;
+		if (!v) return null;
+		if (this.step) return this.still;
+		return v.readyState >= 2 ? v : this.held ? this.still : null;
 	}
 
 	// ---- controls ------------------------------------------------------------------------
@@ -225,7 +245,7 @@ export class Player {
 		const v = this.clip();
 		if (!v) return;
 		const [start, end] = this.bounds();
-		const t = Math.max(0, (v.currentTime || 0) - start);
+		const t = Math.max(0, this.time(v) - start);
 		const cy = y + TOP_H / 2;
 
 		ctx.fillStyle = "#ddd";
@@ -302,7 +322,7 @@ export class Player {
 		const [w, h] = this.node.size;
 		const [start, end] = this.bounds();
 		const d = end - start;
-		const t = Math.min(Math.max((v.currentTime || 0) - start, 0), d);
+		const t = Math.min(Math.max(this.time(v) - start, 0), d);
 		const top = h - BAR_H;
 		const cy = top + BAR_H / 2;
 		const corner = LiteGraph.LGraphNode.resizeHandleSize;
@@ -326,14 +346,21 @@ export class Player {
 		return this.hits.find((h) => pos[0] >= h.x && pos[0] <= h.x + h.w && pos[1] >= h.y && pos[1] <= h.y + h.h);
 	}
 
-	// A press on a control runs it, a press on the seek bar seeks there and starts a scrub that
-	// lasts until the button is released anywhere, a press on the picture (inPicture) toggles
-	// playback, like a video player. Returns whether the press was taken.
+	// A press on a control runs it, a press on the seek bar pauses the clip, seeks there and starts
+	// a scrub that lasts until the button is released anywhere (then the clip plays on if it was
+	// playing), a press on the picture (inPicture) toggles playback, like a video player. Returns
+	// whether the press was taken.
 	click(pos, inPicture) {
 		const h = this.hitAt(pos);
 		if (h?.seek) {
-			this.scrubbing = true;
-			window.addEventListener("pointerup", () => (this.scrubbing = false), { once: true, capture: true });
+			const v = this.clip();
+			this.resume ||= !!v && !v.paused;
+			this.stop();
+			this.scrub = h.seek;
+			window.addEventListener("pointerup", () => {
+				this.scrub = null;
+				this.proceed();
+			}, { once: true, capture: true });
 			h.seek(pos[0]);
 			return true;
 		}
@@ -348,12 +375,11 @@ export class Player {
 		return false;
 	}
 
-	// A move with the button held scrubs only during a scrub a press on the seek bar started: a
-	// drag that began elsewhere (a resize from a corner, a move of the node) never seeks.
+	// A move with the button held scrubs only during a scrub a press on the seek bar started, along
+	// that bar wherever the pointer is on the node: a drag that began elsewhere (a resize from a
+	// corner, a move of the node) never seeks.
 	drag(event, pos) {
-		if (!this.scrubbing || !(event.buttons & 1)) return;
-		const h = this.hitAt(pos);
-		if (h?.seek) h.seek(pos[0]);
+		if (this.scrub && event.buttons & 1) this.scrub(pos[0]);
 	}
 
 	// ---- playback --------------------------------------------------------------------------
@@ -362,6 +388,13 @@ export class Player {
 		const v = this.clip();
 		if (!v) return;
 		if (!v.paused) return this.stop();
+		this.resume = false;
+		this.play();
+	}
+
+	play() {
+		const v = this.clip();
+		if (!v) return;
 		v.muted = this.muted;
 		v.play().catch(() => {});
 		// Repaint on every frame while it plays.
@@ -380,10 +413,45 @@ export class Player {
 		this.dirty();
 	}
 
+	// Seeks to t, or, while a seek is in flight, makes t the target that goes next. The frame on
+	// screen is held in the still until the seek lands.
 	seek(t) {
 		const v = this.clip();
-		if (v) v.currentTime = Math.max(0, t);
+		if (!v) return;
+		t = Math.max(0, t);
+		if (v.seeking) this.target = t;
+		else if (t !== v.currentTime) {
+			this.held = !this.step && v.readyState >= 2;
+			if (this.held) this.grab(v);
+			v.currentTime = t;
+		}
 		this.dirty();
+	}
+
+	// A seek landed: the target that waited for it goes next; when none did, a scrub that was let go
+	// plays on.
+	landed() {
+		const t = this.target;
+		this.target = null;
+		this.held = false;
+		if (t != null) this.seek(t);
+		this.proceed();
+		this.resample();
+	}
+
+	// Plays the clip on after a scrub, once the seek bar is let go and the last seek has landed, if
+	// it was playing at the press.
+	proceed() {
+		const v = this.clip();
+		if (!this.resume || this.scrub || !v || v.seeking || this.target != null) return;
+		this.resume = false;
+		this.play();
+	}
+
+	// Where the playhead is going: the target that waits, else the <video>'s own time (during a seek,
+	// the seek's).
+	time(v) {
+		return this.target ?? v.currentTime;
 	}
 
 	toggleMute() {
