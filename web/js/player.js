@@ -5,9 +5,11 @@ import { api } from "../../../scripts/api.js";
 // never lags behind it. Used by the Save Video and Load Video previews and the Video Comparer.
 //
 // One hidden <video> per node. Nothing plays until asked: the play button at the left of the top
-// row or a click on the picture toggles playback, the seek bar at the bottom scrubs, the clip
-// loops, a speaker button mutes it when it has sound. The picture is letterboxed inside the
-// node; the node keeps whatever size the user gives it.
+// row or a click on the picture toggles playback, a press on the seek bar at the bottom seeks
+// there and scrubs while it is held, the clip loops, a speaker button mutes it when it has sound.
+// A drag that began anywhere else never seeks: the node's resize corner sits on the seek bar. The
+// picture is letterboxed inside the node; the node keeps whatever size the user gives it, and
+// every text drawn on it is cut to fit it.
 //
 // Two options for Load Video: `range` loops playback inside [start, end] seconds (the seek bar
 // then spans the range), and `step` samples the picture at that many frames per second: the frame
@@ -38,15 +40,28 @@ export function fitRect(w, h, x, y, bw, bh) {
 	return [x + (bw - w * scale) / 2, y + (bh - h * scale) / 2, w * scale, h * scale];
 }
 
-export function drawTag(ctx, text, x, y, align) {
+// `text` in ctx's current font, cut with an ellipsis to at most `maxWidth` pixels ("" when not
+// even the ellipsis fits).
+function fitText(ctx, text, maxWidth) {
+	if (ctx.measureText(text).width <= maxWidth) return text;
+	let n = text.length;
+	while (n > 0 && ctx.measureText(`${text.slice(0, n)}…`).width > maxWidth) n--;
+	return n > 0 ? `${text.slice(0, n)}…` : "";
+}
+
+// A label on a dark box, its box at most `maxWidth` wide: x is its left edge (align "left") or its
+// right edge (align "right").
+export function drawTag(ctx, text, x, y, align, maxWidth) {
 	ctx.font = TAG_FONT;
 	ctx.textBaseline = "top";
 	ctx.textAlign = align;
-	const w = ctx.measureText(text).width + 10;
+	const fitted = fitText(ctx, text, maxWidth - 10);
+	if (!fitted) return;
+	const w = ctx.measureText(fitted).width + 10;
 	ctx.fillStyle = "rgba(0,0,0,.6)";
 	ctx.fillRect(align === "left" ? x - 2 : x - w + 2, y - 2, w, 17);
 	ctx.fillStyle = "#fff";
-	ctx.fillText(text, align === "left" ? x + 3 : x - 3, y);
+	ctx.fillText(fitted, align === "left" ? x + 3 : x - 3, y);
 }
 
 export function drawMessage(ctx, text, [bx, by, bw, bh]) {
@@ -54,7 +69,7 @@ export function drawMessage(ctx, text, [bx, by, bw, bh]) {
 	ctx.font = "12px sans-serif";
 	ctx.textAlign = "center";
 	ctx.textBaseline = "middle";
-	ctx.fillText(text, bx + bw / 2, by + bh / 2);
+	ctx.fillText(fitText(ctx, text, bw - 8), bx + bw / 2, by + bh / 2);
 }
 
 // Never let a widget problem escape into the canvas or graph teardown: an exception in onRemoved
@@ -65,6 +80,14 @@ export function guard(fn) {
 	} catch (e) {
 		console.error("[BCVideoNodes] player:", e);
 	}
+}
+
+// Stops a <video> and frees its decoder and buffers.
+function release(v) {
+	if (!v) return;
+	v.pause();
+	v.removeAttribute("src");
+	v.load();
 }
 
 export class Player {
@@ -80,7 +103,7 @@ export class Player {
 		this.step = null; // frames per second the picture is sampled at, or null for every frame
 		this.still = null; // the sampled picture while step is set
 		this.tick = -1;
-		this.frameTimes = []; // media times of presented frames, to measure the frame rate
+		this.scrubbing = false; // a press that began on the seek bar is held
 	}
 
 	dirty() {
@@ -113,16 +136,12 @@ export class Player {
 	// "not available" instead of loading forever; its element is released either way.
 	unload() {
 		this.stop();
-		if (this.el) {
-			this.el.removeAttribute("src");
-			this.el.load();
-		}
+		release(this.el);
 		this.el = null;
 		this.url = null;
 		this.failed = false;
 		this.still = null;
 		this.tick = -1;
-		this.frameTimes = [];
 	}
 
 	// The <video> once it has metadata, else null.
@@ -196,30 +215,6 @@ export class Player {
 		return this.step && this.still ? this.still : v;
 	}
 
-	// The source's frame rate, measured from the frames the browser presents while it plays
-	// (null until a few have been seen). The browser does not expose it otherwise.
-	measureFrameRate() {
-		const v = this.el;
-		if (!v?.requestVideoFrameCallback || v.bcvMeasuring) return;
-		v.bcvMeasuring = true;
-		const seen = (_, meta) => {
-			if (v !== this.el) return;
-			this.frameTimes.push(meta.mediaTime);
-			if (this.frameTimes.length > 32) this.frameTimes.shift();
-			v.requestVideoFrameCallback(seen);
-		};
-		v.requestVideoFrameCallback(seen);
-	}
-
-	frameRate() {
-		const t = this.frameTimes;
-		const gaps = [];
-		for (let i = 1; i < t.length; i++) if (t[i] > t[i - 1]) gaps.push(t[i] - t[i - 1]);
-		if (gaps.length < 4) return null;
-		// the smallest gap is one frame; larger ones are frames the display skipped
-		return 1 / Math.min(...gaps);
-	}
-
 	// ---- controls ------------------------------------------------------------------------
 
 	// Top row: play / pause at the left, the time, the speaker when there is sound, a note at the
@@ -253,16 +248,19 @@ export class Player {
 		const time = `${t.toFixed(2)} / ${(end - start).toFixed(2)}`;
 		ctx.fillText(time, 34, cy);
 
+		// the note fits between the time (or the speaker) and the right edge
+		let used = 34 + ctx.measureText(time).width;
 		if (audio) {
-			const sx = 34 + ctx.measureText(time).width + 12;
+			const sx = used + 12;
 			this.drawSpeaker(ctx, sx, cy);
 			this.hits.push({ x: sx - 4, y: y - 2, w: 24, h: TOP_H + 2, action: () => this.toggleMute() });
+			used = sx + 16;
 		}
 		if (note) {
 			ctx.textAlign = "right";
 			ctx.fillStyle = "#e0b060";
 			ctx.font = "10px sans-serif";
-			ctx.fillText(note, width - 6, cy);
+			ctx.fillText(fitText(ctx, note, width - 6 - used - 8), width - 6, cy);
 		}
 	}
 
@@ -324,13 +322,19 @@ export class Player {
 		return this.hits.find((h) => pos[0] >= h.x && pos[0] <= h.x + h.w && pos[1] >= h.y && pos[1] <= h.y + h.h);
 	}
 
-	// A click on a control runs it; a click on the picture (inPicture) toggles playback, like a
-	// video player. Returns whether the click was taken.
+	// A press on a control runs it, a press on the seek bar seeks there and starts a scrub that
+	// lasts until the button is released anywhere, a press on the picture (inPicture) toggles
+	// playback, like a video player. Returns whether the press was taken.
 	click(pos, inPicture) {
 		const h = this.hitAt(pos);
+		if (h?.seek) {
+			this.scrubbing = true;
+			window.addEventListener("pointerup", () => (this.scrubbing = false), { once: true, capture: true });
+			h.seek(pos[0]);
+			return true;
+		}
 		if (h) {
-			if (h.seek) h.seek(pos[0]);
-			else h.action?.();
+			h.action?.();
 			return true;
 		}
 		if (inPicture && this.clip()) {
@@ -340,9 +344,10 @@ export class Player {
 		return false;
 	}
 
-	// Dragging with the button held scrubs when the pointer is on the seek bar.
+	// A move with the button held scrubs only during a scrub a press on the seek bar started: a
+	// drag that began elsewhere (the node's resize corner sits on the seek bar) never seeks.
 	drag(event, pos) {
-		if (!(event.buttons & 1)) return;
+		if (!this.scrubbing || !(event.buttons & 1)) return;
 		const h = this.hitAt(pos);
 		if (h?.seek) h.seek(pos[0]);
 	}

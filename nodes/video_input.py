@@ -1,7 +1,15 @@
-"""Load Video, Get Video Info, Load Reference Image and Conform Video."""
+"""Load Video, Get Video Info, Load Reference Image and Conform Video, and the server route Load
+Video's preview asks what the loader will load (PLAN_ROUTE)."""
+from functools import lru_cache, partial
 
+from ..libs import log
 from ..libs.video_info import COMFY_TYPES, VideoInfo
-from .common import VIDEO
+from .common import VIDEO, prompt_server
+from .unused_outputs import LINK_INPUTS, drop_unlinked_heavy
+
+# GET, with Load Video's widget values as the query (PLAN_PARAMS): web/js/load_video.js
+PLAN_ROUTE = "/bcvideonodes/load_video/plan"
+PLAN_PARAMS = ("video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count")
 
 
 def _input_files(kind):
@@ -34,28 +42,33 @@ class BCVLoadVideo:
                 "resolution": (sizes.RESOLUTIONS, {
                     "default": "720p",
                     "bcv_sizes": {name: model["sizes"] for name, model in sizes.MODELS.items()},
-                    "bcv_frames": {name: model["frames"] for name, model in sizes.MODELS.items()},
                     "tooltip": "The generation size by its short edge; the labels follow model. Wan: 480p (480x832), 720p (720x1280). SCAIL: 512p (512x896), 704p (704x1280). Portrait sizes; landscape swaps them. The video is centre-cropped to that aspect and resized with lanczos."}),
                 "orientation": (sizes.ORIENTATIONS, {"default": sizes.AUTO, "tooltip": "auto: portrait when the video is taller than wide, otherwise landscape (a square video is landscape). landscape / portrait: that orientation, reached by a centre crop."}),
                 "force_fps": ("STRING", {"default": "", "tooltip": "Empty: the video's own frame rate. A number above 0, at most the video's own rate: real frames kept or dropped on that rate's time grid (never blended or repeated; a rate above the video's is an error, one within 0.01% of it is the video's rate)."}),
                 "start_frame": ("INT", {"default": 1, "min": 1, "max": 2 ** 31 - 1, "step": 1, "tooltip": "The first frame loaded, counted from 1, after force_fps."}),
                 "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "AUDIO", "BCV_VIDEO_INFO")
     RETURN_NAMES = ("images", "audio", "video_info")
+    # dropped at return when nothing links it (nodes/unused_outputs.py): video_info counts the
+    # decoded frames, so the decode runs either way
+    HEAVY_OUTPUTS = ("images",)
     FUNCTION = "load"
     CATEGORY = VIDEO
     DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory. Colours follow the file's own colour tags. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
 
-    def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count):
+    def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, prompt_graph=None,
+             unique_id=None):
         import folder_paths
 
         from ..pipelines import video_input
 
         path = folder_paths.get_annotated_filepath(video)
-        return video_input.load_video(path, model, resolution, orientation, force_fps, start_frame, frame_count)
+        return drop_unlinked_heavy(type(self), video_input.load_video(path, model, resolution, orientation, force_fps,
+                                                                      start_frame, frame_count), prompt_graph, unique_id)
 
     @classmethod
     def IS_CHANGED(cls, video, **kwargs):
@@ -77,6 +90,81 @@ class BCVLoadVideo:
             except ValueError as error:
                 return str(error)
         return True
+
+
+def register_plan_route():
+    """Adds GET PLAN_ROUTE to ComfyUI's server and returns its handler; None outside ComfyUI,
+    where there is no route and Load Video's preview shows no frame count."""
+    server = prompt_server()
+    if server is None:
+        log.info("no ComfyUI server: Load Video's preview gets no frame count")
+        return None
+    server.routes.get(PLAN_ROUTE)(plan_route)
+    return plan_route
+
+
+async def plan_route(request):
+    """PLAN_ROUTE: the LoadPreview (pipelines/video_input.py) of the input file `video` with the
+    other widget values, as JSON. 400 for a missing parameter, a start_frame that is not a whole
+    number, or a `video` outside ComfyUI's input folder."""
+    import asyncio
+
+    from aiohttp import web
+
+    from ..pipelines import video_input
+
+    query = request.rel_url.query
+    missing = [name for name in PLAN_PARAMS if name not in query]
+    if missing:
+        return web.Response(status=400, text=f"missing {', '.join(missing)}")
+    try:
+        start_frame = int(query["start_frame"])
+    except ValueError:
+        return web.Response(status=400, text="start_frame is not a whole number")
+    path = _input_path(query["video"])
+    if path is None:
+        return web.Response(status=400, text="video must be a file of ComfyUI's input folder")
+    if error := _missing_file(query["video"], "video"):
+        return web.json_response(video_input.LoadPreview(source=None, info=None, available=None, error=error))
+    # the probe reads the whole container: off the event loop
+    answer = await asyncio.get_running_loop().run_in_executor(None, partial(
+        video_input.preview, path, query["model"], query["resolution"], query["orientation"], query["force_fps"],
+        start_frame, query["frame_count"], probe=_probe))
+    return web.json_response(answer)
+
+
+def _input_path(name):
+    """The path Load Video loads `name` from, or None when `name` leaves ComfyUI's input folder:
+    another folder's annotation, an absolute path, a `..` (refused as core's /view refuses them),
+    or a path that resolves outside the folder."""
+    import os
+
+    import folder_paths
+
+    bare, folder = folder_paths.annotated_filepath(name)
+    if not bare or folder not in (None, folder_paths.get_input_directory()):
+        return None
+    if bare[0] in "/\\" or os.path.isabs(bare) or ".." in bare:
+        return None
+    try:
+        return folder_paths.get_annotated_filepath(name)  # refuses a path that resolves outside the folder
+    except ValueError:
+        return None
+
+
+def _probe(path):
+    """video_decode.probe of `path`, kept while the file's size and modification time stay."""
+    import os
+
+    stat = os.stat(path)
+    return dict(_probe_file(path, stat.st_mtime_ns, stat.st_size))
+
+
+@lru_cache(maxsize=16)
+def _probe_file(path, mtime, size):
+    from ..libs import video_decode
+
+    return video_decode.probe(path)
 
 
 class BCVGetVideoInfo:

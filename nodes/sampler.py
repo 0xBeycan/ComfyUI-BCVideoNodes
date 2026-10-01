@@ -11,6 +11,7 @@ WanAnimate2ToVideo and BCVSCAIL2LongVideoSampler wraps WanSCAILToVideo
 from ..libs.chunking import FIT, FULL, LAST_CHUNK
 from ..libs.sigmas import WAN_BETA, WAN_DPMPP
 from ..libs.video import LAST_FRAME, TAIL_PADDING
+from .unused_outputs import LINK_INPUTS, drop_unlinked_heavy
 
 
 def _combo_default(options, preferred):
@@ -46,6 +47,9 @@ class _LongVideoSampler:
 
     RETURN_TYPES = ("IMAGE", "INT", "STRING")
     RETURN_NAMES = ("images", "frame_count", "chunk_plan")
+    # dropped at return when nothing links it (nodes/unused_outputs.py): frame_count is counted
+    # on the generated frames, so the generation runs either way
+    HEAVY_OUTPUTS = ("images",)
     FUNCTION = "generate"
     CATEGORY = "BCVideoNodes/Wan/Animate"
 
@@ -94,6 +98,7 @@ class _LongVideoSampler:
                 # the last widget: saved workflows store widget values by position
                 "color_anchor_strength": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "0 = off. Above 0, every chunk after the first gets one colour transform (per-channel Lab mean and std) that maps its regenerated overlap frames onto the frames it was seeded with, applied to the whole chunk before it is trimmed and carried, so the colours stay anchored to the first chunk; the value blends it in (1 = the full transform). In replacement mode (Wan Animate with background_video and character_mask, SCAIL-2 with replacement_mode) only the character is measured and corrected, since the background comes from the source every chunk."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     def generate(
@@ -120,14 +125,16 @@ class _LongVideoSampler:
         tail_padding,
         sigmas_override=None,
         color_anchor_strength=0.0,
+        prompt_graph=None,
+        unique_id=None,
         **animate_inputs,
     ):
         from ..pipelines import long_video
 
-        return long_video.generate(self.ANIMATE_NODE, type(self).__name__, model, positive, negative, vae, reference_image,
-                                   pose_video, width, height, frames_per_chunk, total_frames, shift, sampler_name, scheduler,
-                                   steps, denoise, cfg, seed, seed_mode, last_chunk, tail_padding, sigmas_override,
-                                   color_anchor_strength, animate_inputs)
+        return drop_unlinked_heavy(type(self), long_video.generate(
+            self.ANIMATE_NODE, type(self).__name__, model, positive, negative, vae, reference_image, pose_video, width,
+            height, frames_per_chunk, total_frames, shift, sampler_name, scheduler, steps, denoise, cfg, seed, seed_mode,
+            last_chunk, tail_padding, sigmas_override, color_anchor_strength, animate_inputs), prompt_graph, unique_id)
 
 
 class BCVWanAnimateLongVideoSampler(_LongVideoSampler):

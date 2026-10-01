@@ -33,10 +33,13 @@ Four layers, `nodes -> pipelines -> models -> libs`:
 
 ```
 __init__.py          registration only: the 22 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
-                     WEB_DIRECTORY = "./web"
-nodes/               common (the PREPROCESS and VIDEO categories, _config, _ConfigNode), sampler, pose (Pose
-                     Detection, Pose Config, Sapiens2 Pose), sam3_1_multiplex (and track_reference: the
-                     character on a reference image), face, guard,
+                     WEB_DIRECTORY = "./web", the link stamp of the unused heavy outputs (register_link_stamp),
+                     Load Video's plan route (register_plan_route)
+nodes/               common (the PREPROCESS and VIDEO categories, _config, _ConfigNode, prompt_server), unused_outputs (the
+                     unused-heavy-outputs helper: LinkStamp, register_link_stamp, heavy_wanted, wants,
+                     drop_unwanted, drop_unlinked_heavy), sampler, pose (Pose Detection, Pose Config,
+                     Sapiens2 Pose), sam3_1_multiplex (and track_reference: the character on a reference
+                     image), face, guard,
                      preprocess (the two WanAnimate wrappers, composed of the nodes above),
                      scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard),
                      video_input (Load Video, Get Video Info, Load Reference Image, Conform Video),
@@ -60,6 +63,7 @@ libs/                log, bbox, keypoints, mask, chunking, sigmas, video (tail p
                      Video Comparer's side by side), pose_utils/ (vendored, with its LICENSE)
 web/js/              player.js (the player the previews share), load_video.js, save_video.js, video_comparer.js
 scripts/             offline model conversion and upload (ComfyUI-free)
+web/js/              unused_outputs.js (the toast when the unused-outputs saving is off for a run)
 tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test
 ```
 
@@ -102,6 +106,37 @@ and patch underscore names through the `Names` tables.
 | model-independent code | `libs/` |
 | a config dataclass | next to its pipeline; the node generates its widgets from it (`libs/config_widgets.py`) |
 | a node's frontend: its preview, widgets that follow another widget | `web/js/<node>.js`, on `web/js/player.js` |
+
+## Unused heavy outputs
+
+A whole-clip IMAGE or MASK output that no node consumes is not kept in ComfyUI's output cache.
+ComfyUI's cache key holds a node's own inputs and its ancestors only, so an on_prompt handler
+(`LinkStamp` in `nodes/unused_outputs.py`, registered by the root `__init__`) writes the linked
+heavy outputs of each heavy node into its inputs as `bcv_linked_heavy` before validation; every
+input key is part of the cache key, and an undeclared one never reaches the function. No stamp (no
+server, a direct executor call, a node a wrapper calls): every output full. A link the stamp
+missed: full, with a warning. Another pack's on_prompt handler registered after ours turns the
+saving off for that prompt, with a console line and a toast; the owner chose that over reordering
+the handlers.
+
+- A whole-clip IMAGE or MASK output the node makes, among two or more outputs (or on an output
+  node), is a heavy output: list it in `HEAVY_OUTPUTS` (names from `RETURN_NAMES`), add
+  `"hidden": dict(LINK_INPUTS)` to `INPUT_TYPES` (`prompt_graph`, `unique_id`; not `prompt`, which
+  the preprocess wrappers' SAM widget is called), read `wanted = heavy_wanted(type(self),
+  prompt_graph, unique_id)` and return through `drop_unwanted(type(self), outputs, wanted)`.
+- When the output is a step of its own that no other output reads, pass `wants(wanted, name)` down
+  so the step does not run (the pose images, the face crops, the driving colored mask, the driving
+  video on black, the WanAnimate SAM track); when another output needs the step (SCAIL-2
+  Preprocess `mask`, Load Video `images`, the samplers' `images`), it is only dropped at return.
+- A pass-through (the input tensor itself, the guards' masks), a one-frame output (a reference
+  mask, a timeline) and the output of a single-output node that is not an output node (it runs
+  only when that output is linked) are not heavy.
+- A wrapper passes its own `wanted` to the nodes it calls, as the keyword-only `wanted=` of their
+  methods (its outputs carry their names); ComfyUI never passes it. A wrapper also asks for none of
+  an inner output it discards (SCAIL-2 Preprocess: `wanted=set()` to Pose Detection, so no pose
+  images are drawn).
+- Tests: `tests/nodes/test_unused_outputs.py` (its `HEAVY` table, the dropped output empty with the
+  full one's dtype and trailing shape, the linked ones equal, the skipped step not run).
 
 ## How to add a model
 
@@ -204,7 +239,7 @@ and patch underscore names through the `Names` tables.
   reproduce its bugs. Take the logic only: no import of, dependency on or reference to the
   original.
 - Precision is decided per tensor, by measurement, never globally.
-- Unused heavy outputs are not kept (the mechanism comes in a later change).
+- Unused heavy outputs are not kept: see Unused heavy outputs above.
 - A node never resizes itself to its content; previews and widgets scale to the node.
 - Values that can differ between uses are widgets, not constants.
 
@@ -257,6 +292,14 @@ and patch underscore names through the `Names` tables.
   PyAV into the test's tmp dir (lossless FFV1 with PCM audio for the loader, so a decoded pixel is
   the pixel written; colour patches on a gradient that shifts a pixel per frame, for the
   encoder). No test reads a real clip.
+- `tests/nodes/test_unused_outputs_runtime.py` runs ComfyUI's PromptServer, validate_prompt and
+  PromptExecutor in a process of its own (`tests/unused_outputs_runtime.py`): under `python -m
+  pytest` the repo root is on sys.path and the pack's `nodes/` hides ComfyUI's `nodes.py`, which
+  the executor imports. The pack is bound there from its `__init__` after the server exists, as
+  ComfyUI loads it, so its root registers the link stamp.
+
+- `tests/nodes/test_video_input_route.py` states Load Video's plan route: its answer equals what
+  `load_video` loads and raises, and the file stays inside the input folder.
 
 ## Contracts at the boundary
 
@@ -267,10 +310,15 @@ and patch underscore names through the `Names` tables.
 - BCV_VIDEO_INFO is a plain dict at runtime too: `libs/video_info.VideoInfo` is its annotation
   and fixes its key order, which is Get Video Info's output order.
 - What the frontend reads from the node definitions: Load Video's `resolution` input carries
-  `bcv_sizes` (model -> label -> [width, height], portrait) and `bcv_frames` (model -> the n of
-  its n*k + 1 frame rule), from `libs/video_sizes.MODELS`, so the table has no second copy in JS;
+  `bcv_sizes` (model -> label -> [width, height], portrait), from `libs/video_sizes.MODELS`, so
+  the table has no second copy in JS;
   Save Video's `codec` input carries `bcv_codecs` (codec -> the values of its crf, preset and
   pix_fmt, `libs/video_encode.widget_values`).
+- Load Video's plan route, `GET /bcvideonodes/load_video/plan` (`nodes/video_input.py`): the seven
+  widget values in, `pipelines/video_input.LoadPreview` out ({source {fps, frames, width,
+  height, start, audio}, info (VideoInfo, what the loader would output), available, error (the
+  loader's own message or null)}). It answers from the loader's own functions, so the preview
+  and the loader cannot drift; the file is resolved only inside ComfyUI's input folder.
 - The codec names (`h264-mp4`, `h265-mp4`, `av1-webm`, `vp9-webm`) are stored in saved
   workflows: add codecs, never rename or remove one.
 - The ui payload the players read, `bcv_video` (`UI_KEY` in `nodes/video_output.py`): a list of
@@ -287,6 +335,10 @@ and patch underscore names through the `Names` tables.
   (`models/common/checkpoint.py`); and `LOGITS_SINK` in `pipelines/sam3_1_multiplex/track.py`,
   where the A/B dump node installs its sink. The A/B test scripts and the A/B dump node are both
   outside the repo.
+- Locked for the unused heavy outputs: the stamp key `bcv_linked_heavy` (part of every heavy node's
+  cache key), the `bcvideonodes.unused_outputs` event `web/js/unused_outputs.js` listens to, and the
+  `bc_link_stamp` marker on the stamping handler, which ComfyUI-BCNodes' handler reads to leave ours
+  out of "another pack" (and ours reads on its).
 
 ## Closed decisions
 

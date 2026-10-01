@@ -7,8 +7,9 @@ from .nodes.guard import BCVMaskGuard, BCVPoseGuard
 from .nodes.preprocess import BCVWanAnimatePreprocess, BCVWanAnimatePreprocessGuard
 from .nodes.scail2 import BCVSCAIL2ColoredMask, BCVSCAIL2Preprocess, BCVSCAIL2PreprocessGuard
 from .nodes.pose import BCVSapiens2Pose
-from .nodes.video_input import BCVConformVideo, BCVGetVideoInfo, BCVLoadReferenceImage, BCVLoadVideo
+from .nodes.video_input import BCVConformVideo, BCVGetVideoInfo, BCVLoadReferenceImage, BCVLoadVideo, register_plan_route
 from .nodes.video_output import BCVSaveVideo, BCVVideoComparer
+from .nodes.unused_outputs import register_link_stamp
 
 NODE_CLASS_MAPPINGS = {
     "BCVWanAnimateLongVideoSampler": BCVWanAnimateLongVideoSampler,
@@ -59,6 +60,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BCVSaveVideo": "Save Video",
     "BCVVideoComparer": "Video Comparer",
 }
+
+# writes the link state of the heavy outputs into each prompt (nodes/unused_outputs.py)
+register_link_stamp(NODE_CLASS_MAPPINGS)
+# what Load Video will load, for its preview (nodes/video_input.py)
+register_plan_route()
 
 # the frontend: the video player of Save Video, Video Comparer and Load Video
 WEB_DIRECTORY = "./web"

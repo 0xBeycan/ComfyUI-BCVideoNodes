@@ -5,6 +5,8 @@ Video (a clip fitted to the nearest platform size).
 
 The full-resolution clip never exists: one source frame is decoded at a time, and the batch is
 allocated once, at its final frame count."""
+from typing import Optional, TypedDict
+
 import torch
 
 from ..libs import log, resize, video_decode
@@ -64,54 +66,91 @@ def loaded_frames(kept, start_frame, frame_count, step, force_fps=None):
     return chosen[:(len(chosen) - 1) // step * step + 1]
 
 
+def kept_rate(rate, fps):
+    """The rate Load Video keeps frames at for a force_fps of `rate` (parse_force_fps's) on a video
+    of `fps`: None (every frame) when `rate` is None or within FORCE_FPS_TOLERANCE of `fps`, else
+    `rate`. Raises ValueError, saying what to set, for a rate above `fps`."""
+    if rate is not None and abs(rate - fps) <= fps * FORCE_FPS_TOLERANCE:
+        # the video's own rate, as typed (29.97 for 30000/1001): every frame, not a grid a hair
+        # slower that drops frame 1
+        return None
+    if rate is not None and rate > fps:
+        # the loader keeps or drops real frames, it never repeats one to raise the rate: a repeat
+        # fakes the frame rate, and a typo such as 300 would multiply the batch
+        raise ValueError(f"force_fps {rate:g} is above the video's frame rate {fps:.6g}: the loader only "
+                         f"lowers the frame rate (it keeps or drops real frames, never repeats them). Leave force_fps "
+                         f"empty or set it to {fps:.6g} or less.")
+    return rate
+
+
+def plan(path, model, resolution, orientation, force_fps, frame_count, probe=None):
+    """Load Video's widgets checked against the video at `path`, before a frame is loaded:
+    {"source": the probe (video_decode.probe's dict), "force_fps": the rate typed or None, "rate":
+    the rate frames are kept at (kept_rate's), "count": frame_count or None, "orientation": portrait
+    or landscape, "width", "height": the loaded size}. Raises ValueError, saying what to change, in
+    the order load_video meets them: the widgets, then the file. `probe` reads the file
+    (video_decode.probe when None)."""
+    size = sizes.model_size(model, resolution)
+    typed = parse_force_fps(force_fps)
+    count = parse_frame_count(frame_count)
+    if orientation not in sizes.ORIENTATIONS:
+        raise ValueError(f"orientation {orientation!r} is not one of {', '.join(sizes.ORIENTATIONS)}.")
+    source = (probe or video_decode.probe)(path)
+    rate = kept_rate(typed, source["fps"])
+    turned = sizes.orientation_of(source["width"], source["height"]) if orientation == sizes.AUTO else orientation
+    width, height = sizes.oriented(size, turned)
+    return {"source": source, "force_fps": typed, "rate": rate, "count": count, "orientation": turned,
+            "width": width, "height": height}
+
+
+def frame_indices(source, rate, start_frame, count, model):
+    """The source indices Load Video loads from a video probed as `source`: the frames kept at
+    `rate`, from `start_frame`, `count` of them (None: all the rest), cut to the model's 4n+1
+    (loaded_frames, which raises for a range past the frames)."""
+    kept = video_decode.select_frames(source["fps"], source["frames"], rate)
+    return loaded_frames(kept, start_frame, count, sizes.MODELS[model]["frames"], rate)
+
+
+def video_info(model, resolution, planned, frames):
+    """The VideoInfo of `frames` frames loaded as `planned` (plan's) says."""
+    source = planned["source"]
+    loaded_fps = planned["rate"] if planned["rate"] is not None else source["fps"]
+    frame_time = 1 / loaded_fps
+    return VideoInfo(model=model, resolution=resolution, orientation=planned["orientation"],
+                     source_fps=source["fps"], source_frame_count=source["frames"],
+                     source_duration=source["frames"] / source["fps"],
+                     source_width=source["width"], source_height=source["height"],
+                     loaded_fps=loaded_fps, loaded_frame_count=frames, loaded_duration=frames * frame_time,
+                     loaded_width=planned["width"], loaded_height=planned["height"])
+
+
 def load_video(path, model, resolution, orientation, force_fps, start_frame, frame_count):
     """(IMAGE [N, H, W, 3] float32, AUDIO or None, VideoInfo) of the video file at `path`, as Load
     Video's widgets say. N is fixed before the batch is allocated: the container's packets give the
     frame count; should the decoder disagree, the load runs once more with the decoder's count."""
-    size = sizes.model_size(model, resolution)
-    rate = parse_force_fps(force_fps)
-    count = parse_frame_count(frame_count)
-    if orientation not in sizes.ORIENTATIONS:
-        raise ValueError(f"orientation {orientation!r} is not one of {', '.join(sizes.ORIENTATIONS)}.")
-    source = video_decode.probe(path)
-    if rate is not None and abs(rate - source["fps"]) <= source["fps"] * FORCE_FPS_TOLERANCE:
-        # the video's own rate, as typed (29.97 for 30000/1001): every frame, not a grid a hair
-        # slower that drops frame 1
-        log.info(f"force_fps {rate:g} is the video's frame rate ({source['fps']:.6g}): every frame kept")
-        rate = None
-    elif rate is not None and rate > source["fps"]:
-        # the loader keeps or drops real frames, it never repeats one to raise the rate: a repeat
-        # fakes the frame rate, and a typo such as 300 would multiply the batch
-        raise ValueError(f"force_fps {rate:g} is above the video's frame rate {source['fps']:.6g}: the loader only "
-                         f"lowers the frame rate (it keeps or drops real frames, never repeats them). Leave force_fps "
-                         f"empty or set it to {source['fps']:.6g} or less.")
-    turned = sizes.orientation_of(source["width"], source["height"]) if orientation == sizes.AUTO else orientation
-    width, height = sizes.oriented(size, turned)
+    planned = plan(path, model, resolution, orientation, force_fps, frame_count)
+    source, rate, width, height = planned["source"], planned["rate"], planned["width"], planned["height"]
+    if planned["force_fps"] is not None and rate is None:
+        log.info(f"force_fps {planned['force_fps']:g} is the video's frame rate ({source['fps']:.6g}): every frame kept")
     result = {}
-    with log.step(f"loading {model} {resolution} {turned} ({width}x{height}) from a "
+    with log.step(f"loading {model} {resolution} {planned['orientation']} ({width}x{height}) from a "
                   f"{source['width']}x{source['height']} video", result):
         try:
-            loaded = _decode(path, source, width, height, rate, start_frame, count, model)
+            loaded = _decode(path, source, width, height, rate, start_frame, planned["count"], model)
         except video_decode.FrameCountChanged as changed:
             log.warning(f"the container promised {source['frames']} frames, the decoder gave {changed.frames}; "
                         f"loading again with {changed.frames}")
             source["frames"] = changed.frames
             loaded = None
         if loaded is None:  # outside the except block: its traceback would keep the first batch alive
-            loaded = _decode(path, source, width, height, rate, start_frame, count, model)
+            loaded = _decode(path, source, width, height, rate, start_frame, planned["count"], model)
         images, indices = loaded
-        loaded_fps = rate if rate is not None else source["fps"]
-        frame_time = 1 / loaded_fps
+        info = video_info(model, resolution, planned, len(indices))
+        frame_time = 1 / info["loaded_fps"]
         audio = video_decode.read_audio(path, (start_frame - 1) * frame_time, len(indices) * frame_time,
                                         origin=source["start"])
         result["frames"] = len(indices)
         result["audio"] = "none" if audio is None else f"{audio['waveform'].shape[-1]} samples"
-    info = VideoInfo(model=model, resolution=resolution, orientation=turned,
-                     source_fps=source["fps"], source_frame_count=source["frames"],
-                     source_duration=source["frames"] / source["fps"],
-                     source_width=source["width"], source_height=source["height"],
-                     loaded_fps=loaded_fps, loaded_frame_count=len(indices),
-                     loaded_duration=len(indices) * frame_time, loaded_width=width, loaded_height=height)
     return images, audio, info
 
 
@@ -120,8 +159,7 @@ def _decode(path, source, width, height, rate, start_frame, count, model):
     batch allocated at its final size."""
     from comfy.utils import ProgressBar
 
-    kept = video_decode.select_frames(source["fps"], source["frames"], rate)
-    indices = loaded_frames(kept, start_frame, count, sizes.MODELS[model]["frames"], rate)
+    indices = frame_indices(source, rate, start_frame, count, model)
     images = torch.empty((len(indices), height, width, 3), dtype=torch.float32)
     bar = ProgressBar(len(indices))
     for pixels, positions in video_decode.kept_frames(path, indices, source["frames"], to_end=count is None):
@@ -130,6 +168,48 @@ def _decode(path, source, width, height, rate, start_frame, count, model):
             images[position].copy_(images[positions[0]])
         bar.update_absolute(positions[-1] + 1, len(indices))
     return images, indices
+
+
+class LoadPreview(TypedDict):
+    """What Load Video's preview shows, from the file's header and packets (no frame is loaded):
+    the probe of the file (None when it cannot be read), the video_info the loader outputs (None on
+    an error), the frames from start_frame on at the kept rate (what an empty frame_count stands
+    for, before the cut to 4n+1; None when force_fps or start_frame is wrong) and the error the
+    loader raises, word for word (None when it loads)."""
+    source: Optional[dict]
+    info: Optional[VideoInfo]
+    available: Optional[int]
+    error: Optional[str]
+
+
+def preview(path, model, resolution, orientation, force_fps, start_frame, frame_count, probe=None):
+    """The LoadPreview of Load Video's widget values on the video at `path`, from the loader's own
+    checks and frame selection. Its counts are the container's: should the decoder disagree when
+    the video loads, the loader goes by the decoder's (load_video). `probe` as plan's."""
+    from functools import lru_cache
+
+    from av.error import FFmpegError
+
+    probe = lru_cache(maxsize=1)(probe or video_decode.probe)
+    answer = LoadPreview(source=None, info=None, available=None, error=None)
+    try:
+        planned = plan(path, model, resolution, orientation, force_fps, frame_count, probe)
+        indices = frame_indices(planned["source"], planned["rate"], start_frame, planned["count"], model)
+        answer["info"] = video_info(model, resolution, planned, len(indices))
+    except (ValueError, FFmpegError) as error:
+        answer["error"] = str(error)
+    # what the file and force_fps alone give, whatever else is wrong: an error met here is one
+    # plan or frame_indices raises too, so "error" above already names it or one met before it
+    try:
+        source = probe(path)
+        answer["source"] = dict(source)
+        kept = video_decode.select_frames(source["fps"], source["frames"],
+                                          kept_rate(parse_force_fps(force_fps), source["fps"]))
+        if 1 <= start_frame <= len(kept):
+            answer["available"] = len(kept) - start_frame + 1
+    except (ValueError, FFmpegError):
+        pass
+    return answer
 
 
 def load_reference_image(path, width, height):

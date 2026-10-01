@@ -30,9 +30,11 @@ def _frames(mask):
     return mask.unsqueeze(0) if mask.ndim == 2 else mask
 
 
-def colored_masks(driving_mask, replacement_mode, reference_mask=None):
+def colored_masks(driving_mask, replacement_mode, reference_mask=None, render_driving=True):
     """(pose_video_mask [T, H, W, 3], reference_image_mask [N, H, W, 3]) for WanSCAILToVideo from
     the person's driving MASK [T, H, W] and reference MASK [N, H, W], both on above 0.5.
+    `render_driving` False: pose_video_mask is not rendered, [0, H, W, 3]; the reference mask does
+    not read it.
 
     Without a reference mask, or with one that marks no pixel, the reference mask is the
     background alone, as core renders it: in animation mode that is logged (the mode can collapse
@@ -40,7 +42,7 @@ def colored_masks(driving_mask, replacement_mode, reference_mask=None):
     black out the whole reference."""
     driving_background, reference_background = backgrounds(replacement_mode)
     driving = _frames(driving_mask)
-    pose_video_mask = render_identity(driving, PALETTE[0], driving_background, MASK_THRESHOLD)
+    pose_video_mask = render_identity(driving if render_driving else driving[:0], PALETTE[0], driving_background, MASK_THRESHOLD)
     reference = None if reference_mask is None else _frames(reference_mask)
     if reference is None or not bool((reference > MASK_THRESHOLD).any()):
         what = "no reference_mask is connected" if reference is None else "reference_mask marks no pixel"

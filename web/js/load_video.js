@@ -2,21 +2,32 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 import { PlayerWidget, drawMessage, drawTag, fitRect, guard, installPlayer } from "./player.js";
 
-// Load Video: the resolution labels of the chosen model, the upload of a video into input/, and
-// the preview of the source file as the loader will take it. All in the browser, from the file
-// itself: no server work.
+// Load Video: the resolution labels of the chosen model, the upload of a video into input/, the
+// preview of the source file as the loader will take it, and what an empty force_fps or
+// frame_count stands for.
 //
-// resolution offers the labels of the chosen model; the sizes come with the node definition (the
-// resolution input's "bcv_sizes": model -> label -> [width, height], portrait; and "bcv_frames":
-// model -> n of its n*k + 1 frame rule).
+// resolution offers the labels of the chosen model; the labels come with the node definition (the
+// resolution input's "bcv_sizes": model -> label -> [width, height], portrait).
+//
+// What the loader will load comes from the server (PLAN_ROUTE, nodes/video_input.py), which
+// answers from the loader's own checks and frame selection without loading a frame: the loaded
+// size and frame count, the source's frame rate, the frames an empty frame_count stands for, and
+// the loader's error, word for word. The node asks when the file or a widget changes (after
+// ASK_DELAY of quiet); the label and the error are shown only for an answer to the current
+// values, so the preview never shows a count the loader would not load. Without an answer (no
+// route, a failed request) there is no label.
 //
 // The preview plays the source file. With force_fps the picture is sampled at that rate (the frame
-// under the playhead at each tick); playback loops over start_frame / frame_count; the part the
+// under the playhead at each tick); playback loops over the loaded frames' time span; the part the
 // crop to the model's size cuts away is dimmed. The browser's frame at a tick can differ by one
-// from the loader's. Without force_fps the source's frame rate is needed to place start_frame and
-// frame_count, and the browser only tells it while the clip plays: until then the whole clip loops.
+// from the loader's.
 
 const NODE = "BCVLoadVideo";
+const PLAN_ROUTE = "/bcvideonodes/load_video/plan";
+// the widgets the route is asked with: Load Video's inputs, in order
+const PLAN_PARAMS = ["video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count"];
+// ms without a widget change before the route is asked
+const ASK_DELAY = 120;
 
 function widget(node, name) {
 	return node.widgets?.find((w) => w.name === name);
@@ -75,6 +86,37 @@ function chooseFile(node) {
 	input.click();
 }
 
+// ---- placeholders --------------------------------------------------------------------------
+
+// An empty force_fps or frame_count shows, greyed, what empty stands for. The text sits in the
+// widget's options.placeholder, never in its value, which stays "" (that is what the prompt and
+// the saved workflow get). The Vue-nodes renderer binds a widget's options to its <input>, so it
+// shows the text as the input's own placeholder. On the classic canvas a text widget draws
+// `_displayValue` in `text_color`: while the value is empty, those give the placeholder in the
+// theme's disabled text colour, so the frontend's own layout places and cuts it like a value.
+
+function protoGetter(object, name) {
+	for (let p = Object.getPrototypeOf(object); p; p = Object.getPrototypeOf(p)) {
+		const getter = Object.getOwnPropertyDescriptor(p, name)?.get;
+		if (getter) return getter;
+	}
+	return null;
+}
+
+function installPlaceholder(w) {
+	const value = w && protoGetter(w, "_displayValue");
+	const color = w && protoGetter(w, "text_color");
+	if (!value || !color) return; // another canvas widget: the Vue renderer still shows the placeholder
+	const shown = () => !w.computedDisabled && String(w.value ?? "").trim() === "" && !!w.options?.placeholder;
+	Object.defineProperty(w, "_displayValue", { configurable: true, get: () => (shown() ? String(w.options.placeholder) : value.call(w)) });
+	Object.defineProperty(w, "text_color", { configurable: true, get: () => (shown() ? w.disabledTextColor : color.call(w)) });
+}
+
+function setPlaceholder(w, text) {
+	const placeholder = text == null ? undefined : String(text);
+	if (w?.options && w.options.placeholder !== placeholder) w.options.placeholder = placeholder;
+}
+
 // ---- preview -------------------------------------------------------------------------------
 
 function sourceUrl(value) {
@@ -93,64 +135,107 @@ function cropBox(width, height, tw, th) {
 	return [Math.floor((width - w) / 2), Math.floor((height - h) / 2), w, h];
 }
 
-// "" -> null; else a number, or NaN when it is not one.
-function parseOptional(text) {
-	const t = String(text ?? "").trim();
-	return t === "" ? null : Number(t);
+function rate(fps) {
+	return String(+fps.toFixed(3));
+}
+
+// `text` in ctx's current font, broken into lines of at most `width` pixels at the spaces.
+function wrap(ctx, text, width) {
+	const lines = [];
+	let line = "";
+	for (const word of text.split(/\s+/)) {
+		const next = line ? `${line} ${word}` : word;
+		if (line && ctx.measureText(next).width > width) {
+			lines.push(line);
+			line = word;
+		} else line = next;
+	}
+	if (line) lines.push(line);
+	return lines;
+}
+
+// The loader's error over the top of the picture box, wrapped to its width, cut to its height.
+function drawError(ctx, text, [bx, by, bw, bh]) {
+	const lineH = 15;
+	ctx.save();
+	ctx.beginPath();
+	ctx.rect(bx, by, bw, bh);
+	ctx.clip();
+	ctx.font = "12px sans-serif";
+	const lines = wrap(ctx, text, bw - 24).slice(0, Math.max(1, Math.floor((bh - 22) / lineH)));
+	ctx.fillStyle = "rgba(0,0,0,.75)";
+	ctx.fillRect(bx + 6, by + 6, bw - 12, lines.length * lineH + 10);
+	ctx.fillStyle = "#e0b060";
+	ctx.textAlign = "left";
+	ctx.textBaseline = "top";
+	lines.forEach((line, i) => ctx.fillText(line, bx + 12, by + 11 + i * lineH));
+	ctx.restore();
 }
 
 class SourceWidget extends PlayerWidget {
-	constructor(node, sizes, frames) {
+	constructor(node) {
 		super(node, "preview");
-		this.sizes = sizes;
-		this.frames = frames;
-		this.label = "";
-		this.error = "";
+		this.asked = null; // the query of the widget values last asked about ("" without a file)
+		this.timer = null;
+		this.answer = null; // the route's answer to `answered`, or null
+		this.answered = null;
 	}
 
-	sync() {
-		const p = this.player;
-		p.load(sourceUrl(widget(this.node, "video")?.value));
-		p.measureFrameRate();
-		const forceFps = parseOptional(widget(this.node, "force_fps")?.value);
-		const startFrame = widget(this.node, "start_frame")?.value ?? 1;
-		const frameCount = parseOptional(widget(this.node, "frame_count")?.value);
-		this.error = "";
-		if (forceFps !== null && !(forceFps > 0)) this.error = "force_fps: empty or a number > 0";
-		else if (frameCount !== null && !(Number.isInteger(frameCount) && frameCount >= 1)) this.error = "frame_count: empty or a whole number >= 1";
-		const fps = this.error ? null : forceFps ?? p.frameRate();
-		p.setStep(this.error ? null : forceFps);
+	// The widget values as the route's query; "" when no file is chosen.
+	query() {
+		if (!widget(this.node, "video")?.value) return "";
+		return new URLSearchParams(PLAN_PARAMS.map((name) => [name, String(widget(this.node, name)?.value ?? "")])).toString();
+	}
 
-		// Frames are counted on the force_fps grid (the source's frames without it).
-		const duration = p.clip()?.duration || 0;
-		if (!fps || !duration) {
-			p.setRange(null);
-			this.label = fps || this.error ? "" : "play to measure the frame rate";
-			return;
+	// Called on every paint: loads the chosen file and, when the values changed, asks the route
+	// once they stay unchanged for ASK_DELAY. Another file drops the last answer at once.
+	sync() {
+		const video = widget(this.node, "video")?.value;
+		const url = sourceUrl(video);
+		if (url !== this.player.url) this.apply(null, null);
+		this.player.load(url);
+		const query = this.query();
+		if (query === this.asked) return;
+		this.asked = query;
+		clearTimeout(this.timer);
+		if (query) this.timer = setTimeout(() => guard(() => this.ask(query)), ASK_DELAY);
+	}
+
+	async ask(query) {
+		let answer = null;
+		try {
+			const resp = await api.fetchApi(`${PLAN_ROUTE}?${query}`);
+			if (resp.ok) answer = await resp.json();
+			else console.warn(`[BCVideoNodes] Load Video: ${PLAN_ROUTE} answered ${resp.status}: ${await resp.text()}`);
+		} catch (e) {
+			console.warn(`[BCVideoNodes] Load Video: ${PLAN_ROUTE} failed:`, e);
 		}
-		const available = Math.max(0, Math.floor(duration * fps + 1e-6) - (startFrame - 1));
-		const selected = frameCount ?? available;
-		if (startFrame - 1 + selected > Math.floor(duration * fps + 1e-6)) {
-			this.error = `start_frame + frame_count past the video's ~${Math.floor(duration * fps + 1e-6)} frames`;
-		}
-		const rule = this.frames?.[widget(this.node, "model")?.value];
-		const kept = rule && selected >= 1 ? rule * Math.floor((selected - 1) / rule) + 1 : 0;
-		const start = (startFrame - 1) / fps;
-		p.setRange([start, start + kept / fps]);
-		this.label = `${kept} frames @ ${+fps.toFixed(3)} fps`;
+		if (query === this.asked) guard(() => this.apply(query, answer)); // else a newer question is on its way
+	}
+
+	// Takes `answer` (to `query`): the playback range and sampling, the placeholders.
+	apply(query, answer) {
+		this.answer = answer;
+		this.answered = query;
+		const info = answer?.info;
+		const p = this.player;
+		// force_fps samples the picture only when the loader keeps frames on its grid
+		p.setStep(info && info.loaded_fps !== info.source_fps ? info.loaded_fps : null);
+		// the loaded frames' time span, as the loader cuts the audio
+		const start = info ? (Number(new URLSearchParams(query).get("start_frame")) - 1) / info.loaded_fps : 0;
+		p.setRange(info ? [start, start + info.loaded_duration] : null);
+		setPlaceholder(widget(this.node, "force_fps"), answer?.source ? rate(answer.source.fps) : null);
+		setPlaceholder(widget(this.node, "frame_count"), answer?.available);
+		this.node.setDirtyCanvas?.(true, false);
+	}
+
+	// The answer to the current widget values, or null while a newer one is pending.
+	current() {
+		return this.answered === this.asked ? this.answer : null;
 	}
 
 	controls() {
-		return { audio: true, note: this.error };
-	}
-
-	// The model's size, oriented as the widget says (auto: as the source).
-	target(sw, sh) {
-		const size = this.sizes?.[widget(this.node, "model")?.value]?.[widget(this.node, "resolution")?.value];
-		if (!size) return null;
-		const orientation = widget(this.node, "orientation")?.value;
-		const portrait = orientation === "portrait" || (orientation !== "landscape" && sh > sw);
-		return portrait ? size : [size[1], size[0]];
+		return { audio: !!this.answer?.source?.audio };
 	}
 
 	paint(ctx, box) {
@@ -158,19 +243,22 @@ class SourceWidget extends PlayerWidget {
 		const pic = p.picture();
 		const [sw, sh] = p.size();
 		const rect = pic ? fitRect(sw, sh, ...box) : null;
+		const current = this.current();
+		if (rect) ctx.drawImage(pic, ...rect);
+		if (current?.error) {
+			drawError(ctx, current.error, box);
+			return;
+		}
 		if (!rect) {
 			const empty = !widget(this.node, "video")?.value;
 			drawMessage(ctx, p.failed ? "the browser cannot play this file" : empty ? "choose a video" : "loading…", box);
 			return;
 		}
-		ctx.drawImage(pic, ...rect);
-		const target = this.target(sw, sh);
-		if (!target) {
-			drawTag(ctx, "resolution does not belong to model", box[0] + 8, box[1] + 8, "left");
-			return;
-		}
+		// the crop of the last answer while a newer one is pending (same file: another file drops it)
+		const info = this.answer?.info;
+		if (!info) return;
 		// dim what the crop cuts away, outline what it keeps
-		const [cx, cy, cw, ch] = cropBox(sw, sh, ...target);
+		const [cx, cy, cw, ch] = cropBox(sw, sh, info.loaded_width, info.loaded_height);
 		const s = rect[2] / sw;
 		const [kx, ky, kw, kh] = [rect[0] + cx * s, rect[1] + cy * s, cw * s, ch * s];
 		ctx.fillStyle = "rgba(0,0,0,.55)";
@@ -181,7 +269,9 @@ class SourceWidget extends PlayerWidget {
 		ctx.strokeStyle = "rgba(255,255,255,.8)";
 		ctx.lineWidth = 1;
 		ctx.strokeRect(kx + 0.5, ky + 0.5, kw - 1, kh - 1);
-		drawTag(ctx, `${target[0]}x${target[1]}${this.label ? " · " + this.label : ""}`, box[0] + 8, box[1] + 8, "left");
+		const size = `${info.loaded_width}x${info.loaded_height}`;
+		const label = current?.info ? ` · ${current.info.loaded_frame_count} frames @ ${rate(current.info.loaded_fps)} fps` : "";
+		drawTag(ctx, size + label, box[0] + 8, box[1] + 8, "left", box[2] - 16);
 	}
 }
 
@@ -190,7 +280,6 @@ app.registerExtension({
 	beforeRegisterNodeDef(nodeType, nodeData) {
 		if (nodeData?.name !== NODE) return;
 		const sizes = nodeData.input?.required?.resolution?.[1]?.bcv_sizes;
-		const frames = nodeData.input?.required?.resolution?.[1]?.bcv_frames;
 
 		const onNodeCreated = nodeType.prototype.onNodeCreated;
 		nodeType.prototype.onNodeCreated = function (...args) {
@@ -207,6 +296,7 @@ app.registerExtension({
 				};
 			}
 			guard(() => applyModel(this, sizes));
+			guard(() => ["force_fps", "frame_count"].forEach((name) => installPlaceholder(widget(this, name))));
 			// The upload button after the inputs' widgets (so the saved widget values stay in input
 			// order), unless the frontend added its own for this input.
 			if (!widget(this, "upload")) {
@@ -219,7 +309,7 @@ app.registerExtension({
 
 		// wraps the onNodeCreated above, which runs first: the preview comes after the upload button
 		// and spans the rest of the node
-		installPlayer(nodeType, (node) => new SourceWidget(node, sizes, frames), [320, 560]);
+		installPlayer(nodeType, (node) => new SourceWidget(node), [320, 560]);
 
 		const onConfigure = nodeType.prototype.onConfigure;
 		nodeType.prototype.onConfigure = function (...args) {

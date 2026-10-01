@@ -150,12 +150,13 @@ def _supplied_face_bboxes(face_bboxes, frames):
     return boxes
 
 
-def crop_faces(images, pose_data: PoseData, face_padding=0, face_bboxes=None, smoothing="off"):
+def crop_faces(images, pose_data: PoseData, face_padding=0, face_bboxes=None, smoothing="off", crop=True):
     """The Face Crop node: `images` [B, H, W, C] and the pose_data Pose Detection made from
     them. Returns (face_images [B, FACE_SIZE, FACE_SIZE, C], face_bboxes), the boxes one
     (x1, y1, x2, y2) per frame. `face_bboxes`, when given (one per frame, or one for all), is
     cut as it is instead of the boxes the face keypoints give; `face_padding` and `smoothing`
-    apply only to the computed boxes. What face_bboxes overrides is named in one console line."""
+    apply only to the computed boxes. What face_bboxes overrides is named in one console line.
+    `crop` False: the boxes only, face_images is [0, FACE_SIZE, FACE_SIZE, C] (nothing is cut)."""
     import cv2
 
     B, H, W, C = images.shape
@@ -170,7 +171,9 @@ def crop_faces(images, pose_data: PoseData, face_padding=0, face_bboxes=None, sm
         if len(boxes) != B:
             raise ValueError(f"pose_data holds {len(boxes)} frames and images {B}; they must be the same frames")
     images_np = as_numpy(images)
-    face_images = np.empty((B, FACE_SIZE, FACE_SIZE, C), dtype=images_np.dtype)
+    face_images = np.empty((B if crop else 0, FACE_SIZE, FACE_SIZE, C), dtype=images_np.dtype)
+    if not crop:
+        return torch.from_numpy(face_images), boxes
     result = {"fallback crops": 0}
     with log.step(f"cropping the faces on {B} frames", result):
         for i, (x1, y1, x2, y2) in enumerate(boxes):

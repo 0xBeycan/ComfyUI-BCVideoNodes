@@ -70,7 +70,7 @@ class ComparerWidget extends PlayerWidget {
 			drawMessage(ctx, text, [bx, by, bw, bh]);
 		} else if (!rectA || !rectB) {
 			draw(a ?? b, rectA ?? rectB);
-			drawTag(ctx, rectA ? "A" : "B", bx + bw - 8, by + 8, "right");
+			drawTag(ctx, rectA ? "A" : "B", bx + bw - 8, by + 8, "right", bw - 16);
 		} else {
 			draw(a, rectA);
 			if (this.hoverX != null) {
@@ -83,8 +83,8 @@ class ComparerWidget extends PlayerWidget {
 				ctx.restore();
 				ctx.fillStyle = "rgba(255,255,255,.9)";
 				ctx.fillRect(x - 1, by, 2, bh);
-				drawTag(ctx, "B", bx + 8, by + 8, "left");
-				drawTag(ctx, "A", bx + bw - 8, by + 8, "right");
+				drawTag(ctx, "B", bx + 8, by + 8, "left", bw / 2 - 12);
+				drawTag(ctx, "A", bx + bw - 8, by + 8, "right", bw / 2 - 12);
 			}
 		}
 	}

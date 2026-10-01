@@ -267,6 +267,15 @@ def _frames(frames):
     return f"{len(frames)} frame{'s' if len(frames) > 1 else ''} ({log.frame_ranges(frames)})"
 
 
+def _pose_batch(pose_metas, frames):
+    """The pose images' batch, [frames, H, W, 3] float32 at the size of the frames the pose was
+    found on, uninitialised."""
+    if not pose_metas:
+        # the error np.stack raised here before the output was preallocated
+        raise ValueError("need at least one array to stack")
+    return torch.empty(frames, pose_metas[0].height, pose_metas[0].width, 3, dtype=torch.float32)
+
+
 def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5,
          forearm_limit=0.0, limb_dedup=False, back_view_face=False):
     """The pose images [B, H, W, 3] drawn from pose_data at the size of the frames the pose
@@ -282,11 +291,8 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
     pose_metas = pose_data["pose_metas"]
     pbar = ProgressBar(len(pose_metas))
     enabled = {"limb_dedup": limb_dedup, "forearm_rule": forearm_limit > 0, "back_view_face": back_view_face}
-    if not pose_metas:
-        # the error np.stack raised here before the output was preallocated
-        raise ValueError("need at least one array to stack")
     # filled frame by frame from each uint8 drawing, scaled to 0..1 in place once at the end
-    pose_images = torch.empty(len(pose_metas), pose_metas[0].height, pose_metas[0].width, 3, dtype=torch.float32)
+    pose_images = _pose_batch(pose_metas, len(pose_metas))
     result = {}
     with log.step(f"drawing {len(pose_metas)} pose images", result):
         duplicates, mirrored, overlong, back_view, hidden = hidden_by_rules(
@@ -334,25 +340,31 @@ def key_frame_body_points(pose_data: PoseData, threshold=0.5):
 
 
 def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_stick_width=-1,
-                   hand_stick_width=-1, draw_head=True, draw_threshold=0.5
+                   hand_stick_width=-1, draw_head=True, draw_threshold=0.5, draw_images=True
                    ) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
     """The Pose Detection node: `images` [B, H, W, 3] in, and out
     (pose_images [B, H, W, 3], pose_data, bboxes, key_frame_body_points) - see `detect`,
     `draw` and `key_frame_body_points`. pose_data also carries `draw_threshold`: the guards
     count the model's keypoints and limbs at it, including those the draw rules of `config`,
-    draw_head off or a 0 stick width leave out of the pose images."""
+    draw_head off or a 0 stick width leave out of the pose images. `draw_images` False: the
+    pose images are not drawn, pose_images is [0, H, W, 3]."""
     config = config or PoseConfig()
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
-    return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold)
+    return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold,
+                        draw_images)
 
 
 def pose_outputs(pose_data: PoseData, boxes, config, body_stick_width=-1, hand_stick_width=-1, draw_head=True,
-                 draw_threshold=0.5) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
+                 draw_threshold=0.5, draw_images=True) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
     """(pose_images, pose_data, boxes, key_frame_body_points) of a pose node from what `detect` or
     `detect_with` returned: `draw_threshold` added to pose_data, the pose images drawn with the draw
-    rules of `config` (a PoseConfig)."""
+    rules of `config` (a PoseConfig), or with `draw_images` False not drawn ([0, H, W, 3]): no
+    other output reads them."""
     pose_data["draw_threshold"] = draw_threshold
-    pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold,
-                       forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup,
-                       back_view_face=config.back_view_face)
+    if draw_images:
+        pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold,
+                           forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup,
+                           back_view_face=config.back_view_face)
+    else:
+        pose_images = _pose_batch(pose_data["pose_metas"], 0)
     return pose_images, pose_data, boxes, key_frame_body_points(pose_data, draw_threshold)

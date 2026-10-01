@@ -13,8 +13,9 @@ video = Names("video", {
            "model_size", "orientation_of", "oriented"),
     **refs("libs.video_info", "VideoInfo", "COMFY_TYPES"),
     **refs("pipelines.video_input", "load_video", "loaded_frames", "parse_force_fps", "parse_frame_count",
-           "load_reference_image", "conform_video"),
-    **refs("nodes.video_input", "BCVLoadVideo", "BCVGetVideoInfo", "BCVLoadReferenceImage", "BCVConformVideo"),
+           "load_reference_image", "conform_video", "preview", "LoadPreview"),
+    **refs("nodes.video_input", "BCVLoadVideo", "BCVGetVideoInfo", "BCVLoadReferenceImage", "BCVConformVideo",
+           "PLAN_ROUTE", "PLAN_PARAMS", "register_plan_route", "plan_route", "_probe_file"),
 })
 
 # a grey clip's frame i has luma 16 + LUMA_STEP * i: distinct after the RGB conversion

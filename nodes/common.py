@@ -1,5 +1,5 @@
-"""What the preprocess nodes share: their category, the config built from a node's widget values,
-and the config node base.
+"""What the nodes share: their categories, the config built from a node's widget values, the config
+node base, and ComfyUI's server.
 
 The preprocess nodes (pose, SAM 3.1 mask, face crop, guards) each call one function of
 pipelines/ (the pose node also models/common/loader), imported inside the method on first use;
@@ -11,6 +11,14 @@ from ..libs.config_widgets import config_inputs
 
 PREPROCESS = "BCVideoNodes"
 VIDEO = "BCVideoNodes/Video"
+
+
+def prompt_server():
+    """ComfyUI's PromptServer instance, read from sys.modules, never imported: importing `server`
+    would load aiohttp with the package. None outside ComfyUI."""
+    import sys
+
+    return getattr(getattr(sys.modules.get("server"), "PromptServer", None), "instance", None)
 
 
 def _config(config_cls, values):

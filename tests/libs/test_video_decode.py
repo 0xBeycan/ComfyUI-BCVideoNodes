@@ -59,7 +59,12 @@ def test_a_one_frame_video():
 def test_probe_reads_the_rate_the_count_and_the_size(tmp_path, rate):
     path = grey_clip(tmp_path / "clip.mkv", 12, rate, width=64, height=32)
     source = video.probe(path)
-    assert source == {"fps": float(rate), "frames": 12, "width": 64, "height": 32, "start": 0.0}
+    assert source == {"fps": float(rate), "frames": 12, "width": 64, "height": 32, "start": 0.0, "audio": False}
+
+
+def test_probe_says_whether_the_file_has_sound(tmp_path):
+    path = grey_clip(tmp_path / "clip.mkv", 3, audio=ramp_audio(0.5))
+    assert video.probe(path)["audio"] is True
 
 
 def decoded_levels(path, indices, frames, to_end=False):

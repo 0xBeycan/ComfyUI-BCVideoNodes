@@ -47,11 +47,12 @@ def hybrid_keypoints(sapiens2, vitpose, images_np, boxes, progress=None):
 
 
 def sapiens2_pose(images, detector, sapiens2, vitpose, bboxes=None, config=None, body_stick_width=-1,
-                  hand_stick_width=-1, draw_head=True, draw_threshold=0.5):
+                  hand_stick_width=-1, draw_head=True, draw_threshold=0.5, draw_images=True):
     """The Sapiens2 Pose node: what pipelines/pose.pose_detection returns, (pose_images, pose_data,
-    bboxes, key_frame_body_points), with the hybrid keypoints. `detector` is not called when `bboxes`
-    is given and may then be None."""
+    bboxes, key_frame_body_points), with the hybrid keypoints; `draw_images` as there. `detector` is
+    not called when `bboxes` is given and may then be None."""
     config = config or PoseConfig()
     pose_data, boxes = detect_with(detector, [sapiens2, vitpose], lambda frames, boxes, progress: hybrid_keypoints(
         sapiens2, vitpose, frames, boxes, progress), images, bboxes=bboxes, config=config)
-    return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold)
+    return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold,
+                        draw_images)

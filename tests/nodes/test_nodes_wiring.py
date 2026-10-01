@@ -45,7 +45,10 @@ def test_every_input_reaches_the_function(node_id):
     cls = nodes.NODE_CLASS_MAPPINGS[node_id]
     types = spec(node_id)
     params = inspect.signature(getattr(cls, cls.FUNCTION)).parameters
-    names = set(types["required"]) | set(types.get("optional", {}))
+    # a node with heavy outputs takes the hidden link inputs, and a node a wrapper calls the
+    # keyword-only `wanted`, which ComfyUI never passes (nodes/unused_outputs.py)
+    params = {n: p for n, p in params.items() if not (n == "wanted" and p.kind is p.KEYWORD_ONLY)}
+    names = set(types["required"]) | set(types.get("optional", {})) | set(types.get("hidden", {}))
     if any(p.kind is p.VAR_KEYWORD for p in params.values()):
         assert {n for n in params if n != "self" and params[n].kind is not params[n].VAR_KEYWORD} <= names
     else:

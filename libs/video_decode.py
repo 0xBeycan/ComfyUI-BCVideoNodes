@@ -27,9 +27,10 @@ def _video_stream(container, path):
 
 
 def probe(path):
-    """{fps, frames, width, height, start} of the video: the frame rate (the stream's average,
-    else its base rate), the frame count (the packets that carry a frame: a demux, no decode),
-    the size as displayed (turned by the display matrix) and the first frame's time in seconds."""
+    """{fps, frames, width, height, start, audio} of the video: the frame rate (the stream's
+    average, else its base rate), the frame count (the packets that carry a frame: a demux, no
+    decode), the size as displayed (turned by the display matrix; the first frame is decoded for
+    it), the first frame's time in seconds and whether the file has an audio stream."""
     import av
 
     with av.open(path) as container:
@@ -37,6 +38,7 @@ def probe(path):
         rate = stream.average_rate or stream.base_rate
         if not rate:
             raise ValueError(f"{path} gives no frame rate; re-encode it with a constant frame rate.")
+        audio = bool(container.streams.audio)
         first = next(container.decode(stream), None)
         if first is None:
             raise ValueError(f"{path} has no decodable video frame; pick another file or re-encode it.")
@@ -45,7 +47,7 @@ def probe(path):
     with av.open(path) as container:
         stream = _video_stream(container, path)
         frames = sum(1 for packet in container.demux(stream) if packet.size and not packet.is_discard)
-    return {"fps": float(rate), "frames": frames, "width": width, "height": height, "start": start}
+    return {"fps": float(rate), "frames": frames, "width": width, "height": height, "start": start, "audio": audio}
 
 
 def select_frames(fps, frames, force_fps=None):

@@ -40,7 +40,9 @@ image to it, save the result, compare two videos. Decoding and encoding use
 PyAV, which comes with ComfyUI. Load Video, Save Video and the Video Comparer
 play in the node: the pack's player, drawn on the node, with a play button, a
 seek bar and, when the clip has sound, a mute button. Nothing plays until
-asked, the clip loops, and the node keeps the size you give it.
+asked, the clip loops, and the node keeps the size you give it. A press on
+the seek bar seeks and a drag that starts on it scrubs; resizing the node
+never seeks. Labels are cut to the node's width.
 
 ### Load Video
 
@@ -97,12 +99,16 @@ frames' duration.
 the loaded batch's `loaded_fps` (`force_fps`, or the source's rate),
 `loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`.
 
-The preview plays the source file in the browser as the loader will take it,
-with no server work: sampled at `force_fps`, looping over `start_frame` /
-`frame_count`, the part the crop cuts away dimmed. The browser's frame at a
-tick can be one off the loader's. Without `force_fps` the range needs the
-source's frame rate, which the browser tells only while the clip plays: until
-then the whole clip loops.
+The preview plays the source file in the browser as the loader will take it:
+sampled at `force_fps`, looping over `start_frame` / `frame_count`, the part
+the crop cuts away dimmed. The browser's frame at a tick can be one off the
+loader's. What the loader will load comes from the server, which answers from
+the loader's own code (a probe of the file, no full decode): the label shows
+the exact frame count, rate and size, and a value the loader would reject
+shows the loader's own error over the picture. An empty `force_fps` shows the
+source's frame rate greyed in the widget, an empty `frame_count` the frames
+from `start_frame` on at the kept rate (before the 4n+1 cut); the widget's
+value stays empty.
 
 ### Get Video Info
 
@@ -1208,6 +1214,27 @@ character mask's frames of the chunk), SCAIL-2 with `replacement_mode` on
 Animate 2 has no replacement mode. A chunk whose overlap frames have no
 character is left uncorrected, with a warning. At 0 the loop is exactly the
 loop without the widget.
+
+## Unused outputs
+
+A whole-clip IMAGE or MASK output that nothing is connected to comes out as an empty (0-frame)
+tensor instead of staying in ComfyUI's cache until the prompt ends; where it is a step of its own,
+the step does not run at all. That covers Pose Detection and Sapiens2 Pose `pose_images` (not
+drawn), Face Crop `face_images` (not cut), WanAnimate Preprocess `pose_images`, `face_images` and
+`mask` (no SAM track when `mask` is not connected), SCAIL-2 Colored Mask `pose_video_mask` (not
+rendered), SCAIL-2 Preprocess `pose_video` and `pose_video_mask` (not computed) and `mask`
+(computed, since the colored masks are cut by it, then dropped), and Load Video's and the
+samplers' `images` (dropped). Connecting such an output later runs the node again.
+
+When a prompt is queued, the pack writes which of these outputs are connected into the node's
+inputs (`bcv_linked_heavy`), which makes the link state part of ComfyUI's cache key.
+
+The limit: another custom node pack can change a queued prompt after this pack has read it (an
+`on_prompt` handler registered after this pack's). A link it adds could then reach a cached empty
+output, so while such a handler is installed the saving is off: every output comes out full, as
+without this feature, and the console and a toast say "RAM saving of unused outputs is off for this
+run: <pack> changes the prompt after it." ComfyUI-BCNodes does the same for its own nodes and is
+not counted.
 
 ## Roadmap
 

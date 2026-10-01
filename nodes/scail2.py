@@ -8,6 +8,7 @@ from .common import _config
 from .guard import _guard_inputs
 from .pose import POSE_MODEL_TOOLTIP, POSE_MODELS, VITPOSE, BCVPoseDetection, detect_pose
 from .sam3_1_multiplex import BCVSAM3VideoTrack, track_reference
+from .unused_outputs import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
 SCAIL = "BCVideoNodes/SCAIL"
 
@@ -23,18 +24,24 @@ class BCVSCAIL2ColoredMask:
             "optional": {
                 "reference_mask": ("MASK", {"tooltip": "The character on the reference image. Without it the reference mask is the background alone: animation mode can then collapse into replacement behaviour, and replacement mode raises."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
     RETURN_NAMES = ("pose_video_mask", "reference_image_mask")
+    # not rendered when nothing links it (nodes/unused_outputs.py); reference_image_mask is one frame
+    HEAVY_OUTPUTS = ("pose_video_mask",)
     FUNCTION = "render"
     CATEGORY = SCAIL
     DESCRIPTION = "Renders the person masks as the colored masks SCAIL-2 reads: the person in blue (the first colour of the palette SCAIL-2 was trained on) on the background of the mode. One person; the colours are pure, so core's 28-channel extraction reads them exactly."
 
-    def render(self, driving_mask, replacement_mode, reference_mask=None):
+    def render(self, driving_mask, replacement_mode, reference_mask=None, prompt_graph=None, unique_id=None, *, wanted=None):
+        """`wanted`: the heavy outputs a wrapper needs, in place of the link stamp's."""
         from ..pipelines import scail2
 
-        return scail2.colored_masks(driving_mask, replacement_mode, reference_mask)
+        wanted = heavy_wanted(type(self), prompt_graph, unique_id, wanted)
+        return drop_unwanted(type(self), scail2.colored_masks(driving_mask, replacement_mode, reference_mask,
+                                                              render_driving=wants(wanted, "pose_video_mask")), wanted)
 
 
 PROMPT_TOOLTIP = "What to segment: the person in the driving video (prompt and prompt_pose modes) and the character on the reference image (every mode, unless reference_mask is connected). The defaults were validated with this prompt."
@@ -64,27 +71,34 @@ class BCVSCAIL2Preprocess:
                 # the last widget, so a workflow saved before it keeps its widget values and runs ViTPose-H
                 "pose_model": (list(POSE_MODELS), {"default": VITPOSE, "tooltip": "[box_keypoint, prompt_pose] " + POSE_MODEL_TOOLTIP + " Ignored in prompt mode, which runs no pose."}),
             },
+            "hidden": dict(LINK_INPUTS),
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "MASK", "MASK")
     RETURN_NAMES = ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")
+    # nodes/unused_outputs.py: pose_video (a new clip with black_background, else the input) and
+    # pose_video_mask are not computed when nothing links them; mask, which both are cut by, is
+    # dropped at return. The reference masks are one frame.
+    HEAVY_OUTPUTS = ("pose_video", "pose_video_mask", "mask")
     FUNCTION = "process"
     CATEGORY = SCAIL
     DESCRIPTION = "The SCAIL-2 preprocess in one node, one person: SAM 3.1 Multiplex Video Track in the chosen mode on the whole driving video once, so the mask keeps its shape and colour across the sampler's chunks; box_keypoint and prompt_pose read the pose, so in those modes the node first runs Pose Detection on the driving frames (its default widgets, pose_config when connected; Sapiens2 Pose when pose_model is a Sapiens2 model) and hands its pose_data to the track, while prompt mode runs no pose. The reference image is tracked in prompt mode in every mode, unless reference_mask is connected: the pose modes are video modes, and the reference is one image. Then SCAIL-2 Colored Mask. SCAIL-2 draws no pose; the pose only shapes the mask. pose_video is the driving video, SCAIL-2's end-to-end pose input in animation and replacement mode alike: unchanged, or in animation mode with black_background on, with everything outside the person's mask black."
 
     def process(self, images, reference_image, replacement_mode, mode, prompt, black_background=False, reference_mask=None,
-                pose_config=None, sam3_config=None, pose_model=VITPOSE):
+                pose_config=None, sam3_config=None, pose_model=VITPOSE, prompt_graph=None, unique_id=None):
         from ..pipelines import scail2
         from ..pipelines.sam3_1_multiplex import track as sam3
 
         scail2.check_black_background(black_background, replacement_mode)
+        wanted = heavy_wanted(type(self), prompt_graph, unique_id)
         pose_data = None
         if mode != sam3.MODE_PROMPT:
             # SCAIL-2 draws no pose: Pose Detection runs at its default widgets and only its pose_data is
-            # used, which carries the default draw_threshold prompt_pose picks its points at
+            # used, which carries the default draw_threshold prompt_pose picks its points at; the pose
+            # images are not drawn (wanted: none of its heavy outputs)
             widgets = {name: options[1]["default"] for name, options in BCVPoseDetection.INPUT_TYPES()["required"].items()
                        if name != "images"}
-            _, pose_data, _, _ = detect_pose(pose_model, images, **widgets, pose_config=pose_config)
+            _, pose_data, _, _ = detect_pose(pose_model, images, **widgets, pose_config=pose_config, wanted=set())
         else:
             unused = [name for name, changed in (("pose_config", pose_config is not None), ("pose_model", pose_model != VITPOSE))
                       if changed]
@@ -94,9 +108,10 @@ class BCVSCAIL2Preprocess:
         (mask,) = tracker.track(images, mode, prompt, 1, -1, pose_data=pose_data, sam3_config=sam3_config)
         if reference_mask is None:
             reference_mask = track_reference(reference_image, prompt, sam3_config)
-        pose_video_mask, reference_image_mask = BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask=reference_mask)
-        pose_video = scail2.driving_on_black(images, mask) if black_background else images
-        return (pose_video, pose_video_mask, reference_image_mask, mask, reference_mask)
+        pose_video_mask, reference_image_mask = BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask=reference_mask,
+                                                                              wanted=wanted)
+        pose_video = scail2.driving_on_black(images, mask) if black_background and wants(wanted, "pose_video") else images
+        return drop_unwanted(type(self), (pose_video, pose_video_mask, reference_image_mask, mask, reference_mask), wanted)
 
 
 SCAIL2_GUARD_TOOLTIP = "Stop the workflow when a SCAIL-2 check fails: no driving frame has the person, a driving frame's mask is torn (a detached piece of 5% of her or more), the reference mask has no character; with pose_data also the driving mask empty on a frame with a person, the head or a whole limb outside it, or a hand-sized region of her the latent grid loses. Warnings never stop. Off still measures and reports every check."

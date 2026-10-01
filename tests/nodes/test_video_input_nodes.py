@@ -33,7 +33,7 @@ def test_load_video_widgets(folders):
     assert labels == ["480p", "720p", "512p", "704p"] and options["default"] == "720p"
     assert options["bcv_sizes"] == {"Wan": {"480p": [480, 832], "720p": [720, 1280]},
                                     "SCAIL": {"512p": [512, 896], "704p": [704, 1280]}}
-    assert options["bcv_frames"] == {"Wan": 4, "SCAIL": 4}
+    assert set(options) == {"default", "bcv_sizes", "tooltip"}
     assert required["orientation"][0] == ["auto", "landscape", "portrait"] and required["orientation"][1]["default"] == "auto"
     assert required["force_fps"][0] == "STRING" and required["force_fps"][1]["default"] == ""
     assert required["start_frame"][0] == "INT" and required["start_frame"][1]["default"] == 1
