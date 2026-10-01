@@ -38,15 +38,15 @@ class BCVLoadVideo:
         return {
             "required": {
                 "video": (_input_files("video"), {"tooltip": "The video file, from ComfyUI's input folder."}),
-                "model": (list(sizes.MODELS), {"default": "Wan", "tooltip": "The model the video is loaded for: its generation sizes and its frame rule (4n+1 frames for both)."}),
+                "model": (list(sizes.MODELS), {"default": "Wan", "tooltip": "The model the video is loaded for: its generation sizes and its frame rule. Wan and SCAIL: 4n+1 frames. None: no frame rule (every frame of the range), Conform Video's sizes."}),
                 "resolution": (sizes.RESOLUTIONS, {
                     "default": "720p",
                     "bcv_sizes": {name: model["sizes"] for name, model in sizes.MODELS.items()},
-                    "tooltip": "The generation size by its short edge; the labels follow model. Wan: 480p (480x832), 720p (720x1280). SCAIL: 512p (512x896), 704p (704x1280). Portrait sizes; landscape swaps them. The video is centre-cropped to that aspect and resized with lanczos."}),
-                "orientation": (sizes.ORIENTATIONS, {"default": sizes.AUTO, "tooltip": "auto: portrait when the video is taller than wide, otherwise landscape (a square video is landscape). landscape / portrait: that orientation, reached by a centre crop."}),
+                    "tooltip": "The generation size by its short edge; the labels follow model. Wan: 480p (480x832), 720p (720x1280). SCAIL: 512p (512x896), 704p (704x1280). None: 480p (480x854), 720p (720x1280), 1080p (1080x1920). Portrait sizes; landscape swaps them. The video is centre-cropped to that aspect and resized with lanczos. source (every model): the video's own pixels, no resize; the other orientation is a centre crop that keeps the short side (1920x1080 as portrait: 608x1080); Wan and SCAIL then cut each side centred down to their grid (Wan 16, SCAIL 32: 1920x1080 is 1920x1072 for Wan, 1920x1056 for SCAIL)."}),
+                "orientation": (sizes.ORIENTATIONS, {"default": sizes.AUTO, "tooltip": "auto: portrait when the video is taller than wide, otherwise landscape (a square video is landscape). landscape / portrait: that orientation, reached by a centre crop, never by a rotation."}),
                 "force_fps": ("STRING", {"default": "", "tooltip": "Empty: the video's own frame rate. A number above 0, at most the video's own rate: real frames kept or dropped on that rate's time grid (never blended or repeated; a rate above the video's is an error, one within 0.01% of it is the video's rate)."}),
                 "start_frame": ("INT", {"default": 1, "min": 1, "max": 2 ** 31 - 1, "step": 1, "tooltip": "The first frame loaded, counted from 1, after force_fps."}),
-                "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1."}),
+                "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1 (Wan, SCAIL; None keeps it)."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -58,7 +58,7 @@ class BCVLoadVideo:
     HEAVY_OUTPUTS = ("images",)
     FUNCTION = "load"
     CATEGORY = VIDEO
-    DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory. Colours follow the file's own colour tags. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
+    DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory (resolution source keeps the video's own size, no resize). Colours follow the file's own colour tags. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
 
     def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, prompt_graph=None,
              unique_id=None):

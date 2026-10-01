@@ -1,5 +1,6 @@
 """pipelines/video_input.py: Load Video end to end on small lossless clips (the frames it keeps,
-4n+1, the orientation and size, the audio range, video_info, every error), the load again when
+4n+1 and model None's every frame, the orientation and size, resolution source, the audio range,
+video_info, every error), the load again when
 the decoder disagrees with the container's count, Load Reference Image and Conform Video."""
 import pytest
 
@@ -8,7 +9,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("av")
 pytest.importorskip("comfy.utils")
 
-from video_input_fakes import grey_clip, grey_index, ramp_audio, video  # noqa: E402
+from video_input_fakes import grey_clip, grey_index, ramp_audio, video, write_clip, yuv_frame  # noqa: E402
 
 
 def load(path, model="Wan", resolution="480p", orientation="auto", force_fps="", start_frame=1, frame_count=""):
@@ -65,7 +66,9 @@ def test_errors_say_what_to_change(tmp_path):
         ({"force_fps": "24", "start_frame": 25}, "start_frame 25 is past the end of the video: it has 24 frames at "
                                                  "force_fps 24. Set start_frame to 24 or less."),
         ({"start_frame": 0}, "start_frame must be 1 or more (the first frame is 1); got 0."),
-        ({"resolution": "704p"}, "resolution '704p' does not belong to model Wan; pick one of 480p, 720p."),
+        ({"resolution": "704p"}, "resolution '704p' does not belong to model Wan; pick one of 480p, 720p, source."),
+        ({"model": "None", "resolution": "512p"}, "resolution '512p' does not belong to model None; pick one of 480p, "
+                                                  "720p, 1080p, source."),
     ]
     for widgets, message in cases:
         with pytest.raises(ValueError) as error:
@@ -115,6 +118,18 @@ def test_4n_plus_1_counts(count, loaded):
     assert len(video.loaded_frames(list(range(100)), 1, count, 4)) == loaded
 
 
+@pytest.mark.parametrize("widgets, expected", [
+    ({}, list(range(30))),                                       # 30 frames: no cut to 29
+    ({"start_frame": 5, "frame_count": "10"}, list(range(4, 14))),  # 10 frames: no cut to 9
+    ({"force_fps": "24", "frame_count": "6"}, [0, 2, 3, 4, 5, 7]),  # after force_fps as with Wan, no cut to 5
+    ({"resolution": "source", "frame_count": "2"}, [0, 1]),
+])
+def test_model_none_keeps_every_frame_of_the_range(tmp_path, widgets, expected):
+    images, _, info = load(grey_clip(tmp_path / "clip.mkv", 30), **{"model": "None", "resolution": "480p", **widgets})
+    assert frame_indices(images) == expected
+    assert info["model"] == "None" and info["loaded_frame_count"] == len(expected)
+
+
 # --- size and orientation -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("width, height, orientation, size", [
@@ -129,6 +144,89 @@ def test_orientation_and_size(tmp_path, width, height, orientation, size):
     assert tuple(images.shape) == (1, size[1], size[0], 3)
     assert (info["loaded_width"], info["loaded_height"]) == size
     assert info["orientation"] == ("portrait" if size[1] > size[0] else "landscape")
+
+
+@pytest.mark.parametrize("resolution, orientation, size", [
+    ("480p", "auto", (854, 480)),     # the landscape source gets the ladder's sizes, swapped
+    ("720p", "auto", (1280, 720)),
+    ("1080p", "auto", (1920, 1080)),
+    ("1080p", "portrait", (1080, 1920)),
+])
+def test_model_none_sizes(tmp_path, resolution, orientation, size):
+    images, _, info = load(grey_clip(tmp_path / "clip.mkv", 1, width=64, height=32), model="None",
+                           resolution=resolution, orientation=orientation)
+    assert tuple(images.shape) == (1, size[1], size[0], 3)
+    assert (info["loaded_width"], info["loaded_height"], info["resolution"]) == (*size, resolution)
+
+
+@pytest.mark.parametrize("model, width, height, orientation, size, turned", [
+    # None: the video's own size
+    ("None", 64, 32, "auto", (64, 32), "landscape"),
+    ("None", 32, 64, "auto", (32, 64), "portrait"),
+    ("None", 64, 32, "landscape", (64, 32), "landscape"),     # its own orientation, forced
+    ("None", 48, 48, "auto", (48, 48), "landscape"),          # square: landscape
+    ("None", 70, 34, "auto", (70, 34), "landscape"),          # no grid
+    # the other orientation: the centred crop to the turned aspect, the short side kept
+    ("None", 64, 32, "portrait", (16, 32), "portrait"),       # 32 * 32 / 64 = 16
+    ("None", 32, 64, "landscape", (32, 16), "landscape"),
+    ("None", 1920, 1080, "portrait", (608, 1080), "portrait"),  # 1080 * 1080 / 1920 = 607.5, rounded as the crop rounds
+    ("None", 1080, 1920, "landscape", (1080, 608), "landscape"),
+    ("None", 720, 1280, "landscape", (720, 405), "landscape"),
+    ("None", 48, 48, "portrait", (48, 48), "portrait"),       # a square is its own crop
+    # Wan: then each side cut down to a multiple of 16
+    ("Wan", 64, 32, "auto", (64, 32), "landscape"),
+    ("Wan", 70, 34, "auto", (64, 32), "landscape"),
+    ("Wan", 48, 48, "auto", (48, 48), "landscape"),
+    ("Wan", 64, 32, "portrait", (16, 32), "portrait"),
+    ("Wan", 720, 1280, "landscape", (720, 400), "landscape"),   # 720x405 -> 720x400
+    ("Wan", 1920, 1080, "portrait", (608, 1072), "portrait"),   # 608x1080 -> 608x1072
+    ("Wan", 1080, 1920, "auto", (1072, 1920), "portrait"),
+    ("Wan", 1080, 1920, "landscape", (1072, 608), "landscape"),
+    # SCAIL: of 32
+    ("SCAIL", 64, 32, "auto", (64, 32), "landscape"),
+    ("SCAIL", 70, 34, "auto", (64, 32), "landscape"),
+    ("SCAIL", 48, 48, "auto", (32, 32), "landscape"),
+    ("SCAIL", 720, 1280, "auto", (704, 1280), "portrait"),
+    ("SCAIL", 720, 1280, "landscape", (704, 384), "landscape"),  # 720x405 -> 704x384
+    ("SCAIL", 1920, 1080, "portrait", (608, 1056), "portrait"),
+    ("SCAIL", 1080, 1920, "landscape", (1056, 608), "landscape"),
+])
+def test_resolution_source_crops_to_the_orientation_then_cuts_to_the_grid(tmp_path, model, width, height,
+                                                                          orientation, size, turned):
+    images, _, info = load(grey_clip(tmp_path / "clip.mkv", 1, width=width, height=height), model=model,
+                           resolution="source", orientation=orientation)
+    assert tuple(images.shape) == (1, size[1], size[0], 3)
+    assert (info["loaded_width"], info["loaded_height"], info["orientation"]) == (*size, turned)
+    assert (info["source_width"], info["source_height"], info["resolution"]) == (width, height, "source")
+
+
+def test_resolution_source_smaller_than_the_grid_is_an_error(tmp_path):
+    path = grey_clip(tmp_path / "clip.mkv", 1, width=64, height=32)
+    with pytest.raises(ValueError) as error:
+        load(path, model="SCAIL", resolution="source", orientation="portrait")
+    assert str(error.value) == ("resolution source gives 16x32, smaller than model SCAIL's 32-pixel grid; pick model None "
+                                "or one of SCAIL's sized resolutions.")
+
+
+@pytest.mark.parametrize("model, width, height, orientation, rows, columns", [
+    ("None", 64, 32, "auto", slice(0, 32), slice(0, 64)),       # the decoded frame itself
+    ("None", 64, 32, "portrait", slice(0, 32), slice(24, 40)),  # (64 - 16) // 2 = 24
+    ("Wan", 70, 34, "auto", slice(1, 33), slice(3, 67)),        # 64x32, centred
+    ("SCAIL", 70, 34, "auto", slice(1, 33), slice(3, 67)),
+    # 34x70 as landscape is 34x17, on the grid 32x16, cut centred out of the frame: (70 - 16) // 2 = 27
+    ("Wan", 34, 70, "landscape", slice(27, 43), slice(1, 33)),
+])
+def test_resolution_source_is_the_decoded_pixels(tmp_path, model, width, height, orientation, rows, columns):
+    # no resampling: the centred region of the decoded RGB frame / 255
+    import av
+
+    luma = (16 + 2 * np.arange(width)[None, :] + np.arange(height)[:, None]).astype(np.uint8)  # ramps across and down
+    chroma = np.full((height // 2, width // 2), 128, np.uint8)
+    path = write_clip(tmp_path / "clip.mkv", [yuv_frame(luma, chroma, chroma)])
+    with av.open(path) as container:
+        pixels = video.rgb(next(container.decode(video=0)))
+    images, _, _ = load(path, model=model, resolution="source", orientation=orientation)
+    assert torch.equal(images[0], torch.from_numpy(pixels[rows, columns].copy()).float().div_(255))
 
 
 def test_frames_are_the_fit_of_the_decoded_frame(tmp_path):

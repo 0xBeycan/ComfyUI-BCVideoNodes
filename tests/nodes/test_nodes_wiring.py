@@ -26,7 +26,7 @@ from sam3_1_multiplex_fakes import sam3  # noqa: E402
 
 from guard_fakes import MASK as MASK_THRESHOLDS  # noqa: E402
 from guard_fakes import POSE as POSE_THRESHOLDS  # noqa: E402
-from guard_fakes import clip, origin, place_keypoints  # noqa: E402
+from guard_fakes import clip, final, grown_and_blockified, origin, painted, place_keypoints  # noqa: E402
 from pose_fakes import FakeDetector, FakePose, frames, loader, pose  # noqa: E402
 
 
@@ -92,9 +92,9 @@ def test_the_guard_widgets_are_the_guard_configs():
     # the Pose Guard has no fail, so no switch
     assert list(spec("BCVPoseGuard")["required"]) == ["pose_data"] + [f.name for f in dataclasses.fields(guard.PoseGuardConfig)]
     assert list(spec("BCVMaskGuard")["required"]) == ["mask", "mask_guard"] + [f.name for f in dataclasses.fields(guard.MaskGuardConfig)]
-    # the reference check's threshold, then the reference image, last
+    # the reference check's threshold, the reference image, then the final mask's widgets, last
     assert list(spec("BCVMaskGuard")["optional"]) == (["pose_data"] + [f.name for f in dataclasses.fields(guard.ReferenceGuardConfig)]
-                                                     + ["reference_image"])
+                                                     + ["reference_image", "grow", "block_size"])
     assert "Optional, but it gives the best result" in spec("BCVMaskGuard")["optional"]["pose_data"][1]["tooltip"]
     both = spec("BCVWanAnimatePreprocessGuard")["required"]
     assert list(both)[:3] == ["mask", "pose_data", "mask_guard"]
@@ -238,13 +238,79 @@ def test_the_preprocess_wrapper_is_the_three_nodes_chained(fake_models, mode):
     (mask,) = nodes.BCVSAM3VideoTrack().track(images, mode, sam3.PROMPT, 1, -1,
                                              pose_data=pose_data if mode != sam3.MODE_PROMPT else None)
     face_images, face_bboxes = nodes.BCVFaceCrop().crop(images, pose_data, 8)
-    chained = (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes)
+    # then the mask grown and blockified at the defaults, and the frames painted black under it
+    final_mask = grown_and_blockified(mask, 10, 32)
+    chained = (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes, final_mask,
+               painted(images, final_mask))
 
     assert len(wrapped) == len(nodes.BCVWanAnimatePreprocess.RETURN_NAMES)
     for name, a, b in zip(nodes.BCVWanAnimatePreprocess.RETURN_NAMES, wrapped, chained):
         assert same(a, b), name
     call = fake_models.calls[0]
     assert call["mode"] == mode and call["pose_data"] == (mode != sam3.MODE_PROMPT)
+
+
+def two_squares():
+    """Frames whose red channel holds two squares far apart, the mask FakeSAM3 finds in prompt mode."""
+    images = torch.zeros(frames().shape)
+    images[:, 10:20, 10:20, 0] = 1.0
+    images[:, 100:110, 80:90, 0] = 1.0
+    return images
+
+
+@pytest.mark.parametrize("grow, block_size", [(0, 8), (3, 8), (10, 32), (25, 16)])
+def test_the_preprocess_final_mask_follows_its_widgets(fake_models, grow, block_size):
+    images = two_squares()
+    widgets = dict(body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5)
+    out = nodes.BCVWanAnimatePreprocess().process(images, face_padding=8, mode=sam3.MODE_PROMPT, prompt=sam3.PROMPT,
+                                                  grow=grow, block_size=block_size, **widgets)
+    names = nodes.BCVWanAnimatePreprocess.RETURN_NAMES
+    mask, final_mask, background = (out[names.index(name)] for name in ("mask", "final_mask", "bg_images"))
+    assert same(mask, (images[..., 0] > 0.5).float())          # the raw mask stays the raw mask
+    assert same(final_mask, grown_and_blockified(mask, grow, block_size))
+    assert same(background, painted(images, final_mask))
+
+
+def test_the_final_mask_widgets_are_the_preprocess_s_on_both_guards():
+    keys = ("BCVWanAnimatePreprocess", "BCVMaskGuard", "BCVWanAnimatePreprocessGuard")
+    for name, (default, low, high) in (("grow", (10, 0, 999)), ("block_size", (32, 8, 512))):
+        kind, options = spec("BCVWanAnimatePreprocess")["optional"][name]
+        assert kind == "INT" and {**options, "tooltip": None} == {"default": default, "min": low, "max": high, "step": 1,
+                                                                  "tooltip": None}
+        assert "keep theirs equal to the preprocess's" in options["tooltip"]
+        assert spec("BCVWanAnimatePreprocessGuard")["optional"][name] == (kind, options)
+        # the Mask Guard's block_size also takes 0, a final without blocks, for a raw mask as it is
+        if name == "grow":
+            assert spec("BCVMaskGuard")["optional"][name] == (kind, options)
+        else:
+            raw = spec("BCVMaskGuard")["optional"][name]
+            assert raw[0] == kind and {**raw[1], "tooltip": None} == {**options, "min": 0, "tooltip": None}
+            assert raw[1]["tooltip"].startswith(options["tooltip"] + " Mask Guard only: 0 models a final without blocks")
+    for key in keys:
+        assert list(spec(key)["optional"])[-2:] == ["grow", "block_size"], key
+    assert [f.name for f in dataclasses.fields(final.FinalMaskConfig)] == ["grow", "block_size"]
+
+
+def test_the_guard_nodes_judge_the_final_their_widgets_give():
+    # a 30 x 30 hole on her thigh on frame 20 that the default final fills; not grown and cut into
+    # 8 px blocks, the final loses it (tests/pipelines/test_guard.py)
+    masks, pose_data = clip()
+    x1, y1 = origin(20)
+    masks[20, y1 + 150:y1 + 180, x1 + 50:x1 + 80] = 0
+    values = {**thresholds(POSE_THRESHOLDS), **thresholds(MASK_THRESHOLDS)}
+    for grow, block_size, flags in ((10, 32, {}), (0, 8, {"mask_loss": [20]}), (0, 0, {"mask_loss": [20]})):
+        out = nodes.BCVMaskGuard().check(masks, False, pose_data=pose_data, grow=grow, block_size=block_size, **values)
+        direct = guard.check_mask(masks, pose_data, MASK_THRESHOLDS, enabled=False, grow=grow, block_size=block_size)
+        assert out[1:3] == direct[1:3] and torch.equal(out[3], direct[3])
+        assert {k: v for k, v in json.loads(out[2])["flags"].items() if k == "mask_loss"} == flags, (grow, block_size)
+    # the Preprocess Guard reads its final with them: the final the preprocess makes at (4, 16)
+    finals = final.final_mask(masks, 4, 16)
+    out = nodes.BCVWanAnimatePreprocessGuard().check(finals, pose_data, False, grow=4, block_size=16, **values)
+    direct = guard.check_mask(finals, pose_data, MASK_THRESHOLDS, enabled=False, stop_on_fail=False, final=True, grow=4,
+                              block_size=16)
+    assert json.loads(out[3])["frames"] == [{**pose, **mask} for pose, mask in zip(
+        json.loads(guard.check_pose(pose_data, POSE_THRESHOLDS, stop_on_fail=False)[2])["frames"],
+        json.loads(direct[2])["frames"])]
 
 
 # --- the guards' reference check ---------------------------------------------------------------
@@ -305,17 +371,17 @@ def test_the_guard_nodes_read_the_reference_widget_and_run_no_sam_without_a_refe
     assert fake_models.calls == [] and "reference" not in json.loads(metrics)
 
 
-def test_the_reference_image_is_the_last_optional_input():
+def test_the_reference_image_comes_before_the_final_mask_widgets_only():
     for key, default in (("BCVMaskGuard", 0.4), ("BCVWanAnimatePreprocessGuard", 0.5)):
         optional = spec(key)["optional"]
-        assert list(optional)[-2:] == ["min_reference_iou", "reference_image"], key
+        assert list(optional)[-4:] == ["min_reference_iou", "reference_image", "grow", "block_size"], key
         assert optional["reference_image"][0] == "IMAGE" and "SAM 3.1 Multiplex" in optional["reference_image"][1]["tooltip"]
         iou = optional["min_reference_iou"]
         assert iou[0] == "FLOAT" and {**iou[1], "tooltip": None} == {"default": default, "min": 0.0, "max": 1.0,
                                                                      "step": 0.05, "tooltip": None}
         assert iou[1]["tooltip"] == spec("BCVMaskGuard")["optional"]["min_reference_iou"][1]["tooltip"]
     assert list(spec("BCVWanAnimatePreprocessGuard")["optional"]) == (
-        [f.name for f in dataclasses.fields(guard.FinalReferenceGuardConfig)] + ["reference_image"])
+        [f.name for f in dataclasses.fields(guard.FinalReferenceGuardConfig)] + ["reference_image", "grow", "block_size"])
 
 
 def test_the_guard_nodes_input_types_import_no_sam_tracker():

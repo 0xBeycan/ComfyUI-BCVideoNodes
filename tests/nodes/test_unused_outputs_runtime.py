@@ -9,8 +9,10 @@ under `python -m pytest` the pack's nodes/ hides ComfyUI's nodes.py); these test
 - no stamp (the handler did not run): full;
 - a stale stamp in a resubmitted prompt: overwritten;
 - a link the stamp missed: full, with a warning;
-- another pack's handler after ours: off for that prompt (full), a console line and the toast
-  event to the prompt's client;
+- a pack loaded after this one registers its handler after ours: once the server starts, ours
+  runs after it and the saving stays on;
+- another pack's handler added after ours once the server runs: off for that prompt (full), a
+  console line, nothing sent to the browser;
 - a stamping handler after ours (ComfyUI-BCNodes'): still on.
 
     PYTHONPATH=/path/to/ComfyUI python -m pytest tests/nodes/test_unused_outputs_runtime.py
@@ -40,7 +42,15 @@ def facts(tmp_path_factory):
 
 
 def test_the_root_init_registers_the_stamp_on_comfyuis_server(facts):
-    assert facts["handlers"] == ["LinkStamp"]
+    assert facts["handlers_loaded"] == ["LinkStamp"]
+
+
+def test_a_handler_registered_after_ours_runs_before_it_once_the_server_starts(facts):
+    assert facts["handlers_later_pack"] == ["LinkStamp", "later_pack"]
+    assert facts["handlers_started"] == ["later_pack", "LinkStamp"]
+    on = facts["after_startup"]
+    assert on["runs"] == [{"stamp": "", "runs": 1, "seen": None, "cached": EMPTY}]
+    assert on["sent"] == [] and not any("off for this run" in line for line in on["lines"])
 
 
 @pytest.mark.parametrize("kind", ["CLASSIC", "LRU", "RAM_PRESSURE"])
@@ -72,10 +82,9 @@ def test_a_link_the_stamp_missed_gets_the_full_output_and_a_warning(facts):
 def test_another_packs_handler_after_ours_turns_it_off_for_the_run(facts):
     off = facts["another_pack_after"]
     assert off["runs"] == [{"stamp": None, "runs": 1, "seen": None, "cached": FULL}]
-    assert off["toasts"] == [["bcvideonodes.unused_outputs", {"message": OFF}, "test"]]
-    assert any(OFF in line for line in off["lines"])
+    assert any(OFF in line for line in off["lines"]) and off["sent"] == []
 
 
 def test_a_stamping_handler_after_ours_keeps_it_on(facts):
     on = facts["bcnodes_after"]
-    assert on["runs"] == [{"stamp": "", "runs": 1, "seen": None, "cached": EMPTY}] and on["toasts"] == []
+    assert on["runs"] == [{"stamp": "", "runs": 1, "seen": None, "cached": EMPTY}] and on["sent"] == []

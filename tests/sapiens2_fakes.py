@@ -16,7 +16,7 @@ sapiens2 = Names("sapiens2", {
     **refs("models.sapiens2.keypoints", "COCO_FROM_SAPIENS2", "COCO_WHOLEBODY_NAMES", "FACE", "SAPIENS2_70_NAMES",
            "to_coco133"),
     **refs("pipelines.sapiens2_pose", "BATCH_SIZE", "hybrid_keypoints", "sapiens2_pose"),
-    **refs("nodes.pose", "SAPIENS2_MODELS", "POSE_MODELS", "detect_pose"),
+    **refs("nodes.pose", "POSE_MODELS"),
     **refs("models.common.checkpoint", "FORMAT_VERSION"),
     **seams("models.common.loader", "load_pose_estimator"),
     "registry": Ref("models.common.registry"),

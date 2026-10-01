@@ -1,6 +1,7 @@
 """The pose module on synthetic frames with fake models: the supplied-box path that skips the
 detector, the key_frame_body_points string, the config, the raw box by default, edge_snap on the
-detected and the supplied boxes, and draw_head off and 0 stick widths at draw threshold 0. No ComfyUI and no real model:
+detected and the supplied boxes, draw_head off and 0 stick widths at draw threshold 0, and the pose
+images drawn at another size. No ComfyUI and no real model:
 
     python -m pytest tests/pipelines/test_pose.py
 """
@@ -154,6 +155,43 @@ def test_the_pose_images_are_the_uint8_drawings_scaled_to_0_1():
     images = pose.draw(pose_data, draw_threshold=0.5)
     assert images.dtype == torch.float32 and images.shape == (B, H, W, 3)
     assert expected.sum() > 0 and torch.equal(images, expected)
+
+
+def placed(meta, size, x0, y0):
+    """The AAPoseMeta `meta` as on a `size` (width, height) canvas, the formula written out: its
+    keypoints moved by the x0 columns and y0 rows cut off each side, then scaled by the size over
+    what is left."""
+    width, height = size
+    placed = pose.AAPoseMeta.from_humanapi_meta(meta)
+    scale = (width / (meta["width"] - 2 * x0), height / (meta["height"] - 2 * y0))
+    for name in ("kps_body", "kps_lhand", "kps_rhand"):
+        kps = getattr(placed, name)
+        kps -= (x0, y0)
+        kps *= scale
+    placed.width, placed.height = width, height
+    return placed
+
+
+# the cut of core's center crop (comfy.utils.common_upscale) from the 120 x 160 frames to each size, by
+# hand: (60, 60) keeps rows 20-139 (round((160 - 160 x 0.75) / 2) = 20), (90, 40) rows 53-106
+# (round(53.33)), (30, 80) columns 30-89; the same aspect cuts nothing
+@pytest.mark.parametrize("size, cut", [((W, H), (0, 0)), ((2 * W, 2 * H), (0, 0)), ((60, 60), (0, 20)),
+                                       ((90, 40), (0, 53)), ((30, 80), (30, 0))])
+def test_drawn_at_a_size_the_pose_is_cut_as_core_cuts_a_hint_and_scaled_to_it(size, cut):
+    pose_data, _ = pose.detect(FakeDetector(), FakePose(0.6), frames())
+    width, height = size
+    drawn = [pose.draw_aapose_by_meta_new(np.zeros((height, width, 3), dtype=np.uint8), placed(meta, size, *cut),
+                                          threshold=0.5, draw_body=True, draw_hand=True, draw_head=True,
+                                          body_stick_width=-1, hand_stick_width=-1)
+             for meta in pose_data["pose_metas_original"]]
+    expected = torch.from_numpy(np.stack(drawn, 0)).float() / 255.0
+    images = pose.draw(pose_data, draw_threshold=0.5, size=size)
+    assert images.dtype == torch.float32 and images.shape == (B, height, width, 3)
+    assert expected.sum() > 0 and torch.equal(images, expected)
+    if size == (W, H):
+        assert torch.equal(images, pose.draw(pose_data, draw_threshold=0.5))
+    # pose_data is untouched: drawing again at the frame size gives the frame-size images
+    assert torch.equal(pose.draw(pose_data, draw_threshold=0.5), pose.draw(pose_data, draw_threshold=0.5, size=(W, H)))
 
 
 def test_pose_data_without_frames_raises_what_stacking_no_drawings_raised():

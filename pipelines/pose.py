@@ -267,23 +267,41 @@ def _frames(frames):
     return f"{len(frames)} frame{'s' if len(frames) > 1 else ''} ({log.frame_ranges(frames)})"
 
 
-def _pose_batch(pose_metas, frames):
+def _pose_batch(pose_metas, frames, size=None):
     """The pose images' batch, [frames, H, W, 3] float32 at the size of the frames the pose was
-    found on, uninitialised."""
+    found on (`size`, (width, height), when given), uninitialised."""
     if not pose_metas:
         # the error np.stack raised here before the output was preallocated
         raise ValueError("need at least one array to stack")
-    return torch.empty(frames, pose_metas[0].height, pose_metas[0].width, 3, dtype=torch.float32)
+    width, height = size or (pose_metas[0].width, pose_metas[0].height)
+    return torch.empty(frames, height, width, 3, dtype=torch.float32)
+
+
+def _placed(meta, size):
+    """The AAPoseMeta `meta` as drawn on a `size` (width, height) canvas: cut as core cuts a
+    ControlNet hint of another aspect (libs.resize.center_crop) and scaled to the size, the
+    keypoints moved and scaled with it. A copy; `meta` is untouched."""
+    from ..libs.resize import center_crop
+
+    width, height = size
+    x, y = center_crop(meta.width, meta.height, width, height)
+    placed = copy.copy(meta)
+    for name in ("kps_body", "kps_lhand", "kps_rhand", "kps_face"):
+        if getattr(meta, name) is not None:
+            setattr(placed, name, getattr(meta, name).copy())   # crop and resize move them in place
+    return placed.crop(x, y, meta.width - x, meta.height - y).resize(width, height)
 
 
 def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5,
-         forearm_limit=0.0, limb_dedup=False, back_view_face=False):
+         forearm_limit=0.0, limb_dedup=False, back_view_face=False, size=None):
     """The pose images [B, H, W, 3] drawn from pose_data at the size of the frames the pose
-    was found on, so they line up with the frames and the mask. A stick width of 0 leaves
-    that part out; a limb is drawn when both its ends reach `draw_threshold`. A draw rule that is
-    on (libs/draw_rules.py; limb_dedup, forearm_limit above 0, back_view_face) leaves the parts it
-    names out of the images, one console warning per side and part it fired on; pose_data keeps
-    them."""
+    was found on, so they line up with the frames and the mask; with `size` (width, height), drawn
+    at that size directly: the keypoints scaled to it, from a frame of another aspect cut centred
+    first as core's ControlNet cuts a hint (_placed), and a -1 stick width picked from that size.
+    A stick width of 0 leaves that part out; a limb is drawn when both its ends reach
+    `draw_threshold`. A draw rule that is on (libs/draw_rules.py; limb_dedup, forearm_limit above
+    0, back_view_face) leaves the parts it names out of the images, one console warning per side
+    and part it fired on; pose_data keeps them."""
     from comfy.utils import ProgressBar
     from tqdm import tqdm
 
@@ -292,15 +310,19 @@ def draw(pose_data: PoseData, body_stick_width=-1, hand_stick_width=-1, draw_hea
     pbar = ProgressBar(len(pose_metas))
     enabled = {"limb_dedup": limb_dedup, "forearm_rule": forearm_limit > 0, "back_view_face": back_view_face}
     # filled frame by frame from each uint8 drawing, scaled to 0..1 in place once at the end
-    pose_images = _pose_batch(pose_metas, len(pose_metas))
+    pose_images = _pose_batch(pose_metas, len(pose_metas), size)
     result = {}
-    with log.step(f"drawing {len(pose_metas)} pose images", result):
+    at = "" if size is None else f" at {size[0]}x{size[1]}"
+    with log.step(f"drawing {len(pose_metas)} pose images{at}", result):
         duplicates, mirrored, overlong, back_view, hidden = hidden_by_rules(
             pose_data["pose_metas_original"], draw_threshold, forearm_limit, limb_dedup, back_view_face)
         for i, (meta, parts) in enumerate(tqdm(zip(pose_metas, hidden), total=len(pose_metas),
                                                desc="Drawing pose images")):
-            canvas = np.zeros((meta.height, meta.width, 3), dtype=np.uint8)
-            image = draw_aapose_by_meta_new(canvas, _without(meta, parts), threshold=draw_threshold,
+            canvas = np.zeros(pose_images.shape[1:], dtype=np.uint8)
+            drawn = _without(meta, parts)
+            if size is not None:
+                drawn = _placed(drawn, size)
+            image = draw_aapose_by_meta_new(canvas, drawn, threshold=draw_threshold,
                                             draw_body=body_stick_width != 0, draw_hand=hand_stick_width != 0,
                                             draw_head=draw_head, body_stick_width=body_stick_width,
                                             hand_stick_width=hand_stick_width)
@@ -340,31 +362,33 @@ def key_frame_body_points(pose_data: PoseData, threshold=0.5):
 
 
 def pose_detection(images, detector, pose_model, bboxes=None, config=None, body_stick_width=-1,
-                   hand_stick_width=-1, draw_head=True, draw_threshold=0.5, draw_images=True
+                   hand_stick_width=-1, draw_head=True, draw_threshold=0.5, draw_images=True, size=None
                    ) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
     """The Pose Detection node: `images` [B, H, W, 3] in, and out
     (pose_images [B, H, W, 3], pose_data, bboxes, key_frame_body_points) - see `detect`,
     `draw` and `key_frame_body_points`. pose_data also carries `draw_threshold`: the guards
     count the model's keypoints and limbs at it, including those the draw rules of `config`,
     draw_head off or a 0 stick width leave out of the pose images. `draw_images` False: the
-    pose images are not drawn, pose_images is [0, H, W, 3]."""
+    pose images are not drawn, pose_images is [0, H, W, 3]. `size` (width, height): the pose
+    images drawn at that size (`draw`); everything else stays at the frame size."""
     config = config or PoseConfig()
     pose_data, boxes = detect(detector, pose_model, images, bboxes=bboxes, config=config)
     return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold,
-                        draw_images)
+                        draw_images, size)
 
 
 def pose_outputs(pose_data: PoseData, boxes, config, body_stick_width=-1, hand_stick_width=-1, draw_head=True,
-                 draw_threshold=0.5, draw_images=True) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
+                 draw_threshold=0.5, draw_images=True, size=None
+                 ) -> tuple[torch.Tensor, PoseData, list[tuple[float, float, float, float]], str]:
     """(pose_images, pose_data, boxes, key_frame_body_points) of a pose node from what `detect` or
     `detect_with` returned: `draw_threshold` added to pose_data, the pose images drawn with the draw
-    rules of `config` (a PoseConfig), or with `draw_images` False not drawn ([0, H, W, 3]): no
-    other output reads them."""
+    rules of `config` (a PoseConfig), at `size` (width, height) when given, or with `draw_images`
+    False not drawn ([0, H, W, 3]): no other output reads them."""
     pose_data["draw_threshold"] = draw_threshold
     if draw_images:
         pose_images = draw(pose_data, body_stick_width, hand_stick_width, draw_head, draw_threshold,
                            forearm_limit=config.forearm_limit, limb_dedup=config.limb_dedup,
-                           back_view_face=config.back_view_face)
+                           back_view_face=config.back_view_face, size=size)
     else:
-        pose_images = _pose_batch(pose_data["pose_metas"], 0)
+        pose_images = _pose_batch(pose_data["pose_metas"], 0, size)
     return pose_images, pose_data, boxes, key_frame_body_points(pose_data, draw_threshold)

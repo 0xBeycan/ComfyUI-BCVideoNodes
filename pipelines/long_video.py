@@ -16,6 +16,7 @@ chained chunk is colour-matched to the frames it was seeded with (libs/color.py)
 the adapter names.
 """
 
+import gc
 import logging
 
 # torch and comfy.* are imported inside the functions that use them, so this
@@ -214,6 +215,10 @@ def generate(
             **adapter.continuation(anchor, seek),
             **chunk_inputs,
         )
+        # core's WanAnimateToVideo leaves the Wan VAE encoder's full-resolution features in a
+        # reference cycle (GiBs of VRAM at 720p): collected here, before sampling, not whenever
+        # Python's own collector next runs
+        gc.collect()
         if len(animate) < adapter.OUTPUTS:
             raise RuntimeError("{} returned {} outputs, {} expected. {}".format(animate_node, len(animate), adapter.OUTPUTS, update_hint))
         chunk_positive, chunk_negative, latent, trim_latent, trim_image, returned = adapter.unpack(animate, anchor)

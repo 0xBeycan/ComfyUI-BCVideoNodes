@@ -1,6 +1,6 @@
 """The flows of the video input nodes: Load Video (a file decoded frame by frame, cropped and
-resized to the model's generation size straight into one preallocated IMAGE batch, with its audio
-and its video_info), Load Reference Image (an image fitted to the video's loaded size) and Conform
+resized to the model's generation size, or kept at the source size, straight into one preallocated
+IMAGE batch, with its audio and its video_info), Load Reference Image (an image fitted to the video's loaded size) and Conform
 Video (a clip fitted to the nearest platform size).
 
 The full-resolution clip never exists: one source frame is decoded at a time, and the batch is
@@ -87,7 +87,8 @@ def plan(path, model, resolution, orientation, force_fps, frame_count, probe=Non
     """Load Video's widgets checked against the video at `path`, before a frame is loaded:
     {"source": the probe (video_decode.probe's dict), "force_fps": the rate typed or None, "rate":
     the rate frames are kept at (kept_rate's), "count": frame_count or None, "orientation": portrait
-    or landscape, "width", "height": the loaded size}. Raises ValueError, saying what to change, in
+    or landscape, "width", "height": the loaded size, "fit": how a frame gets there (resize.CROP, or
+    resize.CUT for source)}. Raises ValueError, saying what to change, in
     the order load_video meets them: the widgets, then the file. `probe` reads the file
     (video_decode.probe when None)."""
     size = sizes.model_size(model, resolution)
@@ -97,16 +98,31 @@ def plan(path, model, resolution, orientation, force_fps, frame_count, probe=Non
         raise ValueError(f"orientation {orientation!r} is not one of {', '.join(sizes.ORIENTATIONS)}.")
     source = (probe or video_decode.probe)(path)
     rate = kept_rate(typed, source["fps"])
-    turned = sizes.orientation_of(source["width"], source["height"]) if orientation == sizes.AUTO else orientation
-    width, height = sizes.oriented(size, turned)
+    own = sizes.orientation_of(source["width"], source["height"])
+    turned = own if orientation == sizes.AUTO else orientation
+    if size is not None:
+        width, height = sizes.oriented(size, turned)
+    else:
+        # source: the video's own size; in the other orientation the centred crop to the turned
+        # aspect, the short side kept (1920x1080 -> 608x1080), never a rotation; then each side
+        # cut down to the model's grid (Wan 16, SCAIL 32, None 1). Frames are cut, not resized.
+        width, height = source["width"], source["height"]
+        if turned != own:
+            width, height = resize.crop_box(width, height, height, width)[2:]
+        grid = sizes.MODELS[model]["grid"]
+        if width < grid or height < grid:
+            raise ValueError(f"resolution source gives {width}x{height}, smaller than model {model}'s {grid}-pixel "
+                             f"grid; pick model None or one of {model}'s sized resolutions.")
+        width, height = width // grid * grid, height // grid * grid
     return {"source": source, "force_fps": typed, "rate": rate, "count": count, "orientation": turned,
-            "width": width, "height": height}
+            "width": width, "height": height, "fit": resize.CROP if size is not None else resize.CUT}
 
 
 def frame_indices(source, rate, start_frame, count, model):
     """The source indices Load Video loads from a video probed as `source`: the frames kept at
-    `rate`, from `start_frame`, `count` of them (None: all the rest), cut to the model's 4n+1
-    (loaded_frames, which raises for a range past the frames)."""
+    `rate`, from `start_frame`, `count` of them (None: all the rest), cut to the model's frame rule
+    (4n+1 for Wan and SCAIL, none for None; loaded_frames, which raises for a range past the
+    frames)."""
     kept = video_decode.select_frames(source["fps"], source["frames"], rate)
     return loaded_frames(kept, start_frame, count, sizes.MODELS[model]["frames"], rate)
 
@@ -136,14 +152,14 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
     with log.step(f"loading {model} {resolution} {planned['orientation']} ({width}x{height}) from a "
                   f"{source['width']}x{source['height']} video", result):
         try:
-            loaded = _decode(path, source, width, height, rate, start_frame, planned["count"], model)
+            loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model)
         except video_decode.FrameCountChanged as changed:
             log.warning(f"the container promised {source['frames']} frames, the decoder gave {changed.frames}; "
                         f"loading again with {changed.frames}")
             source["frames"] = changed.frames
             loaded = None
         if loaded is None:  # outside the except block: its traceback would keep the first batch alive
-            loaded = _decode(path, source, width, height, rate, start_frame, planned["count"], model)
+            loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model)
         images, indices = loaded
         info = video_info(model, resolution, planned, len(indices))
         frame_time = 1 / info["loaded_fps"]
@@ -154,16 +170,16 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
     return images, audio, info
 
 
-def _decode(path, source, width, height, rate, start_frame, count, model):
-    """(the batch, its source indices): the kept frames decoded one at a time and fitted into a
-    batch allocated at its final size."""
+def _decode(path, source, width, height, how, rate, start_frame, count, model):
+    """(the batch, its source indices): the kept frames decoded one at a time and fitted (resize.fit
+    `how`) into a batch allocated at its final size."""
     from comfy.utils import ProgressBar
 
     indices = frame_indices(source, rate, start_frame, count, model)
     images = torch.empty((len(indices), height, width, 3), dtype=torch.float32)
     bar = ProgressBar(len(indices))
     for pixels, positions in video_decode.kept_frames(path, indices, source["frames"], to_end=count is None):
-        resize.fit(pixels, images[positions[0]])
+        resize.fit(pixels, images[positions[0]], how)
         for position in positions[1:]:
             images[position].copy_(images[positions[0]])
         bar.update_absolute(positions[-1] + 1, len(indices))
@@ -174,7 +190,7 @@ class LoadPreview(TypedDict):
     """What Load Video's preview shows, from the file's header and packets (no frame is loaded):
     the probe of the file (None when it cannot be read), the video_info the loader outputs (None on
     an error), the frames from start_frame on at the kept rate (what an empty frame_count stands
-    for, before the cut to 4n+1; None when force_fps or start_frame is wrong) and the error the
+    for, before the cut to the model's frame rule; None when force_fps or start_frame is wrong) and the error the
     loader raises, word for word (None when it loads)."""
     source: Optional[dict]
     info: Optional[VideoInfo]

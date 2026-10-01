@@ -6,7 +6,7 @@ from ..libs import log
 from ..libs.config_widgets import config_inputs
 from .common import _config
 from .guard import _guard_inputs
-from .pose import POSE_MODEL_TOOLTIP, POSE_MODELS, VITPOSE, BCVPoseDetection, detect_pose
+from .pose import VITPOSE, BCVPoseDetection
 from .sam3_1_multiplex import BCVSAM3VideoTrack, track_reference
 from .unused_outputs import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
 
@@ -54,7 +54,9 @@ class BCVSCAIL2Preprocess:
         sam3_types = BCVSAM3VideoTrack.INPUT_TYPES()
         colored = BCVSCAIL2ColoredMask.INPUT_TYPES()
         prompt_kind, prompt_options = sam3_types["required"]["prompt"]
-        pose_config_kind, pose_config_options = BCVPoseDetection.INPUT_TYPES()["optional"]["pose_config"]
+        pose = BCVPoseDetection.INPUT_TYPES()["optional"]
+        pose_config_kind, pose_config_options = pose["pose_config"]
+        pose_model_kind, pose_model_options = pose["pose_model"]
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "The driving video, at the generation size (divisible by 32)."}),
@@ -69,7 +71,7 @@ class BCVSCAIL2Preprocess:
                 "pose_config": (pose_config_kind, {**pose_config_options, "tooltip": POSE_CONFIG_TOOLTIP}),
                 "sam3_config": sam3_types["optional"]["sam3_config"],
                 # the last widget, so a workflow saved before it keeps its widget values and runs ViTPose-H
-                "pose_model": (list(POSE_MODELS), {"default": VITPOSE, "tooltip": "[box_keypoint, prompt_pose] " + POSE_MODEL_TOOLTIP + " Ignored in prompt mode, which runs no pose."}),
+                "pose_model": (pose_model_kind, {**pose_model_options, "tooltip": "[box_keypoint, prompt_pose] " + pose_model_options["tooltip"] + " Ignored in prompt mode, which runs no pose."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -82,7 +84,7 @@ class BCVSCAIL2Preprocess:
     HEAVY_OUTPUTS = ("pose_video", "pose_video_mask", "mask")
     FUNCTION = "process"
     CATEGORY = SCAIL
-    DESCRIPTION = "The SCAIL-2 preprocess in one node, one person: SAM 3.1 Multiplex Video Track in the chosen mode on the whole driving video once, so the mask keeps its shape and colour across the sampler's chunks; box_keypoint and prompt_pose read the pose, so in those modes the node first runs Pose Detection on the driving frames (its default widgets, pose_config when connected; Sapiens2 Pose when pose_model is a Sapiens2 model) and hands its pose_data to the track, while prompt mode runs no pose. The reference image is tracked in prompt mode in every mode, unless reference_mask is connected: the pose modes are video modes, and the reference is one image. Then SCAIL-2 Colored Mask. SCAIL-2 draws no pose; the pose only shapes the mask. pose_video is the driving video, SCAIL-2's end-to-end pose input in animation and replacement mode alike: unchanged, or in animation mode with black_background on, with everything outside the person's mask black."
+    DESCRIPTION = "The SCAIL-2 preprocess in one node, one person: SAM 3.1 Multiplex Video Track in the chosen mode on the whole driving video once, so the mask keeps its shape and colour across the sampler's chunks; box_keypoint and prompt_pose read the pose, so in those modes the node first runs Pose Detection on the driving frames (its default widgets, pose_config when connected, and pose_model) and hands its pose_data to the track, while prompt mode runs no pose. The reference image is tracked in prompt mode in every mode, unless reference_mask is connected: the pose modes are video modes, and the reference is one image. Then SCAIL-2 Colored Mask. SCAIL-2 draws no pose; the pose only shapes the mask. pose_video is the driving video, SCAIL-2's end-to-end pose input in animation and replacement mode alike: unchanged, or in animation mode with black_background on, with everything outside the person's mask black."
 
     def process(self, images, reference_image, replacement_mode, mode, prompt, black_background=False, reference_mask=None,
                 pose_config=None, sam3_config=None, pose_model=VITPOSE, prompt_graph=None, unique_id=None):
@@ -98,7 +100,8 @@ class BCVSCAIL2Preprocess:
             # images are not drawn (wanted: none of its heavy outputs)
             widgets = {name: options[1]["default"] for name, options in BCVPoseDetection.INPUT_TYPES()["required"].items()
                        if name != "images"}
-            _, pose_data, _, _ = detect_pose(pose_model, images, **widgets, pose_config=pose_config, wanted=set())
+            _, pose_data, _, _ = BCVPoseDetection().detect(images, **widgets, pose_config=pose_config,
+                                                           pose_model=pose_model, wanted=set())
         else:
             unused = [name for name, changed in (("pose_config", pose_config is not None), ("pose_model", pose_model != VITPOSE))
                       if changed]

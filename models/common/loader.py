@@ -33,7 +33,7 @@ def load_pose_models(detector=True):
 
 
 def load_pose_estimator(name):
-    """The pose estimator registered as `name` (Sapiens2 Pose's: "Sapiens2 <size> <precision>"),
+    """The pose estimator registered as `name` (a Sapiens2 pose_model: "Sapiens2 <size> <precision>"),
     its file downloaded into models/detection on first use. Call wrapper.load_models on it before
     running it."""
     if name not in registry.names("pose_estimator"):

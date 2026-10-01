@@ -7,13 +7,13 @@ import numpy as np
 
 from ...libs import log
 from ...libs.keypoints import BODY_NAMES, LIMBS, in_frame
+from ...libs.mask import BLOCK_SIZE, GROW, block_grid, bounding_box, final_blocks, lay_out
 from ...libs.pose_data import Detection, PoseData, PoseMeta
-from .common import (BOX_MARGIN, BOX_WINDOW, FINAL_BLOCK, FINAL_GROW, FINAL_PAD, FRAGMENT_FRACTION, HANDS,
-                     HEAD_OUT_KEYPOINT, HEAD_OUT_SIDES, LEAK_REACH, LEAK_WINDOW, LOSS_GAIN, LOSS_HAND, LOSS_REACH,
-                     LOSS_REACH_FRAMES, LOSS_WINDOW, MASK_CHECKS, POSE_FREE_MASK_CHECKS, RELIABLE_CONF,
-                     RELIABLE_KEYPOINTS, SPECK_FRACTION, WHOLE_BODY, MaskRow, _body, _box_iou_prev, _flag,
-                     _frame_pose, _hand, _keypoint_rows, _pose_inputs, _thresholds, body_scale, box_sides, out_of_shot,
-                     out_of_shot_limbs)
+from .common import (BOX_MARGIN, BOX_WINDOW, FRAGMENT_FRACTION, HANDS, HEAD_OUT_KEYPOINT, HEAD_OUT_SIDES, LEAK_REACH,
+                     LEAK_WINDOW, LOSS_GAIN, LOSS_HAND, LOSS_REACH, LOSS_REACH_FRAMES, LOSS_WINDOW, MASK_CHECKS,
+                     POSE_FREE_MASK_CHECKS, RELIABLE_CONF, RELIABLE_KEYPOINTS, SPECK_FRACTION, WHOLE_BODY, MaskRow,
+                     _body, _box_iou_prev, _flag, _frame_pose, _hand, _keypoint_rows, _pose_inputs, _thresholds,
+                     body_scale, box_sides, final_pad, out_of_shot, out_of_shot_limbs)
 from .config import FinalReferenceGuardConfig, MaskGuardConfig, ReferenceGuardConfig, _config
 from .reference import mask_reference
 from .report import _finish
@@ -60,8 +60,8 @@ def _mask_inputs(mask, pose_data: PoseData, final=False):
     if mask.dim() != 3:
         raise ValueError(f"mask must be [frames, height, width], got a tensor of shape {tuple(mask.shape)}")
     masks = _Booleans(mask.cpu())
-    hint = ("connect the final mask of the same frames (GrowMaskWithBlur and BlockifyMask keep the size), before any "
-            "resize" if final else "connect the mask straight from the tracker, before any resize")
+    hint = ("connect WanAnimate Preprocess's final_mask of the same frames, before any resize" if final
+            else "connect the mask straight from the tracker, before any resize")
     return (masks, *pose_of(masks, pose_data, hint))
 
 
@@ -122,7 +122,7 @@ def _sides(stats, i, H, W):
 def mask_regions(mask, person_kps, pad=0, around=()):
     """The person's part of `mask` and the regions detached from it, as fractions of its
     largest region, each region measured with `pad` px taken off its outline (the final mask's
-    padding, FINAL_PAD; 0 on a raw mask).
+    padding, common.final_pad; 0 on a raw mask).
 
     The person is the largest region and every region holding one of her own drawn keypoints
     (`person_kps`, [K, 2+] pixels inside the frame): a piece the frame edge or a gap in the
@@ -213,75 +213,22 @@ def _grown(mask, size):
     return _dilated(mask, _grow_side(size))
 
 
-def _box(region):
-    """The box of the [H, W] booleans `region` as (row slice, column slice), None when it is empty."""
-    rows, cols = np.flatnonzero(region.any(axis=1)), np.flatnonzero(region.any(axis=0))
-    if not len(rows):
-        return None
-    return slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1)
-
-
 # --- the final mask and the grids the models read ----------------------------------------------
 
-def _block_edges(start, end):
-    """BlockifyMask's cuts of one side of the box, start to end: side // FINAL_BLOCK blocks (at
-    least one), the remainder joining the last, as the edges from `start` to `end`."""
-    n = max(1, (end - start) // FINAL_BLOCK)
-    size = (end - start) // n
-    return np.array([start + i * size for i in range(n)] + [end])
-
-
-def block_grid(mask):
-    """BlockifyMask's grid over the box of `mask` ([H, W] booleans, the grown mask; a final mask
-    has the same box): (row edges, column edges), each block from one edge to the next along
-    both sides; None on an empty frame. The grid is laid from each frame's own box."""
-    box = _box(mask)
-    if box is None:
-        return None
-    rows, cols = box
-    return _block_edges(rows.start, rows.stop), _block_edges(cols.start, cols.stop)
-
-
-def _final_blocks(mask):
-    """The final mask the Wan Animate workflow makes of one raw [H, W] boolean frame, the one the
-    sampler and every model after the preprocess read, as its block grid and its blocks:
-    GrowMaskWithBlur (expand FINAL_GROW, tapered corners: FINAL_GROW dilations by a 3 x 3 cross; an
-    empty frame stays empty), then BlockifyMask (FINAL_BLOCK, block_grid): a block on wherever it
-    holds a grown pixel, nothing outside the box. Returns (grid, [rows, columns] booleans, the
-    blocks that are on), None on an empty frame. The grown mask lies within FINAL_GROW px of the
-    mask's box, so only that part of the frame is grown."""
-    import cv2
-
-    box = _box(mask)
-    if box is None:
-        return None
-    H, W = mask.shape
-    y0, x0 = max(0, box[0].start - FINAL_GROW), max(0, box[1].start - FINAL_GROW)
-    y1, x1 = min(H, box[0].stop + FINAL_GROW), min(W, box[1].stop + FINAL_GROW)
-    cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], np.uint8)
-    grown = cv2.dilate(mask[y0:y1, x0:x1].astype(np.uint8), cross, iterations=FINAL_GROW).astype(bool)
-    rows, cols = block_grid(grown)
-    grown = grown[rows[0]:rows[-1], cols[0]:cols[-1]]
-    on = np.logical_or.reduceat(np.logical_or.reduceat(grown, rows[:-1] - rows[0], axis=0), cols[:-1] - cols[0], axis=1)
-    return (rows + y0, cols + x0), on
-
-
-def _final_reading(masks):
-    """`read(f)` (see lost_regions) of the raw [N, H, W] boolean `masks`: frame f's final mask, [H, W]
-    booleans laid out from its blocks, and its grid (_final_blocks). Each frame is grown and
-    blockified once, however often it is read."""
+def _final_reading(masks, grow=GROW, block_size=BLOCK_SIZE):
+    """`read(f)` (see lost_regions) of the raw [N, H, W] boolean `masks`: frame f's final mask grown by
+    `grow` and blockified by `block_size`, [H, W] booleans laid out from its blocks, and its grid
+    (libs.mask.final_blocks). Each frame is grown and blockified once, however often it is read."""
     shape, blocks = masks.shape[1:], {}
 
     def read(f):
         if f not in blocks:
-            blocks[f] = _final_blocks(masks[f])
+            blocks[f] = final_blocks(masks[f], grow, block_size)
         final = np.zeros(shape, bool)
         if blocks[f] is None:
             return final, None
-        (rows, cols), on = blocks[f]
-        on = np.repeat(np.repeat(on, np.diff(rows), axis=0), np.diff(cols), axis=1)
-        final[rows[0]:rows[-1], cols[0]:cols[-1]] = on
-        return final, (rows, cols)
+        lay_out(blocks[f], final)
+        return final, blocks[f][0]
     return read
 
 
@@ -398,8 +345,8 @@ class _KeypointEvidence:
 class _Reading:
     """What the model reads of each frame of `masks` (`read`, see lost_regions), frame by frame and kept
     in `kept` while a run may ask for it: reading(f) is (where the mask and its reading both hold her,
-    where either does, the grid the reading is laid on, the box of where either does: _box). `areas`
-    is each frame's mask area in pixels, at least 1; `present` says which frames have a mask."""
+    where either does, the grid the reading is laid on, the box of where either does: bounding_box).
+    `areas` is each frame's mask area in pixels, at least 1; `present` says which frames have a mask."""
 
     def __init__(self, masks, read):
         self.masks, self.read, self.kept = masks, read, {}
@@ -411,7 +358,7 @@ class _Reading:
             reading, grid = self.read(f)
             frame = self.masks[f]
             both, either = (frame, frame) if reading is None else (frame & reading, frame | reading)
-            self.kept[f] = (both, either, grid, _box(either))
+            self.kept[f] = (both, either, grid, bounding_box(either))
         return self.kept[f]
 
     def whole_unit(self, frames, piece, corner):
@@ -567,10 +514,10 @@ def dropouts(masks, read, evidence=None):
 
 def closed_losses(masks, pose_metas: list[PoseMeta], draw_threshold):
     """prompt_pose's mask-driven trigger (sam3_1_multiplex.prompt_pose): `lost_regions` of the raw
-    `masks` as the Wan Animate workflow's final reads them (GrowMaskWithBlur expand FINAL_GROW,
-    BlockifyMask FINAL_BLOCK), the body evidence of `pose_metas` at `draw_threshold` (a raw mask's),
-    closed runs only - a region of her the mask drops for up to LOSS_WINDOW frames and holds on both
-    sides. A generator, as lost_regions."""
+    `masks` as the Wan Animate workflow's final reads them (grown and blockified at the defaults,
+    libs.mask.GROW and BLOCK_SIZE), the body evidence of `pose_metas` at `draw_threshold` (a raw
+    mask's), closed runs only - a region of her the mask drops for up to LOSS_WINDOW frames and holds
+    on both sides. A generator, as lost_regions."""
     _, H, W = masks.shape
     evidence = _LimbEvidence(pose_metas, W, H, draw_threshold)
     return lost_regions(masks, _final_reading(masks), evidence, open_runs=False)
@@ -579,9 +526,9 @@ def closed_losses(masks, pose_metas: list[PoseMeta], draw_threshold):
 def dropped_parts(masks):
     """prompt mode's trigger (sam3_1_multiplex.refine.segment_by_prompt_repaired), from the mask alone:
     a part of her the raw `masks` hold on both sides of a closed run of up to LOSS_WINDOW frames and
-    drop on every frame of it, as the Wan Animate workflow's final reads them (GrowMaskWithBlur expand
-    FINAL_GROW, BlockifyMask FINAL_BLOCK). The runs are lost_regions' closed runs; the part is judged on
-    each side:
+    drop on every frame of it, as the Wan Animate workflow's final reads them (grown and blockified at
+    the defaults, libs.mask.GROW and BLOCK_SIZE). The runs are lost_regions' closed runs; the part is
+    judged on each side:
 
     - each of the two frames around the run loses a part: a connected piece of what it holds (the mask
       and the final both) that no frame of the run holds (the mask or the final), and the two parts
@@ -626,7 +573,7 @@ def dropped_parts(masks):
                 shares.append(share)
             else:
                 region = (labelled[0][0] == pair[0]) & (labelled[1][0] == pair[1])
-                box = _box(region)
+                box = bounding_box(region)
                 yield run, anchors, region[box], (int(box[0].start), int(box[1].start)), min(shares)
 
 
@@ -677,20 +624,21 @@ def keypoints_out(seen, shape, poses, areas, pose_metas: list[PoseMeta], draw_th
 # --- the measurements, the flags, check_mask ----------------------------------------------------
 
 def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detection], draw_threshold, read,
-                       final=False, read_keypoints=None, loss_without_pose=True) -> list[MaskRow]:
+                       final=False, read_keypoints=None, loss_without_pose=True, grow=GROW,
+                       block_size=BLOCK_SIZE) -> list[MaskRow]:
     """One dict of raw mask measurements per frame (keys MASK_ROW); thresholds are applied
     afterwards. `masks` is [N, H, W] booleans, or reads as them (lost_regions), on the frames the
     pose was found on; without a pose (`pose_metas` None) the pose-based measurements are None
     and the lists empty. `read(f)` is what the model reads of frame f's mask and the grid it reads
     it on (see `dropouts`). `final` says the masks are the final masks of the Wan Animate
-    workflow, measured as common.FINAL_BLOCK describes (it needs a pose). `read_keypoints(f)`, when
-    given, is a reading the keypoint tests count as the mask too: a drawn keypoint SCAIL-2's latent
-    grid reads as her is inside the mask.
+    workflow, grown by `grow` and blockified by `block_size`, measured as common.final_pad
+    describes (it needs a pose). `read_keypoints(f)`, when given, is a reading the keypoint tests
+    count as the mask too: a drawn keypoint SCAIL-2's latent grid reads as her is inside the mask.
     With `loss_without_pose` False, mask_loss is not measured without a pose (None)."""
     N, H, W = masks.shape
     posed = pose_metas is not None
     areas = np.array([np.count_nonzero(masks[f]) for f in range(N)], dtype=np.int64)
-    pad = FINAL_PAD if final else 0
+    pad = final_pad(grow, block_size) if final else 0
 
     def seen(f):
         return masks[f] | read_keypoints(f) if read_keypoints is not None else masks[f]
@@ -741,7 +689,7 @@ def mask_frame_metrics(masks, pose_metas: list[PoseMeta], detections: list[Detec
             # the person's region grown where neither the neighbours' masks nor the skeleton are
             if area and near:
                 reference = reduce(np.logical_or, (masks[j] for j in near))
-                grown = (_dilated(reference, 2 * FINAL_BLOCK + 1) if final
+                grown = (_dilated(reference, 2 * block_size + 1) if final
                          else _grown(reference, np.sqrt(np.median(areas[near]))))
                 excess = person & ~grown & ~skeleton_zone(meta, (H, W), draw_threshold, LEAK_REACH)
                 m["attached_leak"] = float(excess.sum() / max(np.median(areas[near]), 1))
@@ -793,7 +741,7 @@ def mask_flags(rows: list[MaskRow], t, checks=MASK_CHECKS):
 
 
 def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop_on_fail=True, final=False,
-               reference=None, reference_config=None):
+               reference=None, reference_config=None, grow=GROW, block_size=BLOCK_SIZE):
     """The mask checks on `mask` [frames, H, W] (or one [H, W] frame) against the keypoints and
     boxes in `pose_data`, which must be of the same frames at the same size. Without pose_data
     only the checks that do not read it run (POSE_FREE_MASK_CHECKS), and the report says so.
@@ -803,9 +751,13 @@ def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop
     raises GuardFailed with the report; the wrapper that combines both groups passes False and lets
     `combine_guards` decide. `final` says `mask` is the final mask of the Wan Animate workflow,
     grown and blockified (the WanAnimate Preprocess Guard's), whose measures allow for its blocks
-    (common.FINAL_BLOCK); it needs pose_data. Otherwise `mask` is the raw mask, which the workflow
+    (common.final_pad); it needs pose_data. Otherwise `mask` is the raw mask, which the workflow
     grows into that final before any model reads it: what the model loses is judged on the final
-    (`_final_blocks`).
+    (libs.mask.final_blocks). Either way the final is the raw mask grown by `grow` dilations of the
+    3 x 3 cross and blockified by `block_size` (WanAnimate Preprocess's widgets). On a raw mask a
+    block_size of 0 models a final without blocks, the grown mask read a pixel at a time: a region
+    the model loses then needs no whole block (mask_loss), and with `grow` 0 too the raw mask is
+    judged as it is. The final mask itself is blockified: `final` takes a block_size from 1 up.
 
     `reference`, when given, is the character on the reference image as a MASK (SAM 3.1 Multiplex
     on it, [frames, H', W'], its first frame read): it is placed on the mask's frames as core places
@@ -818,16 +770,20 @@ def check_mask(mask, pose_data: PoseData = None, config=None, enabled=True, stop
     config = _config(config, MaskGuardConfig)
     if final and pose_data is None:
         raise ValueError("the final mask is judged against its pose; connect pose_data")
+    if final and block_size < 1:
+        raise ValueError(f"block_size {block_size}: the final mask is cut into blocks; give the block_size it was "
+                         f"blockified with (block_size 0, no blocks, is for a raw mask)")
     masks, pose_metas, detections = _mask_inputs(mask, pose_data, final)
     thresholds = _thresholds(pose_data, config)
     if reference is not None:
         thresholds.update(asdict(_config(reference_config, FinalReferenceGuardConfig if final else ReferenceGuardConfig)))
-    read = (lambda f: (None, block_grid(masks[f]))) if final else _final_reading(masks)
+    read = (lambda f: (None, block_grid(masks[f], block_size))) if final else _final_reading(masks, grow, block_size)
     with log.step(f"mask guard: checking {len(masks)} frames ({'on' if enabled else 'off'})"):
-        rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["draw_threshold"], read, final)
+        rows = mask_frame_metrics(masks, pose_metas, detections, thresholds["draw_threshold"], read, final,
+                                  grow=grow, block_size=block_size)
         flags = mask_flags(rows, thresholds)
         # the final grows and blockifies the placed character as the workflow does the raw mask
-        grown = (lambda placed: _final_reading(placed[None])(0)[0]) if final else None
+        grown = (lambda placed: _final_reading(placed[None], grow, block_size)(0)[0]) if final else None
         record = None if reference is None else mask_reference(reference, masks.shape[1:], masks[0] if len(masks) else None,
                                                                thresholds, grown)
     note = None if pose_data is not None else (

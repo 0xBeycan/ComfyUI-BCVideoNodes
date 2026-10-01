@@ -1,7 +1,7 @@
 """Sapiens2 pose (Meta, facebookresearch/sapiens2): registers architecture "sapiens2_pose" and a pose
-estimator per model file, "Sapiens2 <size> <precision>", the names the Sapiens2 Pose node's `model`
-widget and the preprocess wrappers' `pose_model` widget choose from (nodes/pose.py). The files are
-downloaded from their own repository, not the pack's: bf16 made by scripts/convert_sapiens2.py from
+estimator per model file, "Sapiens2 <size> <precision>", the Sapiens2 names of the `pose_model`
+widget of Pose Detection and the preprocess wrappers (nodes/pose.py). The files are downloaded from
+their own repository, not the pack's: bf16 made by scripts/convert_sapiens2.py from
 the transformers checkpoints, int8_convrot made from the bf16 file by convert_to_quant.
 
 Sapiens2 gives the body, the feet and the hands; the pose pipeline takes the face from ViTPose-H

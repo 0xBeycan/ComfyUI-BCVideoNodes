@@ -1,6 +1,7 @@
-"""Sapiens2 Pose over a batch of frames: Pose Detection's flow (pipelines/pose.py: the person box from
-YOLO or the supplied bboxes, the Pose Config box switches and draw rules, the drawing,
-key_frame_body_points) with Sapiens2 in place of ViTPose-H for the body, the feet and the hands.
+"""Pose Detection with a Sapiens2 pose_model, over a batch of frames: Pose Detection's flow
+(pipelines/pose.py: the person box from YOLO or the supplied bboxes, the Pose Config box switches and
+draw rules, the drawing, key_frame_body_points) with Sapiens2 in place of ViTPose-H for the body, the
+feet and the hands.
 
 The keypoints are a hybrid, the owner's choice from the pose bake-off: COCO-WholeBody rows 23-90 (the
 68 face points) are ViTPose-H's on the same boxes, exactly what Pose Detection gives there; every other
@@ -47,12 +48,13 @@ def hybrid_keypoints(sapiens2, vitpose, images_np, boxes, progress=None):
 
 
 def sapiens2_pose(images, detector, sapiens2, vitpose, bboxes=None, config=None, body_stick_width=-1,
-                  hand_stick_width=-1, draw_head=True, draw_threshold=0.5, draw_images=True):
-    """The Sapiens2 Pose node: what pipelines/pose.pose_detection returns, (pose_images, pose_data,
-    bboxes, key_frame_body_points), with the hybrid keypoints; `draw_images` as there. `detector` is
-    not called when `bboxes` is given and may then be None."""
+                  hand_stick_width=-1, draw_head=True, draw_threshold=0.5, draw_images=True, size=None):
+    """Pose Detection with a Sapiens2 pose_model: what pipelines/pose.pose_detection returns,
+    (pose_images, pose_data, bboxes, key_frame_body_points), with the hybrid keypoints; `draw_images`
+    and `size` as there.
+    `detector` is not called when `bboxes` is given and may then be None."""
     config = config or PoseConfig()
     pose_data, boxes = detect_with(detector, [sapiens2, vitpose], lambda frames, boxes, progress: hybrid_keypoints(
         sapiens2, vitpose, frames, boxes, progress), images, bboxes=bboxes, config=config)
     return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold,
-                        draw_images)
+                        draw_images, size)

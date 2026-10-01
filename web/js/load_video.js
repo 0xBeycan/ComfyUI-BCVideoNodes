@@ -7,7 +7,8 @@ import { PlayerWidget, drawMessage, drawTag, fitRect, guard, installPlayer } fro
 // frame_count stands for.
 //
 // resolution offers the labels of the chosen model; the labels come with the node definition (the
-// resolution input's "bcv_sizes": model -> label -> [width, height], portrait).
+// resolution input's "bcv_sizes": model -> label -> [width, height], portrait; null for source,
+// the video's own pixels, cut and never resized).
 //
 // What the loader will load comes from the server (PLAN_ROUTE, nodes/video_input.py), which
 // answers from the loader's own checks and frame selection without loading a frame: the loaded
@@ -35,17 +36,24 @@ function widget(node, name) {
 
 // ---- resolution by model -------------------------------------------------------------------
 
-// Narrows resolution to the model's labels. On a model change the label keeps its place in the
-// list (480p <-> 512p, 720p <-> 704p); a loaded workflow keeps its value.
+// The labels of `model` that have a size (source has none).
+function sized(sizes, model) {
+	return Object.entries(sizes?.[model] ?? {}).filter(([, size]) => size).map(([label]) => label);
+}
+
+// Narrows resolution to the model's labels. On a model change the label stays when the new model
+// has it (720p, source), else it keeps its place among the sized labels (480p <-> 512p, 720p <->
+// 704p, 1080p -> the largest); a loaded workflow keeps its value.
 function applyModel(node, sizes, previousModel) {
 	const model = widget(node, "model")?.value;
 	const resolution = widget(node, "resolution");
 	const labels = Object.keys(sizes?.[model] ?? {});
 	if (!resolution || !labels.length) return;
 	resolution.options.values = labels;
-	if (previousModel !== undefined && previousModel !== model) {
-		const place = Object.keys(sizes[previousModel] ?? {}).indexOf(resolution.value);
-		resolution.value = labels[Math.min(Math.max(place, 0), labels.length - 1)];
+	if (previousModel !== undefined && previousModel !== model && !labels.includes(resolution.value)) {
+		const place = sized(sizes, previousModel).indexOf(resolution.value);
+		const next = sized(sizes, model);
+		resolution.value = next.length ? next[Math.min(Math.max(place, 0), next.length - 1)] : labels[0];
 	}
 	node.setDirtyCanvas?.(true, false);
 }
@@ -135,6 +143,16 @@ function cropBox(width, height, tw, th) {
 	return [Math.floor((width - w) / 2), Math.floor((height - h) / 2), w, h];
 }
 
+// The region a resolution source load keeps, in a width x height picture of the source: the centred
+// loaded_width x loaded_height of the source's pixels, as the loader cuts it (no resize).
+function cutBox(width, height, info) {
+	const sx = width / info.source_width;
+	const sy = height / info.source_height;
+	const x = Math.floor((info.source_width - info.loaded_width) / 2);
+	const y = Math.floor((info.source_height - info.loaded_height) / 2);
+	return [x * sx, y * sy, info.loaded_width * sx, info.loaded_height * sy];
+}
+
 function rate(fps) {
 	return String(+fps.toFixed(3));
 }
@@ -173,8 +191,9 @@ function drawError(ctx, text, [bx, by, bw, bh]) {
 }
 
 class SourceWidget extends PlayerWidget {
-	constructor(node) {
+	constructor(node, sizes) {
 		super(node, "preview");
+		this.sizes = sizes; // bcv_sizes: a null size is source, which cuts instead of resizing
 		this.asked = null; // the query of the widget values last asked about ("" without a file)
 		this.timer = null;
 		this.answer = null; // the route's answer to `answered`, or null
@@ -258,7 +277,9 @@ class SourceWidget extends PlayerWidget {
 		const info = this.answer?.info;
 		if (!info) return;
 		// dim what the crop cuts away, outline what it keeps
-		const [cx, cy, cw, ch] = cropBox(sw, sh, info.loaded_width, info.loaded_height);
+		const asked = new URLSearchParams(this.answered ?? "");
+		const cut = this.sizes?.[asked.get("model")]?.[asked.get("resolution")] === null;
+		const [cx, cy, cw, ch] = cut ? cutBox(sw, sh, info) : cropBox(sw, sh, info.loaded_width, info.loaded_height);
 		const s = rect[2] / sw;
 		const [kx, ky, kw, kh] = [rect[0] + cx * s, rect[1] + cy * s, cw * s, ch * s];
 		ctx.fillStyle = "rgba(0,0,0,.55)";
@@ -309,7 +330,7 @@ app.registerExtension({
 
 		// wraps the onNodeCreated above, which runs first: the preview comes after the upload button
 		// and spans the rest of the node
-		installPlayer(nodeType, (node) => new SourceWidget(node), [320, 560]);
+		installPlayer(nodeType, (node) => new SourceWidget(node, sizes), [320, 560]);
 
 		const onConfigure = nodeType.prototype.onConfigure;
 		nodeType.prototype.onConfigure = function (...args) {

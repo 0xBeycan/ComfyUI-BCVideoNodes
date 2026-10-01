@@ -25,7 +25,8 @@ PREPROCESS = {
     "BCVMaskGuard": ("Mask Guard", "BCVideoNodes", ("mask", "report", "metrics", "timeline")),
     # the source node's outputs in the source order, then the individual nodes' new ones
     "BCVWanAnimatePreprocess": ("WanAnimate Preprocess", "BCVideoNodes/Wan/Animate",
-                                ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes")),
+                                ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes",
+                                 "final_mask", "bg_images")),
     "BCVWanAnimatePreprocessGuard": ("WanAnimate Preprocess Guard", "BCVideoNodes/Wan/Animate",
                                      ("mask", "pose_data", "report", "metrics", "timeline")),
     "BCVSCAIL2ColoredMask": ("SCAIL-2 Colored Mask", "BCVideoNodes/SCAIL", ("pose_video_mask", "reference_image_mask")),
@@ -33,7 +34,6 @@ PREPROCESS = {
                             ("pose_video", "pose_video_mask", "reference_image_mask", "mask", "reference_mask")),
     "BCVSCAIL2PreprocessGuard": ("SCAIL-2 Preprocess Guard", "BCVideoNodes/SCAIL",
                                  ("pose_video_mask", "reference_image_mask", "report", "metrics", "timeline")),
-    "BCVSapiens2Pose": ("Sapiens2 Pose", "BCVideoNodes", ("pose_images", "pose_data", "bboxes", "key_frame_body_points")),
     # the video input nodes
     "BCVLoadVideo": ("Load Video", "BCVideoNodes/Video", ("images", "audio", "video_info")),
     "BCVGetVideoInfo": ("Get Video Info", "BCVideoNodes/Video",

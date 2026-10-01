@@ -3,12 +3,14 @@ and the prompts they hand a node: the PROMPT graph the on_prompt handler leaves 
 from names import Names, Ref, Seam, refs
 
 unused = Names("unused", {
-    **refs("nodes.unused_outputs", "STAMP", "EVENT", "LINK_INPUTS", "LinkStamp", "register_link_stamp", "heavy_wanted",
-           "wants", "drop_unwanted", "drop_unlinked_heavy"),
+    **refs("nodes.unused_outputs", "STAMP", "LINK_INPUTS", "LinkStamp", "register_link_stamp", "stamps_last",
+           "heavy_wanted", "wants", "drop_unwanted", "drop_unlinked_heavy"),
     "draw": Seam(Ref("pipelines.pose", "draw")),
     "render_identity": Seam(Ref("pipelines.scail2", "render_identity")),
     "driving_on_black": Seam(Ref("pipelines.scail2", "driving_on_black")),
     "load_video": Seam(Ref("pipelines.video_input", "load_video")),
+    "final_mask": Seam(Ref("libs.mask", "final_mask")),
+    "painted_black": Seam(Ref("libs.mask", "painted_black")),
 })
 
 # the sampler's chunk loop, under the node_module fixture's alias

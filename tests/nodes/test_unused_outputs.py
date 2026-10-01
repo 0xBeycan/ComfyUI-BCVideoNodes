@@ -4,8 +4,10 @@
   guards are the input tensors themselves, and a node with one output (not an output node) runs
   only when that output is linked, so it declares none;
 - the on_prompt handler's stamp, its stale stamp overwritten, the feature off (stamp removed,
-  console line, toast event) when another pack's handler runs after it, still on when the handler
-  after it is a stamping one (ComfyUI-BCNodes'), the pack named from its module;
+  console line) when another pack's handler runs after it, still on when the handler after it is
+  a stamping one (ComfyUI-BCNodes'), the pack named from its module;
+- the stamping handlers moved after every other handler at startup (stamps_last), the hook
+  registered once, the move at once when the server has started already;
 - the node side: no stamp -> every output full; a link the stamp missed -> full and a warning;
 - per node: each unlinked heavy output is a new 0-frame tensor of the full output's dtype and
   trailing shape, every other output equals the full run's, and where the output is a step of its
@@ -42,11 +44,10 @@ HEAVY = {
     "BCVWanAnimate2LongVideoSampler": ("images",),
     "BCVPoseDetection": ("pose_images",),
     "BCVFaceCrop": ("face_images",),
-    "BCVWanAnimatePreprocess": ("pose_images", "face_images", "mask"),
+    "BCVWanAnimatePreprocess": ("pose_images", "face_images", "mask", "final_mask", "bg_images"),
     "BCVSCAIL2LongVideoSampler": ("images",),
     "BCVSCAIL2ColoredMask": ("pose_video_mask",),
     "BCVSCAIL2Preprocess": ("pose_video", "pose_video_mask", "mask"),
-    "BCVSapiens2Pose": ("pose_images",),
     "BCVLoadVideo": ("images",),
 }
 WIDGETS = dict(body_stick_width=-1, hand_stick_width=-1, draw_head=True, draw_threshold=0.5)
@@ -119,17 +120,17 @@ def test_the_guards_pass_their_masks_through():
 # --- the on_prompt handler -------------------------------------------------------------------------
 
 class FakeServer:
-    """What the handler reads of ComfyUI's PromptServer: the handler list, and send_sync."""
+    """What the handler reads of ComfyUI's PromptServer: the handler list and its aiohttp app (no
+    send_sync: nothing is sent to the browser)."""
 
     def __init__(self):
+        from aiohttp import web
+
         self.on_prompt_handlers = []
-        self.sent = []
+        self.app = web.Application()
 
     def add_on_prompt_handler(self, handler):
         self.on_prompt_handlers.append(handler)
-
-    def send_sync(self, event, data, sid=None):
-        self.sent.append((event, data, sid))
 
     def trigger(self, prompt, client_id="client"):
         json_data = {"prompt": prompt, "client_id": client_id}
@@ -163,7 +164,6 @@ def stamps(prompt):
 def test_the_handler_stamps_the_linked_heavy_outputs(server):
     # mask is linked to the guard and the colored mask: "mask,pose_video_mask"
     assert stamps(server.trigger(a_prompt())) == {"1": "mask,pose_video_mask", "2": "", "3": None, "4": None}
-    assert server.sent == []
 
 
 def test_the_handler_overwrites_a_stale_stamp(server):
@@ -189,24 +189,26 @@ def test_another_packs_handler_after_ours_turns_it_off_and_says_so(server, caplo
     caplog.set_level(logging.WARNING, logger="BCVideoNodes")
     assert stamps(server.trigger(prompt, client_id="abc")) == {"1": None, "2": None, "3": None, "4": None}
     message = "RAM saving of unused outputs is off for this run: test_unused_outputs changes the prompt after it."
-    assert server.sent == [(unused.EVENT, {"message": message}, "abc")]
     assert message in caplog.text
 
 
-def test_a_handler_before_ours_and_a_stamping_handler_after_it_keep_it_on(server):
-    class BCNodesStamp:  # ComfyUI-BCNodes' handler, as marked there
-        bc_link_stamp = True
+class BCNodesStamp:
+    """ComfyUI-BCNodes' handler, as marked there."""
+    bc_link_stamp = True
 
-        def __call__(self, json_data):
-            return json_data
+    def __call__(self, json_data):
+        return json_data
 
+
+def test_a_handler_before_ours_and_a_stamping_handler_after_it_keep_it_on(server, caplog):
     server.on_prompt_handlers.insert(0, another_pack_handler)
     server.add_on_prompt_handler(BCNodesStamp())
+    caplog.set_level(logging.WARNING, logger="BCVideoNodes")
     assert stamps(server.trigger(a_prompt()))["1"] == "mask,pose_video_mask"
-    assert server.sent == []
+    assert "off for this run" not in caplog.text
 
 
-def test_the_pack_is_named_by_its_folder(server, monkeypatch):
+def test_the_pack_is_named_by_its_folder(server, monkeypatch, caplog):
     # ComfyUI imports a custom node folder as a module named by its path, dots written as _x_
     name = "/comfy/custom_nodes/some_x_pack"
     module = types.ModuleType(name)
@@ -215,11 +217,13 @@ def test_the_pack_is_named_by_its_folder(server, monkeypatch):
     handler = types.FunctionType(another_pack_handler.__code__, {}, "handler")
     handler.__module__ = name + ".hooks"
     server.add_on_prompt_handler(handler)
+    caplog.set_level(logging.WARNING, logger="BCVideoNodes")
     server.trigger(a_prompt())
-    assert "some.pack changes the prompt" in server.sent[0][1]["message"]
+    assert "off for this run: some.pack changes the prompt" in caplog.text
+    caplog.clear()
     del module.__file__
     server.trigger(a_prompt())
-    assert "some.pack changes the prompt" in server.sent[1][1]["message"]
+    assert "off for this run: some.pack changes the prompt" in caplog.text
 
 
 def test_registration_reads_the_server_from_sys_modules(monkeypatch, caplog):
@@ -231,6 +235,58 @@ def test_registration_reads_the_server_from_sys_modules(monkeypatch, caplog):
     monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=fake)))
     handler = unused.register_link_stamp(nodes.NODE_CLASS_MAPPINGS)
     assert fake.on_prompt_handlers == [handler] and handler.bc_link_stamp is True
+
+
+# --- the stamping handlers run last ----------------------------------------------------------------
+
+def later_pack_handler(json_data):
+    return json_data
+
+
+def test_stamps_last_moves_the_stamping_handlers_after_the_others(caplog):
+    server, bcnodes = FakeServer(), BCNodesStamp()
+    ours = unused.LinkStamp(nodes.NODE_CLASS_MAPPINGS, server)
+    server.on_prompt_handlers[:] = [another_pack_handler, ours, later_pack_handler, bcnodes]
+    handlers = server.on_prompt_handlers
+    caplog.set_level(logging.INFO, logger="BCVideoNodes")
+    unused.stamps_last(server)
+    # in place, each group in its order
+    assert server.on_prompt_handlers is handlers
+    assert handlers == [another_pack_handler, later_pack_handler, ours, bcnodes]
+    assert "the link stamps now run after the on_prompt handlers of test_unused_outputs" in caplog.text
+    # idempotent: ComfyUI-BCNodes' hook doing the same leaves the list as it is, and says nothing
+    caplog.clear()
+    unused.stamps_last(server)
+    assert handlers == [another_pack_handler, later_pack_handler, ours, bcnodes]
+    assert caplog.text == ""
+    # and with them last the saving is on
+    assert stamps(server.trigger(a_prompt()))["1"] == "mask,pose_video_mask"
+
+
+def test_the_startup_hook_is_registered_once_and_moves_them(monkeypatch):
+    import asyncio
+
+    fake = FakeServer()
+    hooks = len(fake.app.on_startup)  # aiohttp's own
+    monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=fake)))
+    first = unused.register_link_stamp(nodes.NODE_CLASS_MAPPINGS)
+    second = unused.register_link_stamp(nodes.NODE_CLASS_MAPPINGS)
+    fake.add_on_prompt_handler(later_pack_handler)  # a pack loaded after this one
+    assert len(fake.app.on_startup) == hooks + 1
+    assert fake.on_prompt_handlers == [first, second, later_pack_handler]
+    fake.app.on_startup.freeze()
+    asyncio.run(fake.app.startup())
+    assert fake.on_prompt_handlers == [later_pack_handler, first, second]
+
+
+def test_on_a_started_server_they_move_at_once(monkeypatch):
+    fake, bcnodes = FakeServer(), BCNodesStamp()
+    fake.on_prompt_handlers[:] = [bcnodes, later_pack_handler]
+    fake.app.on_startup.freeze()
+    hooks = list(fake.app.on_startup)
+    monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=fake)))
+    handler = unused.register_link_stamp(nodes.NODE_CLASS_MAPPINGS)
+    assert fake.on_prompt_handlers == [later_pack_handler, bcnodes, handler] and list(fake.app.on_startup) == hooks
 
 
 # --- the node side ---------------------------------------------------------------------------------
@@ -264,14 +320,15 @@ def test_a_dropped_output_is_a_new_empty_tensor_of_its_kind():
 
 # --- each node ---------------------------------------------------------------------------------------
 
-def test_pose_detection_does_not_draw_unlinked_pose_images(fake_models, monkeypatch):
+@pytest.mark.parametrize("size", [{}, {"width": 60, "height": 40}])
+def test_pose_detection_does_not_draw_unlinked_pose_images(fake_models, monkeypatch, size):
     cls, images = nodes.BCVPoseDetection, frames()
-    full = cls().detect(images, **WIDGETS)
+    full = cls().detect(images, **WIDGETS, **size)
     drawn = calls(monkeypatch, "draw")
-    out = cls().detect(images, **WIDGETS, **hidden(cls))
+    out = cls().detect(images, **WIDGETS, **size, **hidden(cls))
     assert drawn == []
     check_outputs(cls, out, full, {"pose_images"})
-    check_outputs(cls, cls().detect(images, **WIDGETS, **hidden(cls, ["pose_images"])), full, set())
+    check_outputs(cls, cls().detect(images, **WIDGETS, **size, **hidden(cls, ["pose_images"])), full, set())
     assert len(drawn) == 1
 
 
@@ -282,11 +339,11 @@ def fake_sapiens2(fake_models, monkeypatch):
     monkeypatch.setattr(sapiens2, "load_pose_estimator", lambda name: FakeSapiens2())
 
 
-def test_sapiens2_pose_does_not_draw_unlinked_pose_images(fake_sapiens2, monkeypatch):
-    cls, images = nodes.BCVSapiens2Pose, frames()
-    full = cls().detect(images, "0.4b bf16", **WIDGETS)
+def test_pose_detection_with_sapiens2_does_not_draw_unlinked_pose_images(fake_sapiens2, monkeypatch):
+    cls, images, sapiens2 = nodes.BCVPoseDetection, frames(), dict(pose_model="Sapiens2 0.4b bf16")
+    full = cls().detect(images, **WIDGETS, **sapiens2)
     drawn = calls(monkeypatch, "draw")
-    check_outputs(cls, cls().detect(images, "0.4b bf16", **WIDGETS, **hidden(cls)), full, {"pose_images"})
+    check_outputs(cls, cls().detect(images, **WIDGETS, **sapiens2, **hidden(cls)), full, {"pose_images"})
     assert drawn == []
 
 
@@ -305,18 +362,23 @@ def test_face_crop_does_not_cut_unlinked_faces(fake_models, monkeypatch):
 cv2_resize = cv2.resize
 
 
-@pytest.mark.parametrize("linked", [(), ("mask",), ("pose_images", "face_images")])
+@pytest.mark.parametrize("linked", [(), ("mask",), ("pose_images", "face_images"), ("final_mask",), ("bg_images",),
+                                    ("mask", "final_mask", "bg_images")])
 def test_wan_animate_preprocess_computes_only_linked_heavy_outputs(fake_models, monkeypatch, caplog, linked):
     cls, images = nodes.BCVWanAnimatePreprocess, frames()
     widgets = dict(WIDGETS, face_padding=8, mode="box_keypoint", prompt=sam3.PROMPT)
     full = cls().process(images, **widgets)
     fake_models.calls.clear()
-    drawn = calls(monkeypatch, "draw")
+    drawn, finals, painted = (calls(monkeypatch, name) for name in ("draw", "final_mask", "painted_black"))
     caplog.set_level(logging.INFO, logger="BCVideoNodes")
     caplog.clear()
     out = cls().process(images, **widgets, **hidden(cls, linked))
     check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
-    assert len(fake_models.calls) == ("mask" in linked)  # the SAM track runs only for a linked mask
+    # the SAM track runs for a linked mask and for the outputs made of it; the final mask for itself and
+    # for the frames painted black under it
+    assert len(fake_models.calls) == bool({"mask", "final_mask", "bg_images"} & set(linked))
+    assert len(finals) == bool({"final_mask", "bg_images"} & set(linked))
+    assert len(painted) == ("bg_images" in linked)
     assert len(drawn) == ("pose_images" in linked)
     assert ("cropping the faces" in caplog.text) == ("face_images" in linked)
 

@@ -76,19 +76,21 @@ LOSS_HAND = 0.015
 # outside the (slightly grown) mask - fails.
 HEAD_OUT_KEYPOINT = "nose"
 HEAD_OUT_SIDES = ("r_eye", "l_eye", "r_ear", "l_ear")
-# The final mask the Wan Animate workflow feeds the sampler: the raw mask grown by
-# GrowMaskWithBlur (expand FINAL_GROW, tapered) and cut into BlockifyMask's blocks of FINAL_BLOCK
-# px, laid from each frame's own grown box, so the grid moves from frame to frame; every block that
-# holds a grown pixel is on (mask.block_grid, mask._final_blocks). The model reads the final a block at
-# a time: a region of her it loses is a whole block (mask_loss), on the raw mask a block the final
-# of the frame leaves off. The final's outline lies FINAL_GROW to FINAL_GROW + FINAL_BLOCK beyond
-# the raw mask's, FINAL_PAD on average, and moves by up to a block between frames with no change in
-# the raw mask, so the measures of the final allow for it: mask_attached_leak grows the
-# neighbouring frames' masks by a block, a detached piece is measured with FINAL_PAD taken off its
-# outline, and a block the final drops counts only where it holds a drawn keypoint on every frame
-# of the run (a block holding a keypoint inside the raw mask is always on).
-FINAL_GROW, FINAL_BLOCK = 10, 32
-FINAL_PAD = FINAL_GROW + FINAL_BLOCK // 2
+# The final mask the Wan Animate workflow feeds the sampler (libs/mask.py, GROW): the raw mask grown
+# by `grow` dilations of the 3 x 3 cross and cut into blocks of about `block_size` px, laid from each
+# frame's own grown box, so the grid moves from frame to frame; every block that holds a grown pixel
+# is on (libs.mask.block_grid, libs.mask.final_blocks). `grow` and `block_size` are the guards'
+# widgets, WanAnimate Preprocess's (default 10 and 32). The model reads the final a block at a time:
+# a region of her it loses is a whole block (mask_loss), on the raw mask a block the final of the
+# frame leaves off. The final's outline lies `grow` to `grow` + `block_size` beyond the raw mask's,
+# final_pad on average, and moves by up to a block between frames with no change in the raw mask, so
+# the measures of the final allow for it: mask_attached_leak grows the neighbouring frames' masks by
+# a block, a detached piece is measured with final_pad taken off its outline, and a block the final
+# drops counts only where it holds a drawn keypoint on every frame of the run (a block holding a
+# keypoint inside the raw mask is always on).
+def final_pad(grow, block_size):
+    """How far the final mask's outline lies beyond the raw mask's on average, in px."""
+    return grow + block_size // 2
 # The driving mask as SCAIL-2 reads it. Core's WanSCAILToVideo area-resizes the colored mask to
 # half the generation size and cuts each colour channel at 225/255, then _extract_mask_to_28ch
 # area-pools that 8x to the latent grid, one cell per 16 x 16 px of the generation, and stacks 4

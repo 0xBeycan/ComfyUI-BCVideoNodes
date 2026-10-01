@@ -81,6 +81,12 @@ def test_audio_longer_than_the_video_gives_the_loaders_count(folders):
     ({"force_fps": "24", "start_frame": 3}, 45, 46),  # 60 frames at 30 fps keep 48 at 24 fps
     ({"force_fps": "30"}, 57, 60),  # the video's own rate: every frame
     ({"model": "SCAIL", "resolution": "704p", "orientation": "portrait", "frame_count": "21"}, 21, 60),
+    # model None: no 4n+1; resolution source: the video's own size, or its crop to the other orientation
+    ({"model": "None", "resolution": "1080p"}, 60, 60),
+    ({"model": "None", "resolution": "source", "orientation": "portrait", "start_frame": 3, "frame_count": "10"}, 10, 58),
+    ({"resolution": "source"}, 57, 60),
+    ({"resolution": "source", "orientation": "portrait", "frame_count": "10"}, 9, 60),  # 16x32, on Wan's grid
+    ({"model": "SCAIL", "resolution": "source", "start_frame": 50}, 9, 11),
 ])
 def test_the_answer_is_the_loaders_video_info(folders, widgets, info_frames, available):
     path = grey_clip(folders / "input" / "clip.mkv", 60)
@@ -104,6 +110,9 @@ def test_the_answer_is_the_loaders_video_info(folders, widgets, info_frames, ava
     ({"force_fps": "24", "start_frame": 25}, True, None),
     ({"start_frame": 0}, True, None),
     ({"resolution": "704p"}, True, 30),
+    ({"resolution": "1080p"}, True, 30),
+    ({"model": "None", "resolution": "512p"}, True, 30),
+    ({"model": "SCAIL", "resolution": "source", "orientation": "portrait"}, True, 30),  # 16x32: under the grid
     ({"orientation": "sideways"}, True, 30),
 ])
 def test_errors_are_the_loaders_messages(folders, widgets, has_source, available):

@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from bcvideonodes.pipelines import guard
-from guard_fakes import (DRAW_THRESHOLD, LEGS, MASK, N, POSE, H, W, arm, clip, drop_keypoints, hand, origin,
+from guard_fakes import (DRAW_THRESHOLD, LEGS, MASK, N, POSE, H, W, arm, clip, drop_keypoints, final, hand, origin,
                          place_keypoints)
 
 
@@ -521,6 +521,96 @@ def test_on_the_final_mask_a_piece_is_measured_without_its_padding():
     assert "mask_fragmented" not in record["flags"] and record["frames"][20]["fragments"] == [round(144 / (48 * 188), 4)]
 
 
+# --- the final's grow and block size: the guards' widgets, WanAnimate Preprocess's ---------------
+
+@pytest.mark.parametrize("grow, block_size", [(10, 32), (0, 8), (4, 16), (30, 64), (10, 0), (0, 0)])
+def test_the_guard_reads_the_final_mask_the_preprocess_makes(grow, block_size):
+    masks, _ = with_faults()
+    read = guard.mask._final_reading(guard.mask._Booleans(masks), grow, block_size)
+    finals = final.final_mask(masks, grow, block_size).numpy() > 0.5
+    for f in range(N):
+        assert np.array_equal(read(f)[0], finals[f]), f
+        if (grow, block_size) == (0, 0):          # no grow, no blocks: the mask itself
+            assert np.array_equal(read(f)[0], masks[f].numpy() > 0.5), f
+
+
+def test_a_hole_the_default_final_fills_is_lost_by_a_final_not_grown_in_small_blocks():
+    # a 30 x 30 hole on her left thigh on frame 20 (rows 190-219, columns 130-159), filled by the
+    # default final as the one of test_a_hole_the_final_mask_fills_is_not_mask_loss is. Not grown and
+    # cut into 8 px blocks from her box (columns 80, 88, ...), the final leaves 3 x 3 blocks of it
+    # out, rows 192-215 and columns 136-159: the region lost, 576 px of her 24000, the thigh across it
+    masks, pose_data = clip()
+    block(masks, [20], (150, 180), (50, 80))
+    for kwargs, loss in (({}, 0.0), ({"grow": 0, "block_size": 8}, 576 / 24000)):
+        record = json.loads(guard.check_mask(masks, pose_data, MASK, stop_on_fail=False, **kwargs)[2])
+        assert record["flags"] == ({"mask_loss": [20]} if loss else {}), kwargs
+        assert record["frames"][20]["mask_loss"] == pytest.approx(loss)
+        assert json.loads(guard.check_mask(masks, None, MASK, stop_on_fail=False, **kwargs)[2])["flags"] == (
+            {"mask_loss": [20]} if loss else {}), kwargs
+
+
+def no_final_model(masks, pose_data):
+    """The Mask Guard's frames and flags on the raw `masks` judged as they are: what the model reads
+    of each frame is the mask itself (reading None), a pixel at a time (a 1 px grid over the frame)."""
+    metas, detections = (pose_data["pose_metas_original"], pose_data["detections"]) if pose_data else (None, None)
+    pixels = (np.arange(H + 1), np.arange(W + 1))
+    rows = guard.mask.mask_frame_metrics(guard.mask._Booleans(masks), metas, detections,
+                                         DRAW_THRESHOLD if pose_data else None, lambda f: (None, pixels))
+    return rows
+
+
+@pytest.mark.parametrize("with_pose", [True, False])
+def test_grow_0_and_block_size_0_judge_the_raw_mask_as_it_is(with_pose):
+    for masks, pose_data in (with_faults(), hole_clip()):
+        pose_data = pose_data if with_pose else None
+        record = json.loads(guard.check_mask(masks, pose_data, MASK, stop_on_fail=False, grow=0, block_size=0)[2])
+        rows = no_final_model(masks, pose_data)
+        assert record["frames"] == json.loads(json.dumps(rows))
+        assert record["flags"] == guard.mask.mask_flags(rows, record["thresholds"])
+
+
+def hole_clip():
+    """clip() with the 30 x 30 hole between the knees on frame 20 that the default final fills
+    (test_a_hole_the_final_mask_fills_is_not_mask_loss): rows 190-219, columns 120-149 of the frame."""
+    masks, pose_data = clip()
+    block(masks, [20], (150, 180), (40, 70))
+    return masks, pose_data
+
+
+def test_block_size_0_models_a_final_without_blocks():
+    # the hole: with blocks the final fills it; grown by 10 without blocks, a 10 x 10 core is left,
+    # 0.4% of her, under LOSS_HAND; not grown either, the raw mask drops all 900 px of it, 3.75% of
+    # her 24000, the thigh across it: any part counts, no whole block needed
+    masks, pose_data = hole_clip()
+    for kwargs, loss in (({}, 0.0), ({"grow": 10, "block_size": 0}, 0.0), ({"grow": 0, "block_size": 0}, 900 / 24000)):
+        for posed in (pose_data, None):
+            record = json.loads(guard.check_mask(masks, posed, MASK, stop_on_fail=False, **kwargs)[2])
+            assert record["flags"] == ({"mask_loss": [20]} if loss else {}), (kwargs, posed is None)
+            assert record["frames"][20]["mask_loss"] == pytest.approx(loss)
+    # every other check reads the raw mask, not the final: the same frames but for mask_loss
+    plain = json.loads(guard.check_mask(masks, pose_data, MASK, stop_on_fail=False)[2])["frames"]
+    raw = json.loads(guard.check_mask(masks, pose_data, MASK, stop_on_fail=False, grow=0, block_size=0)[2])["frames"]
+    assert [{**row, "mask_loss": None} for row in plain] == [{**row, "mask_loss": None} for row in raw]
+
+
+def test_the_final_mask_takes_no_block_size_0():
+    masks, pose_data = clip()
+    with pytest.raises(ValueError, match="block_size 0, no blocks, is for a raw mask"):
+        guard.check_mask(masks, pose_data, MASK, final=True, block_size=0)
+
+
+def test_on_the_final_mask_the_padding_follows_grow_and_block_size():
+    # the 64 px piece of test_on_the_final_mask_a_piece_is_measured_without_its_padding: grown by 4 and
+    # cut into 16 px blocks, the final's padding is 4 + 16 / 2 = 12 px, so 40 x 40 px of the piece
+    # are left against her rectangle's 76 x 216 core: 9.7%, torn
+    masks, pose_data = clip()
+    masks[20, 20:84, 4:68] = 1.0
+    record = json.loads(guard.check_mask(masks, pose_data, MASK, stop_on_fail=False, final=True, grow=4,
+                                         block_size=16)[2])
+    assert record["frames"][20]["fragments"] == [round(1600 / (76 * 216), 4)]
+    assert record["flags"]["mask_fragmented"] == [20]
+
+
 def test_the_final_mask_needs_its_pose():
     masks, _ = clip()
     with pytest.raises(ValueError, match="connect pose_data"):
@@ -602,7 +692,7 @@ def test_resized_mask_is_an_error():
     small = torch.nn.functional.interpolate(masks[None], size=(H // 2, W // 2))[0]
     with pytest.raises(ValueError, match="straight from the tracker, before any resize"):
         guard.check_mask(small, pose_data, MASK)
-    with pytest.raises(ValueError, match="the final mask of the same frames"):
+    with pytest.raises(ValueError, match="final_mask of the same frames, before any resize"):
         guard.check_mask(small, pose_data, MASK, final=True)
 
 

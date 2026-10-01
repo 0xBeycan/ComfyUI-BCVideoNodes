@@ -18,10 +18,12 @@ and an input the node does not declare is never passed to it.
 - At run time the node also reads the final PROMPT: a link to a heavy output that the stamp does
   not list returns that output full, with a warning.
 - An on_prompt handler of another pack that runs after ours could add a link the stamp never saw,
-  and a cached empty output would then reach it. So when one is registered after ours, the stamp
-  is left out for that prompt (every output full) and the console and a toast (EVENT,
-  web/js/unused_outputs.js) name the pack. Handlers marked `bc_link_stamp` (this pack's and
-  ComfyUI-BCNodes') only write their own stamps and are not counted.
+  and a cached empty output would then reach it. So the stamping handlers, marked `bc_link_stamp`
+  (this pack's and ComfyUI-BCNodes'), run last: once every custom node has loaded, a startup hook
+  (`stamps_last`) moves them to the end of the handler list. A handler added after that (not at
+  load time) still runs after ours: then the stamp is left out for that prompt (every output full)
+  and a console line names the pack. Stamping handlers only write their own stamps and are not
+  counted.
 
 A wrapper node passes its own wanted set to the nodes it calls (`wanted=`): its outputs carry the
 names of theirs.
@@ -30,7 +32,6 @@ from ..libs import log
 from .common import prompt_server
 
 STAMP = "bcv_linked_heavy"
-EVENT = "bcvideonodes.unused_outputs"
 # not `prompt`: the preprocess wrappers have a `prompt` widget, which a hidden input of that name
 # would overwrite
 LINK_INPUTS = {"prompt_graph": "PROMPT", "unique_id": "UNIQUE_ID"}
@@ -79,6 +80,11 @@ def _pack_of(handler):
     return os.path.basename(top).replace("_x_", ".")
 
 
+def _stamping(handler):
+    """Whether `handler` is a stamping on_prompt handler (this pack's or ComfyUI-BCNodes')."""
+    return getattr(handler, "bc_link_stamp", False)
+
+
 class LinkStamp:
     """The on_prompt handler: writes STAMP, the sorted comma-joined linked heavy outputs, into the
     inputs of every node of `classes` that declares HEAVY_OUTPUTS, or removes it from all of them
@@ -111,10 +117,8 @@ class LinkStamp:
             else:
                 inputs[STAMP] = stamps[node_id]
         if after:
-            message = (f"RAM saving of unused outputs is off for this run: {', '.join(after)} "
-                       f"{'changes' if len(after) == 1 else 'change'} the prompt after it.")
-            log.warning(message)
-            self.server.send_sync(EVENT, {"message": message}, json_data.get("client_id"))
+            log.warning(f"RAM saving of unused outputs is off for this run: {', '.join(after)} "
+                        f"{'changes' if len(after) == 1 else 'change'} the prompt after it.")
         return json_data
 
     def packs_after(self):
@@ -123,18 +127,44 @@ class LinkStamp:
         index = next((i for i, handler in enumerate(handlers) if handler is self), None)
         if index is None:
             return []
-        return sorted({_pack_of(handler) for handler in handlers[index + 1:] if not getattr(handler, "bc_link_stamp", False)})
+        return sorted({_pack_of(handler) for handler in handlers[index + 1:] if not _stamping(handler)})
+
+
+def stamps_last(server):
+    """Moves the stamping on_prompt handlers of `server` (marked `bc_link_stamp`) to the end of its
+    handler list, in place, each group keeping its order, so they stamp the prompt every other
+    handler leaves. Idempotent: ComfyUI-BCNodes doing the same gives the same list."""
+    handlers = server.on_prompt_handlers
+    first = next((index for index, handler in enumerate(handlers) if _stamping(handler)), len(handlers))
+    passed = sorted({_pack_of(handler) for handler in handlers[first:] if not _stamping(handler)})
+    handlers[:] = [handler for handler in handlers if not _stamping(handler)] + [handler for handler in handlers if _stamping(handler)]
+    if passed:
+        log.info(f"unused outputs: the link stamps now run after the on_prompt handlers of {', '.join(passed)}")
+
+
+async def _stamps_last_at_startup(app):
+    """The startup hook: aiohttp runs the app's on_startup when ComfyUI starts serving, after every
+    custom node has loaded and before the first prompt can arrive."""
+    server = prompt_server()
+    if server is not None:
+        stamps_last(server)
 
 
 def register_link_stamp(classes):
-    """Adds a LinkStamp for `classes` to ComfyUI's on_prompt handlers and returns it; None outside
-    ComfyUI."""
+    """Adds a LinkStamp for `classes` to ComfyUI's on_prompt handlers, and once the startup hook
+    that moves the stamping handlers last (stamps_last; at once when the server has started
+    already). Returns the LinkStamp; None outside ComfyUI."""
     server = prompt_server()
     if server is None:
         log.info("no ComfyUI server: unused heavy outputs are returned in full")
         return None
     handler = LinkStamp(classes, server)
     server.add_on_prompt_handler(handler)
+    startup = server.app.on_startup
+    if startup.frozen:
+        stamps_last(server)
+    elif _stamps_last_at_startup not in startup:
+        startup.append(_stamps_last_at_startup)
     return handler
 
 

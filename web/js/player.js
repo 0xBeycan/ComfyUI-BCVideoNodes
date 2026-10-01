@@ -7,9 +7,9 @@ import { api } from "../../../scripts/api.js";
 // One hidden <video> per node. Nothing plays until asked: the play button at the left of the top
 // row or a click on the picture toggles playback, a press on the seek bar at the bottom seeks
 // there and scrubs while it is held, the clip loops, a speaker button mutes it when it has sound.
-// A drag that began anywhere else never seeks: the node's resize corner sits on the seek bar. The
-// picture is letterboxed inside the node; the node keeps whatever size the user gives it, and
-// every text drawn on it is cut to fit it.
+// The seek bar stops short of the node's bottom resize corners, and a drag that began anywhere
+// else never seeks. The picture is letterboxed inside the node; the node keeps whatever size the
+// user gives it, and every text drawn on it is cut to fit it.
 //
 // Two options for Load Video: `range` loops playback inside [start, end] seconds (the seek bar
 // then spans the range), and `step` samples the picture at that many frames per second: the frame
@@ -17,6 +17,7 @@ import { api } from "../../../scripts/api.js";
 
 export const TOP_H = 22;
 export const BAR_H = 22;
+const KNOB_R = 5;
 const TAG_FONT = "bold 12px sans-serif";
 
 export function viewUrl(info) {
@@ -292,7 +293,9 @@ export class Player {
 		}
 	}
 
-	// Bottom: the seek bar alone, full width, over the range.
+	// Bottom: the seek bar alone, over the range, between the node's two bottom resize corners. The
+	// frontend hands a press to the node before it checks the corners, so a bar under a corner
+	// would take the press that should resize the node.
 	drawSeekBar(ctx) {
 		const v = this.clip();
 		if (!v) return;
@@ -302,18 +305,19 @@ export class Player {
 		const t = Math.min(Math.max((v.currentTime || 0) - start, 0), d);
 		const top = h - BAR_H;
 		const cy = top + BAR_H / 2;
-		const tx = 10;
-		const tw = w - 20;
+		const corner = LiteGraph.LGraphNode.resizeHandleSize;
+		const tx = corner + KNOB_R;
+		const tw = w - 2 * tx;
 		const px = tx + (d > 0 ? (tw * t) / d : 0);
 		ctx.fillStyle = "#333";
 		ctx.fillRect(tx, cy - 2, tw, 4);
 		ctx.fillStyle = "#4a90e2";
 		ctx.fillRect(tx, cy - 2, px - tx, 4);
 		ctx.beginPath();
-		ctx.arc(px, cy, 5, 0, Math.PI * 2);
+		ctx.arc(px, cy, KNOB_R, 0, Math.PI * 2);
 		ctx.fillStyle = "#e6e6e6";
 		ctx.fill();
-		this.hits.push({ x: 4, y: top, w: w - 8, h: BAR_H, seek: (x) => this.seek(start + ((Math.min(Math.max(x, tx), tx + tw) - tx) / tw) * d) });
+		this.hits.push({ x: corner, y: top, w: w - 2 * corner, h: BAR_H, seek: (x) => this.seek(start + ((Math.min(Math.max(x, tx), tx + tw) - tx) / tw) * d) });
 	}
 
 	// ---- pointer ---------------------------------------------------------------------------
@@ -345,7 +349,7 @@ export class Player {
 	}
 
 	// A move with the button held scrubs only during a scrub a press on the seek bar started: a
-	// drag that began elsewhere (the node's resize corner sits on the seek bar) never seeks.
+	// drag that began elsewhere (a resize from a corner, a move of the node) never seeks.
 	drag(event, pos) {
 		if (!this.scrubbing || !(event.buttons & 1)) return;
 		const h = this.hitAt(pos);

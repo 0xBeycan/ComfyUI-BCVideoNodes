@@ -8,7 +8,7 @@ from names import Names, Ref, Seam, refs
 video = Names("video", {
     **refs("libs.video_decode", "select_frames", "kept_frames", "read_audio", "rgb", "FrameCountChanged"),
     "probe": Seam(Ref("libs.video_decode", "probe")),
-    **refs("libs.resize", "fit", "crop_box", "contain_box", "CROP", "PAD", "FITS", "LANCZOS", "METHODS"),
+    **refs("libs.resize", "fit", "crop_box", "contain_box", "CROP", "PAD", "CUT", "FITS", "LANCZOS", "METHODS"),
     **refs("libs.video_sizes", "MODELS", "RESOLUTIONS", "ORIENTATIONS", "CONFORM_SIZES", "conform_size",
            "model_size", "orientation_of", "oriented"),
     **refs("libs.video_info", "VideoInfo", "COMFY_TYPES"),

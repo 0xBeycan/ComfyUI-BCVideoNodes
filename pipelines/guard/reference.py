@@ -17,19 +17,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ...libs.resize import center_crop
 from .common import MaskReference
-
-
-def center_crop(width, height, new_width, new_height):
-    """(x, y): the columns and the rows comfy.utils.common_upscale's center crop cuts off each
-    side of a `width` x `height` image to reach the aspect ratio of `new_width` x `new_height`."""
-    old_aspect, new_aspect = width / height, new_width / new_height
-    x = y = 0
-    if old_aspect > new_aspect:
-        x = round((width - width * (new_aspect / old_aspect)) / 2)
-    elif old_aspect < new_aspect:
-        y = round((height - height * (old_aspect / new_aspect)) / 2)
-    return x, y
 
 
 def _iou(a, b):

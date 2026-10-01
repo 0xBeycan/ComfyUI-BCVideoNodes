@@ -1,4 +1,5 @@
-"""The Pose Detection node: supplied boxes that never build the detector; the Pose Config node: the
+"""The Pose Detection node: supplied boxes that never build the detector, the optional width and
+height the pose images are drawn at; the Pose Config node: the
 box_window and edge_snap widgets and the forearm_limit, limb_dedup and back_view_face widgets, off and
 marked experimental, and nothing else marked. Fake models, synthetic frames. The node loads models/common/download.py, which imports folder_paths at its top,
 so this runs where ComfyUI is importable (with the ComfyUI root on PYTHONPATH) and is skipped
@@ -40,6 +41,38 @@ def test_supplied_boxes_never_build_the_detector(monkeypatch):
     built.clear()
     nodes.BCVPoseDetection().detect(frames(), -1, -1, True, 0.5)
     assert built == [loader.DETECTOR_FILE, loader.POSE_FILE]
+
+
+def test_width_and_height_are_optional_sockets_after_the_others():
+    from names import spec
+
+    optional = spec("BCVPoseDetection")["optional"]
+    # pose_model, the widget after them, is in test_nodes_sapiens2.py
+    assert list(optional) == ["bboxes", "pose_config", "width", "height", "pose_model"]
+    for name in ("width", "height"):
+        kind, options = optional[name]
+        assert kind == "INT" and options["forceInput"] is True and options["min"] == 1, name
+        assert "drawn at width x height" in options["tooltip"]
+    # the wrappers draw at the frame size, as before
+    for key in ("BCVWanAnimatePreprocess", "BCVSCAIL2Preprocess"):
+        assert not {"width", "height"} & (set(spec(key)["required"]) | set(spec(key)["optional"])), key
+
+
+def test_width_and_height_draw_the_pose_images_at_that_size(monkeypatch):
+    from test_nodes_wiring import same
+
+    monkeypatch.setattr(pose, "_to_device", lambda *models: None)
+    monkeypatch.setattr(loader, "load_pose_models", lambda detector=True: (FakeDetector() if detector else None, FakePose()))
+    images = frames()
+    plain = nodes.BCVPoseDetection().detect(images, -1, -1, True, 0.5)
+    sized = nodes.BCVPoseDetection().detect(images, -1, -1, True, 0.5, width=60, height=60)
+    assert sized[0].shape == (len(images), 60, 60, 3)
+    assert torch.equal(sized[0], pose.draw(plain[1], size=(60, 60)))
+    # pose_data, the boxes and the key frame's points stay at the frame size
+    assert same(sized[1:], plain[1:])
+    for width, height in ((60, None), (None, 60)):
+        with pytest.raises(ValueError, match="connect both, or neither"):
+            nodes.BCVPoseDetection().detect(images, -1, -1, True, 0.5, width=width, height=height)
 
 
 def test_pose_config_shows_the_forearm_limit_off():

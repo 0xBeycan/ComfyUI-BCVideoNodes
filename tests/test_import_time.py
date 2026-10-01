@@ -57,7 +57,6 @@ NODE_KEYS = [
     "BCVSAM3VideoTrack", "BCVSAM3Config", "BCVFaceCrop", "BCVPoseGuard", "BCVMaskGuard",
     "BCVWanAnimatePreprocess", "BCVWanAnimatePreprocessGuard", "BCVSCAIL2LongVideoSampler", "BCVSCAIL2ColoredMask",
     "BCVSCAIL2Preprocess", "BCVSCAIL2PreprocessGuard",
-    "BCVSapiens2Pose",
     "BCVLoadVideo", "BCVGetVideoInfo", "BCVLoadReferenceImage", "BCVConformVideo",
     "BCVSaveVideo", "BCVVideoComparer",
 ]

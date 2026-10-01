@@ -4,7 +4,9 @@ nodes.py, which ComfyUI's executor imports.
 
 ComfyUI's PromptServer is created first, then the pack is bound as `bcvideonodes` from its
 __init__, as ComfyUI loads a custom node: its root __init__ registers the link stamp on that
-server. Each scenario then runs prompts the way POST /prompt does (the on_prompt handlers,
+server. Another pack loaded after it registers its own on_prompt handler (`later_pack`), and the
+server's aiohttp app is started as ComfyUI starts it (AppRunner.setup, no socket), which runs the
+startup hooks. Each scenario then runs prompts the way POST /prompt does (the on_prompt handlers,
 validate_prompt, PromptExecutor) and records what happened; the facts are printed as one JSON
 line, which the test reads.
 
@@ -102,8 +104,17 @@ A_AND_B = {**A_ONLY, "4": N("Shape", image=["2", 0])}
 
 
 def another_pack(json_data):
-    """An on_prompt handler of another pack."""
+    """An on_prompt handler of another pack, added after the server has started."""
     return json_data
+
+
+def later_pack(json_data):
+    """The on_prompt handler of a pack loaded after this one."""
+    return json_data
+
+
+def names(handlers):
+    return [getattr(handler, "__name__", type(handler).__name__) for handler in handlers]
 
 
 class BCNodesStamp:
@@ -117,8 +128,8 @@ class BCNodesStamp:
 class Harness:
     def __init__(self, server, execution, unused):
         self.server, self.execution, self.unused = server, execution, unused
-        self.toasts = []
-        server.send_sync = lambda event, data, sid=None: self.toasts.append([event, data, sid])
+        self.sent = []  # what the pack sends the browser: nothing
+        server.send_sync = lambda event, data, sid=None: self.sent.append([event, data, sid])
         self.lines = Lines()
         logging.getLogger("BCVideoNodes").addHandler(self.lines)
 
@@ -157,8 +168,8 @@ class Harness:
 
     async def scenario(self, prompts, kind="CLASSIC", after=None, **options):
         """`prompts` submitted in turn to one executor, with `after` registered after the pack's
-        handler meanwhile. -> {"runs": [facts...], "lines": warnings, "toasts": [...]}"""
-        del self.lines.lines[:], self.toasts[:]
+        handler meanwhile. -> {"runs": [facts...], "lines": warnings, "sent": [...]}"""
+        del self.lines.lines[:], self.sent[:]
         if after is not None:
             self.server.add_on_prompt_handler(after)
         try:
@@ -167,7 +178,7 @@ class Harness:
         finally:
             if after is not None:
                 self.server.on_prompt_handlers.remove(after)
-        return {"runs": runs, "lines": list(self.lines.lines), "toasts": list(self.toasts)}
+        return {"runs": runs, "lines": list(self.lines.lines), "sent": list(self.sent)}
 
 
 async def main():
@@ -178,6 +189,7 @@ async def main():
     import execution
     import nodes
     import server
+    from aiohttp import web
     from app.assets.manager import default_asset_manager
 
     instance = server.PromptServer(asyncio.get_event_loop(), default_asset_manager())
@@ -192,7 +204,13 @@ async def main():
 
     nodes.NODE_CLASS_MAPPINGS.update({"MaskSource": MaskSource, "Shape": Shape, COLORED: package.NODE_CLASS_MAPPINGS[COLORED]})
     h = Harness(instance, execution, unused)
-    facts = {"handlers": [type(handler).__name__ for handler in instance.on_prompt_handlers]}
+    facts = {"handlers_loaded": names(instance.on_prompt_handlers)}
+    instance.add_on_prompt_handler(later_pack)
+    facts["handlers_later_pack"] = names(instance.on_prompt_handlers)
+    runner = web.AppRunner(instance.app)
+    await runner.setup()
+    facts["handlers_started"] = names(instance.on_prompt_handlers)
+    facts["after_startup"] = await h.scenario([A_ONLY])
     for kind in ("CLASSIC", "LRU", "RAM_PRESSURE"):
         # P1 unlinked, P2 linked later, P3 the same again, P4 unlinked again, P5 the same again
         facts[f"p1_p5_{kind}"] = await h.scenario([A_ONLY, A_AND_B, A_AND_B, A_ONLY, A_ONLY], kind)
@@ -203,6 +221,7 @@ async def main():
     facts["missed_link"] = await h.scenario([A_ONLY], edit_after=lambda prompt: prompt.update({"4": N("Shape", image=["2", 0])}))
     facts["another_pack_after"] = await h.scenario([A_ONLY], after=another_pack)
     facts["bcnodes_after"] = await h.scenario([A_ONLY], after=BCNodesStamp())
+    await runner.cleanup()
     return facts
 
 

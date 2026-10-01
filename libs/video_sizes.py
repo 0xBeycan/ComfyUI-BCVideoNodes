@@ -5,30 +5,42 @@ import math
 PORTRAIT, LANDSCAPE, AUTO = "portrait", "landscape", "auto"
 ORIENTATIONS = [AUTO, LANDSCAPE, PORTRAIT]
 
-# model -> its frame rule (counts of the form frames * n + 1) and its resolution labels (the short
-# edge) with their sizes. Wan: a /16 grid (VAE /8 x patch 2x2). SCAIL: a /32 grid (the pose runs at
-# half resolution through the /16 grid); 512p and 704p are the authors' sizes. A new model adds a row.
-MODELS = {
-    "Wan": {"frames": 4, "sizes": {"480p": [480, 832], "720p": [720, 1280]}},
-    "SCAIL": {"frames": 4, "sizes": {"512p": [512, 896], "704p": [704, 1280]}},
-}
-# every model's labels, in table order: the resolution widget's values
-RESOLUTIONS = [label for model in MODELS.values() for label in model["sizes"]]
-
 # the platform ladder Conform Video fits to (9:16, landscape 16:9)
 CONFORM_SIZES = {"480p": [480, 854], "720p": [720, 1280], "1080p": [1080, 1920]}
 
+# the resolution of every model that keeps the video's own pixels: no resize, only cuts (the other
+# orientation's crop, then the model's grid); its size in the table is None
+SOURCE = "source"
+
+# model -> its frame rule (counts of the form frames * n + 1), its grid (the side lengths its core
+# node takes are multiples of it) and its resolution labels (the short edge) with their sizes.
+# Wan: a /16 grid (VAE /8 x patch 2x2; core's WanAnimateToVideo and WanAnimate2ToVideo take width
+# and height in steps of 16). SCAIL: a /32 grid (the pose runs at half resolution through the /16
+# grid; core's WanSCAILToVideo takes steps of 32); 512p and 704p are the authors' sizes. None: no
+# model, so no frame rule (frames * n + 1 with frames 1 is any count) and no grid, Conform Video's
+# ladder. A new model adds a row.
+MODELS = {
+    "Wan": {"frames": 4, "grid": 16, "sizes": {"480p": [480, 832], "720p": [720, 1280], SOURCE: None}},
+    "SCAIL": {"frames": 4, "grid": 32, "sizes": {"512p": [512, 896], "704p": [704, 1280], SOURCE: None}},
+    "None": {"frames": 1, "grid": 1, "sizes": {**CONFORM_SIZES, SOURCE: None}},
+}
+# every model's labels, each once, the sized ones in table order, then source: the resolution
+# widget's values
+RESOLUTIONS = [*dict.fromkeys(label for model in MODELS.values() for label, size in model["sizes"].items() if size),
+               SOURCE]
+
 
 def model_size(model, resolution):
-    """The portrait [width, height] of `resolution` for `model`. Raises ValueError, saying what to
-    pick, when the model is unknown or the label is not one of its resolutions."""
+    """The portrait [width, height] of `resolution` for `model`, None for SOURCE. Raises
+    ValueError, saying what to pick, when the model is unknown or the label is not one of its
+    resolutions."""
     if model not in MODELS:
         raise ValueError(f"model {model!r} is not one of {', '.join(MODELS)}; pick one of them.")
     sizes = MODELS[model]["sizes"]
     if resolution not in sizes:
         raise ValueError(f"resolution {resolution!r} does not belong to model {model}; "
                          f"pick one of {', '.join(sizes)}.")
-    return list(sizes[resolution])
+    return None if sizes[resolution] is None else list(sizes[resolution])
 
 
 def orientation_of(width, height):

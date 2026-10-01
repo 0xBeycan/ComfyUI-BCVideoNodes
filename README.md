@@ -25,7 +25,6 @@ it, save the result, compare two videos in the node.
 | **SCAIL-2 Preprocess** | `BCVSCAIL2Preprocess` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Preprocess Guard** | `BCVSCAIL2PreprocessGuard` | `BCVideoNodes/SCAIL` |
 | **SCAIL-2 Long Video Sampler** | `BCVSCAIL2LongVideoSampler` | `BCVideoNodes/SCAIL` |
-| **Sapiens2 Pose** | `BCVSapiens2Pose` | `BCVideoNodes` |
 | **Load Video** | `BCVLoadVideo` | `BCVideoNodes/Video` |
 | **Get Video Info** | `BCVGetVideoInfo` | `BCVideoNodes/Video` |
 | **Load Reference Image** | `BCVLoadReferenceImage` | `BCVideoNodes/Video` |
@@ -41,36 +40,50 @@ PyAV, which comes with ComfyUI. Load Video, Save Video and the Video Comparer
 play in the node: the pack's player, drawn on the node, with a play button, a
 seek bar and, when the clip has sound, a mute button. Nothing plays until
 asked, the clip loops, and the node keeps the size you give it. A press on
-the seek bar seeks and a drag that starts on it scrubs; resizing the node
-never seeks. Labels are cut to the node's width.
+the seek bar seeks and a drag that starts on it scrubs; the seek bar stops
+short of the node's bottom corners, which resize it. Labels are cut to the
+node's width.
 
 ### Load Video
 
 Loads a video one frame at a time, cropped and resized to the model's
-generation size straight into the output, which is allocated once at its
-final frame count: the full-resolution clip never sits in memory.
+generation size (or, at `resolution` `source`, cut at the video's own size)
+straight into the output, which is allocated once at its final frame count:
+the full-resolution clip never sits in memory.
 
 - in: `video` (a video file of ComfyUI's input folder; the node's `choose
   video to upload` button, or a video file dropped on the node, uploads one
   there and selects it)
-- widgets: `model` `Wan`, `resolution` `720p`, `orientation` `auto`,
+- widgets: `model` `Wan` (or `SCAIL`, `None`), `resolution` `720p`, `orientation` `auto`,
   `force_fps` (empty), `start_frame` 1, `frame_count` (empty)
 - out: `images` (IMAGE), `audio` (AUDIO of the loaded range; none when the
   file has no audio), `video_info` (BCV_VIDEO_INFO, for Get Video Info and
   Load Reference Image)
 
-The sizes are the models' generation sizes, portrait (width x height):
+The sizes are the models' generation sizes, portrait (width x height); `None`
+is no model, with Conform Video's sizes:
 
 | `model` | `resolution` | Size | Frames |
 |---------|--------------|------|--------|
-| `Wan`   | `480p`, `720p` | 480 x 832, 720 x 1280 | 4n+1 |
-| `SCAIL` | `512p`, `704p` | 512 x 896, 704 x 1280 | 4n+1 |
+| `Wan`   | `480p`, `720p`, `source` | 480 x 832, 720 x 1280, the video's own cut to /16 | 4n+1 |
+| `SCAIL` | `512p`, `704p`, `source` | 512 x 896, 704 x 1280, the video's own cut to /32 | 4n+1 |
+| `None`  | `480p`, `720p`, `1080p`, `source` | 480 x 854, 720 x 1280, 1080 x 1920, the video's own | every frame |
 
-`resolution` offers the chosen model's labels; a label of the other model is
+`resolution` offers the chosen model's labels; a label of another model is
 an error. `orientation` `auto` is portrait when the video is taller than wide,
 otherwise landscape (a square video is landscape); `landscape` and `portrait`
 force one. Landscape swaps width and height. The frame is cut centred to the
 size's aspect ratio, then resized with lanczos.
+
+`source` keeps the video's own pixels, never resized. With an `orientation`
+opposite to the video's, the frame is cut centred to that orientation's
+aspect, keeping the short side (1920 x 1080 as portrait: 608 x 1080);
+orientation never rotates the picture. With `Wan` or `SCAIL` each side is
+then cut, centred, down to the model's grid (Wan 16, SCAIL 32, the steps
+their core nodes take: 720 x 405 is 720 x 400 for Wan, 704 x 384 for SCAIL);
+a video smaller than the grid is an error. `None` has no grid, so its
+`source` is the video's own size, and no frame rule: every frame of the range
+is loaded.
 
 Which frames are loaded:
 
@@ -83,7 +96,8 @@ Which frames are loaded:
   `start_frame` on) count the frames `force_fps` kept. A `start_frame` past
   the last frame, or a `frame_count` that runs past it, is an error that says
   how many frames there are and what to set.
-- The count is then cut down to the model's 4n+1 (a 100-frame range loads 97).
+- The count is then cut down to the model's 4n+1 (a 100-frame range loads 97;
+  with `None`, 100).
 - A `force_fps` or a `frame_count` that is not a number is an error.
 
 Colour: YUV is converted to RGB with the stream's own colour matrix and range,
@@ -93,8 +107,8 @@ FFmpeg's default. A video stored rotated is turned upright.
 Audio: the first audio stream, from `start_frame`'s time for the loaded
 frames' duration.
 
-`video_info` holds the `model`, the `resolution` and the resolved
-`orientation`, then the source's `source_fps`, `source_frame_count`,
+`video_info` holds the `model` (`None` for no model), the `resolution` and
+the resolved `orientation`, then the source's `source_fps`, `source_frame_count`,
 `source_duration`, `source_width` and `source_height` (as displayed), then
 the loaded batch's `loaded_fps` (`force_fps`, or the source's rate),
 `loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`.
@@ -119,6 +133,10 @@ value stays empty.
   `loaded_fps` (FLOAT), `loaded_frame_count` (INT), `loaded_duration`
   (FLOAT), `loaded_width`, `loaded_height` (INT). `loaded_fps` is the rate to
   give Save Video.
+
+The `source_` and `loaded_` outputs are drawn in a colour per group (source
+amber, loaded sky blue), with a thin line and the group's name above each
+group.
 
 ### Load Reference Image
 
@@ -232,46 +250,59 @@ run.
 
 Feed them frames already at the generation size (Load Video loads them so);
 the pose images, masks and boxes come out at the size of the frames that went
-in.
+in, the pose images at Pose Detection's `width` x `height` when both are
+connected.
 
 ### Pose Detection
 
-YOLOv10x finds the person, ViTPose-H gives the 133 COCO-WholeBody keypoints on
-every frame from the person box, and the pose images are drawn. By default the
-box is the detector's raw box, as the official Wan and Kijai preprocess crop
-it; Pose Config's experimental `box_window` and `edge_snap` widen it to the
-boxes of the frames around it and extend it to a frame edge it nearly touches.
+YOLOv10x finds the person, the pose model gives the 133 COCO-WholeBody
+keypoints on every frame from the person box, and the pose images are drawn.
+By default the box is the detector's raw box, as the official Wan and Kijai
+preprocess crop it; Pose Config's experimental `box_window` and `edge_snap`
+widen it to the boxes of the frames around it and extend it to a frame edge it
+nearly touches.
 
 - in: `images`; optional `bboxes` (BBOX, one `(x1, y1, x2, y2)` per frame or
-  one for all: the detector is then skipped), `pose_config` (POSE_CONFIG)
+  one for all: the detector is then skipped), `pose_config` (POSE_CONFIG),
+  `width`, `height` (INT sockets, both or neither)
 - widgets: `body_stick_width` -1,
-  `hand_stick_width` -1 (0 leaves that part out, -1 sizes it from the frame),
-  `draw_head` true, `draw_threshold` 0.5
+  `hand_stick_width` -1 (0 leaves that part out, -1 sizes it from the size
+  the pose images are drawn at), `draw_head` true, `draw_threshold` 0.5,
+  `pose_model` `ViTPose-H` (below)
 - out: `pose_images` (IMAGE), `pose_data` (POSEDATA), `bboxes` (BBOX, the
   person box per frame as everything downstream sees it),
   `key_frame_body_points` (STRING: frame 0's confident body keypoints in the
   KJNodes PointsEditor / easy-sam3 `positive_coords` JSON format)
 
-### Sapiens2 Pose
+With `width` and `height` connected the pose images are drawn at that size
+directly (a ControlNet hint at exactly the latent's pixel size, say): the
+keypoints are scaled to it, a frame of another aspect is cut centred first as
+core's ControlNet cuts a hint (`center`), and a -1 stick width is picked from
+that size. `pose_data`, `bboxes` and `key_frame_body_points` stay at the frame
+size. Not connected, the pose images are drawn at the frame size.
 
-Pose Detection with Meta's Sapiens2 for the body, the feet and the hands:
-the same person box (YOLOv10x, or the connected `bboxes`), the same
-`pose_config`, drawing and outputs, but Sapiens2 gives the body, feet and
-hand keypoints on its own 1024x768 crop, mapped to COCO-WholeBody by name.
-The 68 face keypoints come from ViTPose-H on the same box, so Face Crop, the
-guards and `back_view_face` read the same face as after Pose Detection.
+`pose_model`, the last widget: `ViTPose-H` (default) gives every keypoint.
+`Sapiens2 <model>` runs Meta's Sapiens2 for the body, the feet and the hands
+on the same person box (YOLOv10x, or the connected `bboxes`), with the same
+`pose_config`, drawing, `width` / `height` and outputs: Sapiens2 gives the
+body, feet and hand keypoints on its own 1024x768 crop, mapped to
+COCO-WholeBody by name, and the 68 face keypoints come from ViTPose-H on the
+same box, so Face Crop, the guards and `back_view_face` read the same face as
+with ViTPose-H. The models: `5b int8 convrot`, `5b bf16`, `1b int8 convrot`,
+`1b bf16`, `0.8b int8 convrot`, `0.8b bf16`, `0.4b int8 convrot`, `0.4b bf16`;
+`int8 convrot` is the int8 ConvRot quantized file, computing in bf16. The
+model is downloaded on first use (see Models). A workflow saved before the
+widget existed loads with `ViTPose-H` and runs as before. The separate
+Sapiens2 Pose node (`BCVSapiens2Pose`) is gone: a workflow that used it shows
+it as missing; replace it with Pose Detection and pick the same model in
+`pose_model` (its `model` value with `Sapiens2 ` in front; its other widgets
+keep their meaning).
 
-- in, widgets and out: Pose Detection's, plus `model` after `images`:
-  `5b int8 convrot` (default), `5b bf16`, `1b int8 convrot`, `1b bf16`,
-  `0.8b int8 convrot`, `0.8b bf16`, `0.4b int8 convrot`, `0.4b bf16`.
-  `int8 convrot` is the int8 ConvRot quantized file, computing in bf16.
-- The model is downloaded on first use (see Models).
-
-WanAnimate Preprocess and SCAIL-2 Preprocess have a `pose_model` widget, their
-last: `ViTPose-H` (default) runs Pose Detection, `Sapiens2 <model>` runs
-Sapiens2 Pose with that model. A workflow saved before the widget existed
-loads with `ViTPose-H` and runs as before. SCAIL-2 Preprocess reads it only in
-the modes that run the pose.
+WanAnimate Preprocess and SCAIL-2 Preprocess have the same `pose_model` widget
+(SCAIL-2 Preprocess's last; on WanAnimate Preprocess `grow` and `block_size`
+follow it) and hand it to Pose Detection. A workflow saved before the widget
+existed loads with `ViTPose-H` and runs as before. SCAIL-2 Preprocess reads it
+only in the modes that run the pose.
 
 ### Pose Config
 
@@ -416,7 +447,8 @@ How `prompt` mode repairs its track (one track), from the mask alone, no pose:
 3. A part dropped for a few frames: on the masks after step 2, where the mask
    drops a part of her for 1-8 frames between two frames that hold it (each
    of the two loses a part of 1.5% of her mask or more holding a whole block
-   of the Wan Animate final, grow 10 and blockify 32; the two parts overlap;
+   of the Wan Animate final at its defaults, `grow` 10 and `block_size` 32;
+   the two parts overlap;
    neither moved away), every frame of the run is refined from up to 16
    points where both frames hold her, together with the mask the tracker had
    on that frame (Meta's point refine, as in `prompt_pose` step 3), and shows
@@ -451,8 +483,9 @@ existing object, then the re-propagation its action history asks for):
    qualifies on. Head, neck, shoulders and hips never trigger; the frames
    before the birth are never refined. A second trigger is the mask's own:
    the Mask Guard's `mask_loss` detection on pass 1's masks, closed runs
-   only, as the Wan Animate workflow's final reads them (GrowMaskWithBlur
-   expand 10, BlockifyMask 32): a region of her the final loses for 1-8
+   only, as the Wan Animate final reads them (WanAnimate Preprocess's
+   `final_mask` at its defaults, `grow` 10 and `block_size` 32): a region
+   of her the final loses for 1-8
    frames and holds on the frames on both sides, a whole block of its grid,
    at least 1.5% of her mask, with the pose's body in it (a limb crosses it
    on the frames around, and crosses it or is lost by the pose too on the
@@ -621,11 +654,14 @@ The fails, damage the models cannot restore:
   frame before a run and drops it on every frame of the run: a run of up to 8
   frames that the frame after holds again, or, with `pose_data`, a run from
   the clip's start or to its end. It counts only as the model reads it: the
-  Wan Animate workflow grows the raw mask into the final mask (GrowMaskWithBlur
-  expand 10, BlockifyMask 32) before any model reads it, so the region has to
-  be missing from the final of every frame of the run and hold a whole block
-  of it; it is hers (the pose has her body in it next to the run, or the mask
-  holds it beyond the run), not a limb that moved away and came back (the
+  Wan Animate workflow grows the raw mask into the final mask (WanAnimate
+  Preprocess's `final_mask`: grown by `grow`, blockified by `block_size`,
+  which the guard's widgets of the same names must equal) before any model
+  reads it, so the region has to be missing from the final of every frame of
+  the run and hold a whole block of it (with the Mask Guard's `block_size` 0,
+  any hand-sized part, no whole block); it is hers (the pose has her body in
+  it next to the run, or the mask holds it beyond the run), not a limb that
+  moved away and came back (the
   mask shows that nearby meanwhile); with `pose_data` the drawn skeleton
   crosses it on every frame of the run (or a limb that crosses it next to the
   run is lost by the pose too, so the pose cannot say where it went); and it
@@ -641,8 +677,8 @@ placed like the first frame (`reference_misaligned`, see Reference check
 below). The thresholds are widgets generated from
 `PoseGuardConfig` / `MaskGuardConfig` in `pipelines/guard/config.py`; the
 Pose Guard has no fail and so no switch. `head_out_eyes_ears` (INT, default
-2, 1 to 4) is the last widget of the Mask Guard and the WanAnimate Preprocess
-Guard: 1 fails a single eye or ear too, also where the mask's outline at the
+2, 1 to 4) is the last required widget of the Mask Guard and the WanAnimate
+Preprocess Guard: 1 fails a single eye or ear too, also where the mask's outline at the
 hair leaves one out; 4 fails only all four, or the nose. A face the pose
 model draws on the back of a head lies on the head, which the mask covers.
 The default is set on the test clips: a correct (prompt) mask left no head
@@ -651,10 +687,15 @@ the head, the nose or two or more of the eyes and ears were out.
 
 - Pose Guard: in `pose_data`; out `pose_data` (unchanged), `report`,
   `metrics` (JSON, every measurement per frame), `timeline` (IMAGE)
-- Mask Guard: in `mask`, optional `pose_data`, `min_reference_iou` (0.4) and
-  `reference_image` (the last input); out `mask` (unchanged),
-  `report`, `metrics`, `timeline`. `pose_data` gives the best result: without
-  it the guard runs only `mask_fragmented` and `mask_loss` (runs between two
+- Mask Guard: in `mask`, optional `pose_data`, `min_reference_iou` (0.4),
+  `reference_image`, then `grow` (10) and `block_size` (32; 0-512 on the Mask
+  Guard): the final the guard models for `mask_loss`, equal to the
+  preprocess's. `block_size` 0 (Mask Guard only) models a final without
+  blocks, the mask grown by `grow` read a pixel at a time, so a lost region
+  needs no whole block; with `grow` 0 too the raw mask is judged as it is.
+  Out `mask` (unchanged), `report`, `metrics`, `timeline`. `pose_data` gives
+  the best result: without it the guard runs only `mask_fragmented` and
+  `mask_loss` (runs between two
   frames that hold the region), and the report names the checks it did not
   run. Without it a detached piece is the person only when it runs off a side
   of the frame her largest region also runs off (the frame edge cut it from
@@ -665,22 +706,29 @@ the head, the nose or two or more of the eyes and ears were out.
 The wrappers call the individual nodes, so a wrapper produces exactly what
 the chained nodes produce with the same settings.
 
-- **WanAnimate Preprocess** = Pose Detection (or Sapiens2 Pose, by `pose_model`) -> SAM 3.1
-  Multiplex Video Track -> Face Crop. Widgets: the drawing widgets, `face_padding`, `mode`,
-  `prompt`, `pose_model` (last; `ViTPose-H` default, or `Sapiens2 <model>`); optional
-  `pose_config`, `sam3_config`. In `box_keypoint` mode the
+- **WanAnimate Preprocess** = Pose Detection (with its `pose_model`) -> SAM 3.1
+  Multiplex Video Track -> Face Crop, then the final mask. Widgets: the drawing widgets,
+  `face_padding`, `mode`, `prompt`, `pose_model` (`ViTPose-H` default, or `Sapiens2 <model>`),
+  then `grow` (10) and `block_size` (32); optional `pose_config`, `sam3_config`. In
+  `box_keypoint` mode the
   mask is prompted from the pose; in `prompt_pose` mode the pose's drawn
   keypoints add points on the frames where the track lost a limb, and a region
   the mask drops for a few frames adds points inside it (`pose_data`
   is passed whenever the mode is not `prompt`). Outputs: `pose_images`, `face_images`,
-  `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`.
+  `mask`, `pose_data`, `bboxes`, `key_frame_body_points`, `face_bboxes`,
+  `final_mask` (the mask grown by `grow` steps of the 3 x 3 cross, then cut
+  into blocks of about `block_size` px: ComfyUI-BCNodes' MaskGrow with blur 0,
+  then Blockify Mask) and `bg_images` (the frames with `final_mask` painted
+  black: Draw Mask On Image with `0, 0, 0`), the character mask and the
+  background video of a replacement run. `mask` stays the raw mask. A workflow
+  saved before `grow` and `block_size` existed loads with 10 and 32.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
   report. Inputs `mask`, `pose_data`, the `mask_guard` switch and all thresholds,
-  optional `min_reference_iou` (0.5) and `reference_image` (the last input);
+  optional `min_reference_iou` (0.5), `reference_image`, then `grow` (10) and
+  `block_size` (32), which must equal the preprocess's;
   outputs `mask`, `pose_data`, `report`, `metrics`, `timeline`. Its `mask` is
-  the final mask the sampler gets: the preprocess mask through
-  GrowMaskWithBlur (expand 10) and BlockifyMask (32). BlockifyMask lays its
-  grid from each frame's own box, so the grid moves from frame to frame and
+  the preprocess's `final_mask`, the mask the sampler gets. The final's
+  grid is laid from each frame's own box, so the grid moves from frame to frame and
   the final's outline is known only to within a block: the mask checks allow
   for that (`mask_attached_leak` allows the neighbouring frames' masks a
   block, the detached pieces allow for the padding, and `mask_loss` counts
@@ -700,8 +748,8 @@ reference, places it as core's Wan Animate node places the reference (a
 center crop to the mask's aspect ratio, resized nearest-exact to the mask's
 size) and measures it against mask frame 0. The Mask Guard compares raw with
 raw; the WanAnimate Preprocess Guard checks the final mask, so it grows and
-blockifies the placed character the same way first (GrowMaskWithBlur expand
-10, BlockifyMask 32).
+blockifies the placed character the same way first (its `grow` and
+`block_size`).
 
 An IoU below `min_reference_iou` is `reference_misaligned`, a warning, which
 never stops: replacement expects the reference posed and placed like the
@@ -746,7 +794,7 @@ is a later phase).
   segment). `mode` is the Video Track's widget (`prompt` default,
   `box_keypoint`, `prompt_pose`), so the mask comes from the chosen mode and
   switching needs no rewiring: in `box_keypoint` and `prompt_pose` the node
-  first runs Pose Detection (or Sapiens2 Pose, by `pose_model`) on the driving frames, at its default widgets
+  first runs Pose Detection (with its `pose_model`) on the driving frames, at its default widgets
   (SCAIL-2 draws no pose; the pose only shapes the mask) with `pose_config`
   when connected, and passes its `pose_data` to the track; `prompt` runs no
   pose. The reference image is tracked in prompt mode whatever the mode: the
@@ -828,7 +876,7 @@ Everything is downloaded on first use; nothing has to be fetched by hand.
   `scripts/convert_models.py` rebuilds them from the upstream ONNX exports.
 - SAM 3.1: ComfyUI's own `sam3.1_multiplex_fp16.safetensors`, from
   `Comfy-Org/sam3.1` into `ComfyUI/models/checkpoints/` when it is missing.
-- Sapiens2 pose: from
+- Sapiens2 pose (a Sapiens2 `pose_model`): from
   [huggingface.co/beycanai/sapiens2-convrot](https://huggingface.co/beycanai/sapiens2-convrot)
   into `ComfyUI/models/detection/`, the file of the chosen model only
   (`sapiens2_pose_<size>_<bf16|int8_convrot>.safetensors`).
@@ -873,7 +921,10 @@ one output allocated at `total_frames`. The
 seam between chunks is the frames the core node carries over and trims back
 off (1 for Animate 2, `continue_motion_max_frames` for Animate,
 `previous_frame_count` for SCAIL-2), so there is no cross-window blending and
-no re-denoising.
+no re-denoising. After each core conditioning call the loop runs
+`gc.collect()`: core's `WanAnimateToVideo` leaves the Wan VAE encoder's
+features in a reference cycle, GiBs of VRAM at 720p that otherwise stay
+until Python's own collector runs (see Measured against the earlier workflow).
 
 What they do not do, on purpose: no colour matching between chunks by
 default (it degraded output on earlier Wan Animate models; the SCAIL-2
@@ -1219,9 +1270,11 @@ loop without the widget.
 
 A whole-clip IMAGE or MASK output that nothing is connected to comes out as an empty (0-frame)
 tensor instead of staying in ComfyUI's cache until the prompt ends; where it is a step of its own,
-the step does not run at all. That covers Pose Detection and Sapiens2 Pose `pose_images` (not
-drawn), Face Crop `face_images` (not cut), WanAnimate Preprocess `pose_images`, `face_images` and
-`mask` (no SAM track when `mask` is not connected), SCAIL-2 Colored Mask `pose_video_mask` (not
+the step does not run at all. That covers Pose Detection `pose_images` (not drawn, with either
+`pose_model`), Face Crop `face_images` (not cut), WanAnimate Preprocess `pose_images`, `face_images`,
+`mask`, `final_mask` and `bg_images` (no SAM track unless `mask`, `final_mask` or `bg_images` is
+connected; no final mask unless `final_mask` or `bg_images` is; no painting unless `bg_images`
+is), SCAIL-2 Colored Mask `pose_video_mask` (not
 rendered), SCAIL-2 Preprocess `pose_video` and `pose_video_mask` (not computed) and `mask`
 (computed, since the colored masks are cut by it, then dropped), and Load Video's and the
 samplers' `images` (dropped). Connecting such an output later runs the node again.
@@ -1230,11 +1283,81 @@ When a prompt is queued, the pack writes which of these outputs are connected in
 inputs (`bcv_linked_heavy`), which makes the link state part of ComfyUI's cache key.
 
 The limit: another custom node pack can change a queued prompt after this pack has read it (an
-`on_prompt` handler registered after this pack's). A link it adds could then reach a cached empty
-output, so while such a handler is installed the saving is off: every output comes out full, as
-without this feature, and the console and a toast say "RAM saving of unused outputs is off for this
-run: <pack> changes the prompt after it." ComfyUI-BCNodes does the same for its own nodes and is
-not counted.
+`on_prompt` handler that runs after this pack's), and a link it adds could then reach a cached empty
+output. Once every custom node has loaded, this pack moves its handler (and ComfyUI-BCNodes') after
+every other pack's. A handler added later, while ComfyUI runs, still runs after it: for such a
+prompt the saving is off, every output comes out full as without this feature, and the console
+says "RAM saving of unused outputs is off for this run: <pack> changes the prompt after it."
+ComfyUI-BCNodes does the same for its own nodes and is not counted.
+
+## Measured against the earlier workflow
+
+One Wan 2.2 Animate replacement workflow (background video and character mask connected), run
+once with the earlier packs and once with this pack, on a 1080 x 1920, 30 fps clip of 612 frames
+loaded at 720p: 609 frames (4n+1), sampled as `81 x 7 + 49` with overlap 1 and the same sampler
+settings in both runs. RTX PRO 6000 Blackwell (96 GB), a 126.5 GiB container RAM limit,
+ComfyUI 79be670e; each run in a freshly started ComfyUI with no model loaded.
+
+- Old: the packs as of 2026-09-22, VideoHelperSuite (4d907be) and KJNodes (d3cfe21) for loading,
+  resizing, the mask steps and saving, this pack's sampler as of 2026-09-19
+  (`WanAnimateLongVideoSampler`) and ComfyUI-BCNodes' Video Comparer of then.
+- New: this pack (263d5f9) and ComfyUI-BCNodes (075ad7a). These runs predate WanAnimate
+  Preprocess's `final_mask` / `bg_images` and the samplers' `gc.collect()` (below).
+- The preprocess is the same third-party one in both runs (Kijai's WanAnimatePreprocess pose,
+  easy-sam3's SAM 3 track), so it is not part of the comparison.
+
+Per node: the ComfyUI-BCNodes Process Monitor's time, RAM rise (the node's peak minus its start,
+the container's working set sampled every 100 ms), output size (what ComfyUI keeps in its cache)
+and VRAM peak (torch's allocator).
+
+| Whole workflow | Old | This pack |
+|----------------|-----|-----------|
+| Wall time, from queue | 1034.6 s | 1028.4 s |
+| Peak RAM, process (VmHWM) | 101,614,804 kB (96.91 GiB) | 79,366,792 kB (75.69 GiB) |
+| Peak RAM, container working set | 98.77 GiB | 77.58 GiB |
+| Peak VRAM (the sampler) | 47.85 GiB | 53.93 GiB |
+
+| Stage | Old nodes: time, RAM rise, output | This pack's nodes: time, RAM rise, output |
+|-------|-----------------------------------|-------------------------------------------|
+| Load at 720 x 1280 | VHS Load Video (1080 x 1920 frames): 5.4 s, 15.35 GiB, 14.18 GiB; then KJ Image Resize v2 (lanczos, crop): 13.2 s, 12.57 GiB, 6.27 GiB | Load Video: 12.2 s, 6.74 GiB, 6.28 GiB (frames and audio) |
+| Final mask and background | KJ GrowMaskWithBlur (expand 10): 1.2 s, 6.33 GiB, 4.18 GiB; BlockifyMask (32): 1.0 s, 4.19 GiB, 2.09 GiB; DrawMaskOnImage (black): 1.3 s, 19.73 GiB, 6.27 GiB | ComfyUI-BCNodes MaskGrow (grow 10, blur 0): 0.8 s, 2.09 GiB, 2.09 GiB; Blockify Mask (32): 0.5 s, 2.10 GiB, 2.09 GiB; Draw Mask On Image (black): 0.5 s, 6.29 GiB, 6.27 GiB |
+| Sampler | This pack's of 2026-09-19: 860.9 s, 31.05 GiB, 6.27 GiB; VRAM 47.85 GiB | Wan Animate Long Video Sampler: 853.6 s, 27.85 GiB, 6.27 GiB; VRAM 53.93 GiB |
+| Save and compare | VHS Video Combine (h264, crf 19): 2.1 s, 0.72 GiB; Video Comparer: 7.1 s, 0.01 GiB | Save Video (h264-mp4, crf 19, medium): 3.5 s, 0.58 GiB; Video Comparer: 6.5 s, 1.11 GiB |
+
+The RAM peak is the sampler's, and most of the difference is what the old graph keeps in
+ComfyUI's cache until the prompt ends: the full-size frames next to the resized ones (14.18 GiB)
+and GrowMaskWithBlur's second output (2.09 GiB). The cache held 50.52 GiB after the old sampler
+and 34.23 GiB after this pack's; the sampler's own RAM rise is 3.20 GiB smaller (computed
+from the table). Load Video takes 6.4 s less than the loader and the resize together (computed).
+
+VRAM: the sampler's peak varies from run to run with either pack. Core's `WanAnimateToVideo`
+leaves the Wan VAE encoder's full-resolution features (`[1, 96, 2, 1280, 720]` and
+`[1, 3, 2, 1280, 720]`, bf16) in a reference cycle, so they stay on the GPU into the chunk's
+sampling until Python's own collector happens to run. Probed after one call: 4.06 GiB of them
+still allocated with the old packs, 7.30 GiB with this pack, none in a third probe where the
+collector had already run; one `gc.collect()` freed them all (0.28 GiB allocated after, both
+packs). On a 161-frame run of each pack, 7.47-12.49 GiB
+was allocated when a chunk's sampling started and its peak was 43.77-49.69 GiB. The samplers now
+call `gc.collect()` right after each core conditioning call: 74.9 and 78.1 ms per call, measured
+locally with about 590k tracked objects, against about 100 s of sampling per chunk here.
+
+The last chunk decodes only the latent frames `total_frames` needs (Length math); this run
+needed all of them. Measured on this GPU with the Wan 2.1 VAE in bf16, on 81-frame windows of
+the clip (21 latent frames): decoding the first 1 or 11 latent frames gives the frames of
+decoding all 21, bit for bit; the first 2 or 20 give the last latent frame's 4 frames up to
+1.87/255 apart (73 of 77 frames identical as 8-bit). The odd counts measured exact, the even ones
+not.
+
+This pack's own preprocess on the same 609 frames (WanAnimate Preprocess, prompt mode, ViTPose-H,
+263d5f9), between Load Video and the WanAnimate Preprocess Guard: 64.4 s (person detection 5.5 s,
+keypoints 5.9 s, pose images 0.5 s, the SAM 3.1 Multiplex track 51.4 s, face crops 0.1 s), a VRAM
+peak of 4.51 GiB, a RAM rise of 15.20 GiB of which 10.15 GiB are its outputs; the guard 3.0 s;
+80.3 s from queue, VmHWM 23,520,984 kB (22.43 GiB). For reference, in the runs above the
+third-party preprocess took 11.7 / 14.3 s for its pose, 1.6 s for drawing it and 105.8 / 111.9 s
+for easy-sam3's SAM 3 track (fp32, VRAM peak 9.45 / 9.75 GiB): another model, so the times only.
+
+A replacement workflow that animates a single image into 81 frames (the image repeated) showed
+no difference: 148.0 s and 147.2 s from queue, VmHWM 41.37 and 40.79 GiB.
 
 ## Roadmap
 
@@ -1276,7 +1399,7 @@ python -m pytest tests
 ```
 
 `tests/libs/test_chunking.py` covers the length math and
-`tests/test_package.py` the node contract of all twenty-two nodes, both without
+`tests/test_package.py` the node contract of all twenty-one nodes, both without
 torch or ComfyUI:
 `python -m pytest tests/test_package.py tests/libs/test_chunking.py`.
 `tests/pipelines/test_long_video*.py` run the samplers' chunk loop against

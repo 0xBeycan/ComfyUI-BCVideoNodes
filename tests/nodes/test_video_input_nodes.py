@@ -28,11 +28,13 @@ def test_load_video_widgets(folders):
     assert list(required) == ["video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count"]
     files, options = required["video"]
     assert files == ["clip.mkv"] and "video_upload" not in options
-    assert required["model"][0] == ["Wan", "SCAIL"] and required["model"][1]["default"] == "Wan"
+    assert required["model"][0] == ["Wan", "SCAIL", "None"] and required["model"][1]["default"] == "Wan"
     labels, options = required["resolution"]
-    assert labels == ["480p", "720p", "512p", "704p"] and options["default"] == "720p"
-    assert options["bcv_sizes"] == {"Wan": {"480p": [480, 832], "720p": [720, 1280]},
-                                    "SCAIL": {"512p": [512, 896], "704p": [704, 1280]}}
+    assert labels == ["480p", "720p", "512p", "704p", "1080p", "source"] and options["default"] == "720p"
+    assert options["bcv_sizes"] == {
+        "Wan": {"480p": [480, 832], "720p": [720, 1280], "source": None},
+        "SCAIL": {"512p": [512, 896], "704p": [704, 1280], "source": None},
+        "None": {"480p": [480, 854], "720p": [720, 1280], "1080p": [1080, 1920], "source": None}}
     assert set(options) == {"default", "bcv_sizes", "tooltip"}
     assert required["orientation"][0] == ["auto", "landscape", "portrait"] and required["orientation"][1]["default"] == "auto"
     assert required["force_fps"][0] == "STRING" and required["force_fps"][1]["default"] == ""
@@ -47,7 +49,11 @@ def test_load_video_validation(folders):
     validate = video.BCVLoadVideo.VALIDATE_INPUTS
     assert validate(video="clip.mkv", model="Wan", resolution="720p") is True
     assert validate(video="clip.mkv", model="Wan", resolution="512p") == (
-        "resolution '512p' does not belong to model Wan; pick one of 480p, 720p.")
+        "resolution '512p' does not belong to model Wan; pick one of 480p, 720p, source.")
+    assert validate(video="clip.mkv", model="None", resolution="1080p") is True
+    assert validate(video="clip.mkv", model="SCAIL", resolution="source") is True
+    assert validate(video="clip.mkv", model="Wan", resolution="1080p") == (
+        "resolution '1080p' does not belong to model Wan; pick one of 480p, 720p, source.")
     assert validate(video="gone.mp4", model="SCAIL", resolution="704p") == "Invalid video file: gone.mp4"
     assert validate(video="clip.mkv") is True  # model and resolution linked: checked when it runs
 
@@ -56,6 +62,8 @@ def test_load_video_loads_from_the_input_folder(folders):
     grey_clip(folders / "input" / "clip.mkv", 9)
     images, audio, info = video.BCVLoadVideo().load("clip.mkv", "SCAIL", "512p", "auto", "", 1, "")
     assert images.shape == (9, 512, 896, 3) and audio is None and info["resolution"] == "512p"
+    images, _, info = video.BCVLoadVideo().load("clip.mkv", "None", "source", "auto", "", 1, "8")
+    assert images.shape == (8, 32, 64, 3) and (info["model"], info["resolution"]) == ("None", "source")
 
 
 def test_get_video_info_outputs_every_field_in_order():

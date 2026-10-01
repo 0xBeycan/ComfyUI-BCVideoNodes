@@ -322,9 +322,6 @@ def test_a_file_of_another_version_names_the_sapiens2_converter(tmp_path, monkey
 
 def test_every_sapiens2_file_is_a_registered_pose_estimator_named_as_the_widgets_name_it():
     registry = sapiens2.registry
-    names = registry.names("pose_estimator")
-    assert names == ["ViTPose-H"] + [f"Sapiens2 {m}" for m in sapiens2.SAPIENS2_MODELS]
-    assert list(sapiens2.POSE_MODELS) == names
     files = {
         "Sapiens2 5b int8 convrot": "sapiens2_pose_5b_int8_convrot.safetensors",
         "Sapiens2 5b bf16": "sapiens2_pose_5b_bf16.safetensors",
@@ -335,6 +332,8 @@ def test_every_sapiens2_file_is_a_registered_pose_estimator_named_as_the_widgets
         "Sapiens2 0.4b int8 convrot": "sapiens2_pose_0.4b_int8_convrot.safetensors",
         "Sapiens2 0.4b bf16": "sapiens2_pose_0.4b_bf16.safetensors",
     }
+    # the pose_model widget's values, in its order
+    assert registry.names("pose_estimator") == list(sapiens2.POSE_MODELS) == ["ViTPose-H", *files]
     for name, file in files.items():
         assert registry.get("pose_estimator", name) == registry.Entry(sapiens2.Sapiens2Pose, file,
                                                                       "beycanai/sapiens2-convrot")

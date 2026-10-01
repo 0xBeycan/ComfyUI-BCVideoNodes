@@ -108,6 +108,41 @@ def test_a_chunk_s_conditioning_latent_and_decode_are_gone_before_the_next_core_
     assert len(checked) == 4 and checked == [[]] * 4
 
 
+@pytest.mark.parametrize("node", NODES)
+def test_what_the_core_call_leaves_in_a_reference_cycle_is_collected_before_sampling(node_module, monkeypatch, node):
+    # core's WanAnimateToVideo leaves the VAE encoder's features in a reference cycle, which only a
+    # collection frees; with Python's automatic collector off, only the loop's own collection can
+    import gc
+
+    mappings = sys.modules["nodes"].NODE_CLASS_MAPPINGS
+    core = mappings[CORE_NODE[node]]
+    features, at_sampling = [], []
+
+    def execute(cls, **kwargs):
+        cycle = {"features": torch.zeros(4)}
+        cycle["self"] = cycle
+        features.append(weakref.ref(cycle["features"]))
+        return core.EXECUTE_NORMALIZED(**kwargs)
+
+    class Sampler(FakeSamplerCustom):
+        @classmethod
+        def EXECUTE_NORMALIZED(cls, **kwargs):
+            at_sampling.append([ref() is None for ref in features])
+            return super().EXECUTE_NORMALIZED(**kwargs)
+
+    monkeypatch.setitem(mappings, CORE_NODE[node], type(core.__name__, (core,), {"EXECUTE_NORMALIZED": classmethod(execute)}))
+    monkeypatch.setitem(mappings, "SamplerCustom", Sampler)
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        run(node_module, pose_frames=FOUR_CHUNKS[node], node=node, last_chunk="full",
+            **(dict(clip_vision="cv") if node == ANIMATE2 else {}))
+    finally:
+        if enabled:
+            gc.enable()
+    assert at_sampling == [[True] * chunk for chunk in range(1, 5)]
+
+
 # --- the seed ----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("node", NODES)

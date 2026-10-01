@@ -1,6 +1,7 @@
 """libs/resize.py and libs/video_sizes.py: the crop and contain boxes (hand-computed), the fit
 against comfy.utils.lanczos and comfy.utils.common_upscale on the same crop, no resampling at the
-target size, the model table, the orientation rule and Conform Video's target table."""
+target size, the centred cut, the model table, the orientation rule and Conform Video's target
+table."""
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -110,8 +111,26 @@ def test_the_methods_are_common_upscales_lanczos_first():
     assert set(video.METHODS) == {"lanczos", "bicubic", "bilinear", "area", "nearest-exact", "bislerp"}
 
 
+@pytest.mark.parametrize("frame_size, out_size, x, y", [
+    ((32, 70), (32, 64), 3, 0),    # 70 -> 64 columns: 3 off the left, 3 off the right
+    ((34, 70), (32, 64), 3, 1),
+    ((33, 64), (32, 64), 0, 0),    # an odd row: the extra one off the bottom
+    ((32, 64), (32, 64), 0, 0),    # the same size: the frame itself
+])
+def test_cut_is_the_centred_region_without_resampling(frame_size, out_size, x, y):
+    pixels = random_pixels(*frame_size, seed=2)
+    out = torch.empty((*out_size, 3))
+    video.fit(pixels, out, video.CUT)
+    h, w = out_size
+    assert torch.equal(out, torch.from_numpy(pixels[y:y + h, x:x + w].copy()).float().div_(255))
+    frame = torch.from_numpy(pixels.astype(np.float32) / 255)  # a float frame: the region as it is
+    video.fit(frame, out, video.CUT)
+    assert torch.equal(out, frame[y:y + h, x:x + w])
+    assert video.CUT not in video.FITS  # not one of Conform Video's fits
+
+
 def test_unknown_fit_and_method_raise():
-    with pytest.raises(ValueError, match="fit 'stretch' is not one of crop, pad"):
+    with pytest.raises(ValueError, match="fit 'stretch' is not one of crop, pad, cut"):
         video.fit(random_pixels(8, 8), torch.empty((4, 4, 3)), "stretch")
     with pytest.raises(ValueError, match="method 'cubic' is not one of"):
         video.fit(random_pixels(8, 8), torch.empty((4, 4, 3)), video.CROP, "cubic")
@@ -120,18 +139,30 @@ def test_unknown_fit_and_method_raise():
 # --- sizes ----------------------------------------------------------------------------------------
 
 def test_the_model_table():
+    # None: no frame rule (1n + 1 is any count), no grid, Conform Video's ladder; source (no size) in
+    # every model
     assert video.MODELS == {
-        "Wan": {"frames": 4, "sizes": {"480p": [480, 832], "720p": [720, 1280]}},
-        "SCAIL": {"frames": 4, "sizes": {"512p": [512, 896], "704p": [704, 1280]}},
+        "Wan": {"frames": 4, "grid": 16, "sizes": {"480p": [480, 832], "720p": [720, 1280], "source": None}},
+        "SCAIL": {"frames": 4, "grid": 32, "sizes": {"512p": [512, 896], "704p": [704, 1280], "source": None}},
+        "None": {"frames": 1, "grid": 1,
+                 "sizes": {"480p": [480, 854], "720p": [720, 1280], "1080p": [1080, 1920], "source": None}},
     }
-    assert video.RESOLUTIONS == ["480p", "720p", "512p", "704p"]
+    # every sized resolution is on its model's grid
+    for model in video.MODELS.values():
+        assert all(side % model["grid"] == 0 for size in model["sizes"].values() if size for side in size)
+    # the labels of before first, in their order, then the added ones
+    assert video.RESOLUTIONS == ["480p", "720p", "512p", "704p", "1080p", "source"]
     assert video.model_size("SCAIL", "704p") == [704, 1280]
+    assert video.model_size("None", "480p") == [480, 854] and video.model_size("Wan", "480p") == [480, 832]
+    assert video.model_size("Wan", "source") is None and video.model_size("None", "source") is None
 
 
 def test_a_resolution_of_another_model_is_rejected():
-    with pytest.raises(ValueError, match="resolution '512p' does not belong to model Wan; pick one of 480p, 720p."):
+    with pytest.raises(ValueError, match="resolution '512p' does not belong to model Wan; pick one of 480p, 720p, source."):
         video.model_size("Wan", "512p")
-    with pytest.raises(ValueError, match="model 'Hunyuan' is not one of Wan, SCAIL"):
+    with pytest.raises(ValueError, match="resolution '1080p' does not belong to model SCAIL; pick one of 512p, 704p, source."):
+        video.model_size("SCAIL", "1080p")
+    with pytest.raises(ValueError, match="model 'Hunyuan' is not one of Wan, SCAIL, None"):
         video.model_size("Hunyuan", "720p")
 
 

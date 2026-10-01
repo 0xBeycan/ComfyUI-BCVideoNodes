@@ -63,19 +63,20 @@ Mask checks, per frame, from the mask against `pose_data`:
                       stretch with a mask) or from its start - and it is her (the pose has the body
                       in it next to the run, or the mask holds it beyond), not a limb that moved
                       away. What counts is what the model reads: the Wan Animate workflow grows the
-                      raw mask into the final mask (GrowMaskWithBlur expand 10, BlockifyMask 32)
-                      before any model reads it, so the region has to be missing from the final of
-                      every frame of the run and hold a whole block of its grid. With pose_data the
-                      body has to be in it on every frame of the run: the drawn skeleton crosses it,
-                      or a limb that crosses it next to the run is lost by the pose too. And it has
-                      to be hand-sized: common.LOSS_HAND of her mask or more
+                      raw mask into the final mask (WanAnimate Preprocess's final_mask: grown by
+                      `grow`, blockified by `block_size`, default 10 and 32; the guards' widgets of
+                      the same names) before any model reads it, so the region has to be missing
+                      from the final of every frame of the run and hold a whole block of its grid.
+                      With pose_data the body has to be in it on every frame of the run: the drawn
+                      skeleton crosses it, or a limb that crosses it next to the run is lost by the
+                      pose too. And it has to be hand-sized: common.LOSS_HAND of her mask or more
 
 The WanAnimate Preprocess Guard judges the final mask the sampler gets, the preprocess mask grown
-(GrowMaskWithBlur expand 10) and cut into 32 px blocks (BlockifyMask), whose grid is laid from
-each frame's own box and moves with it (check_mask(final=True), common.FINAL_BLOCK): its outline
-is known only to within a block, so mask_attached_leak allows the neighbouring frames' masks a
-block, the detached pieces allow for the padding, and mask_loss counts only a block holding a drawn
-keypoint on every frame of its run.
+by `grow` and cut into blocks of about `block_size` px (WanAnimate Preprocess's final_mask), whose
+grid is laid from each frame's own box and moves with it (check_mask(final=True),
+common.final_pad): its outline is known only to within a block, so mask_attached_leak allows the
+neighbouring frames' masks a block, the detached pieces allow for the padding, and mask_loss
+counts only a block holding a drawn keypoint on every frame of its run.
 
 Without pose_data the Mask Guard runs only the checks that do not read it: mask_fragmented (the
 largest region, and the pieces the frame edge cut from it, are the person) and mask_loss on closed

@@ -1,11 +1,20 @@
 """The synthetic guard clip shared by the guard and node tests: a person-sized rectangle
 drifting across the frame with a frontal skeleton inside it, the measured guard thresholds, and
 the injector that makes body keypoints unconfident. The tests bind the guard package itself.
+
+Also the final mask the guards judge and WanAnimate Preprocess outputs: the `final` Names
+(libs/mask.py) and the final mask and the painted frames written out from their definitions
+(`grown_and_blockified`, `painted`), the references the pack's are held to.
 """
 import numpy as np
 import torch
 
 from bcvideonodes.pipelines import guard
+from names import Names, refs
+
+final = Names("final", {
+    **refs("libs.mask", "GROW", "BLOCK_SIZE", "FinalMaskConfig", "final_mask", "painted_black"),
+})
 
 N, H, W = 40, 320, 240
 POSE_CONFIG = {"min_keypoint_conf": 0.3}   # Pose Detection's config; the guards do not read it
@@ -73,3 +82,42 @@ def hand(x, y, conf=0.9):
     """A drawn hand of 21 keypoints around pixel (x, y), as pose_metas_original holds it."""
     return np.array([((x + dx) / W, (y + dy) / H, conf) for dx in (-4, -2, 0, 2, 4) for dy in (-4, 0, 4, 8)] +
                     [(x / W, y / H, conf)])
+
+
+def grown_and_blockified(mask, grow, block_size):
+    """The final mask of the [N, H, W] MASK `mask` written out from its definition, frame by frame
+    over the whole frame: MaskGrow's 8-bit quantisation (clip(255 x value) as uint8) and `grow`
+    dilations of the 3 x 3 cross, then BlockifyMask over the grown pixels' box - side // block_size
+    blocks (at least one) of side // blocks px, the last taking the remainder, each block 1 when it
+    holds a grown pixel; block_size 0 cuts no blocks, the grown pixels are the final."""
+    import cv2
+
+    cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], np.uint8)
+    out = torch.zeros(mask.shape)
+    for f, frame in enumerate(mask.numpy()):
+        levels = np.clip(255.0 * frame, 0, 255).astype(np.uint8)
+        grown = (cv2.dilate(levels, cross, iterations=grow) if grow else levels) > 0
+        if not block_size:
+            out[f] = torch.from_numpy(grown).float()
+            continue
+        ys, xs = np.nonzero(grown)
+        if not len(ys):
+            continue
+
+        def cuts(start, stop):
+            blocks = max(1, (stop - start) // block_size)
+            size = (stop - start) // blocks
+            return [(start + i * size, start + (i + 1) * size if i < blocks - 1 else stop) for i in range(blocks)]
+
+        for a, b in cuts(ys.min(), ys.max() + 1):
+            for c, d in cuts(xs.min(), xs.max() + 1):
+                if grown[a:b, c:d].any():
+                    out[f, a:b, c:d] = 1.0
+    return out
+
+
+def painted(images, mask):
+    """Draw Mask On Image's blend written out for the colour 0, 0, 0 at full opacity:
+    image x (1 - mask) + 0 x mask."""
+    m = mask.unsqueeze(-1)
+    return images * (1 - m) + torch.zeros(3) * m

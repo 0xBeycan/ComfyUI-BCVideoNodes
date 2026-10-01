@@ -6,7 +6,6 @@ from .nodes.face import BCVFaceCrop
 from .nodes.guard import BCVMaskGuard, BCVPoseGuard
 from .nodes.preprocess import BCVWanAnimatePreprocess, BCVWanAnimatePreprocessGuard
 from .nodes.scail2 import BCVSCAIL2ColoredMask, BCVSCAIL2Preprocess, BCVSCAIL2PreprocessGuard
-from .nodes.pose import BCVSapiens2Pose
 from .nodes.video_input import BCVConformVideo, BCVGetVideoInfo, BCVLoadReferenceImage, BCVLoadVideo, register_plan_route
 from .nodes.video_output import BCVSaveVideo, BCVVideoComparer
 from .nodes.unused_outputs import register_link_stamp
@@ -27,7 +26,6 @@ NODE_CLASS_MAPPINGS = {
     "BCVSCAIL2ColoredMask": BCVSCAIL2ColoredMask,
     "BCVSCAIL2Preprocess": BCVSCAIL2Preprocess,
     "BCVSCAIL2PreprocessGuard": BCVSCAIL2PreprocessGuard,
-    "BCVSapiens2Pose": BCVSapiens2Pose,
     "BCVLoadVideo": BCVLoadVideo,
     "BCVGetVideoInfo": BCVGetVideoInfo,
     "BCVLoadReferenceImage": BCVLoadReferenceImage,
@@ -52,7 +50,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BCVSCAIL2ColoredMask": "SCAIL-2 Colored Mask",
     "BCVSCAIL2Preprocess": "SCAIL-2 Preprocess",
     "BCVSCAIL2PreprocessGuard": "SCAIL-2 Preprocess Guard",
-    "BCVSapiens2Pose": "Sapiens2 Pose",
     "BCVLoadVideo": "Load Video",
     "BCVGetVideoInfo": "Get Video Info",
     "BCVLoadReferenceImage": "Load Reference Image",
@@ -61,7 +58,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BCVVideoComparer": "Video Comparer",
 }
 
-# writes the link state of the heavy outputs into each prompt (nodes/unused_outputs.py)
+# writes the link state of the heavy outputs into each prompt, after the other packs' on_prompt
+# handlers (nodes/unused_outputs.py)
 register_link_stamp(NODE_CLASS_MAPPINGS)
 # what Load Video will load, for its preview (nodes/video_input.py)
 register_plan_route()

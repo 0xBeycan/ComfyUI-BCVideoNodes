@@ -5,7 +5,7 @@
 ComfyUI custom nodes for Wan Animate and SCAIL-2: the preprocess (pose, SAM 3.1 Multiplex person
 mask, face crops, pose and mask guards, SCAIL-2 colored masks and their guard), three
 long-video samplers, and the video nodes (Load Video, Get Video Info, Load Reference Image, Conform
-Video, Save Video, Video Comparer, with their player in `web/js/`). The 22 node keys are locked,
+Video, Save Video, Video Comparer, with their player in `web/js/`). The 21 node keys are locked,
 and so is everything ComfyUI reads from a node (inputs, types, order, defaults, ranges, return
 types, categories, display names), because saved workflows depend on it: a change to it needs
 the owner. `tests/test_package.py` and the gate's
@@ -32,20 +32,21 @@ Four layers, `nodes -> pipelines -> models -> libs`:
 `WEB_DIRECTORY`, no build step.
 
 ```
-__init__.py          registration only: the 22 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
-                     WEB_DIRECTORY = "./web", the link stamp of the unused heavy outputs (register_link_stamp),
-                     Load Video's plan route (register_plan_route)
+__init__.py          registration only: the 21 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
+                     WEB_DIRECTORY = "./web", the link stamp of the unused heavy outputs (register_link_stamp,
+                     which also hooks stamps_last to the server's startup), Load Video's plan route
+                     (register_plan_route)
 nodes/               common (the PREPROCESS and VIDEO categories, _config, _ConfigNode, prompt_server), unused_outputs (the
-                     unused-heavy-outputs helper: LinkStamp, register_link_stamp, heavy_wanted, wants,
-                     drop_unwanted, drop_unlinked_heavy), sampler, pose (Pose Detection, Pose Config,
-                     Sapiens2 Pose), sam3_1_multiplex (and track_reference: the character on a reference
-                     image), face, guard,
+                     unused-heavy-outputs helper: LinkStamp, register_link_stamp, stamps_last, heavy_wanted, wants,
+                     drop_unwanted, drop_unlinked_heavy), sampler, pose (Pose Detection, Pose Config, the
+                     pose_model widget's POSE_MODELS), sam3_1_multiplex (and track_reference: the character on
+                     a reference image), face, guard,
                      preprocess (the two WanAnimate wrappers, composed of the nodes above),
                      scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard),
                      video_input (Load Video, Get Video Info, Load Reference Image, Conform Video),
                      video_output (Save Video, Video Comparer)
-pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Sapiens2 Pose: Sapiens2 body, feet and
-                     hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
+pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Pose Detection with a Sapiens2 pose_model:
+                     Sapiens2 body, feet and hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
                      on black), guard/ (config, common, pose, mask, reference, report, timeline, combine,
                      scail2), sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry
                      the node calls), video_input (Load Video, Load Reference Image, Conform Video)
@@ -54,16 +55,20 @@ models/              __init__ (imports the model packages in registration order)
                      core_nodes, animate), vitpose/, yolo/, sapiens2/ (net, wrapper, decode, keypoints),
                      sam3_1_multiplex/ (adapter, loader,
                      postprocess), wan_animate/, wan_animate2/, scail2/
-libs/                log, bbox, keypoints, mask, chunking, sigmas, video (tail padding), color, config_widgets,
+libs/                log, bbox, keypoints, mask (and the final mask: FinalMaskConfig, final_blocks, the one
+                     grow + blockify the preprocess and the guards call, final_mask, painted_black; block_size 0
+                     cuts no blocks, the Mask Guard's raw-mask mode), chunking, sigmas, video (tail padding),
+                     color, config_widgets,
                      pose_data, draw_rules (the Pose Config draw rules: parts left out of the pose images),
-                     video_sizes (the model table: sizes, frame rule; the orientation rule; the Conform
-                     Video ladder), video_info (the VideoInfo TypedDict), resize (the one fit function: crop
-                     or pad, a frame into a preallocated output), video_decode (PyAV decode, frame
+                     video_sizes (the model table: sizes, frame rule, grid; the orientation rule; the Conform
+                     Video ladder), video_info (the VideoInfo TypedDict), resize (the one fit function: crop,
+                     pad or cut, a frame into a preallocated output; center_crop, core's center-crop rule),
+                     video_decode (PyAV decode, frame
                      selection, audio), video_encode (the codec table, the writer), video_compare (the
                      Video Comparer's side by side), pose_utils/ (vendored, with its LICENSE)
-web/js/              player.js (the player the previews share), load_video.js, save_video.js, video_comparer.js
+web/js/              player.js (the player the previews share), load_video.js, save_video.js, video_comparer.js,
+                     get_video_info.js (the output groups' colours and dividers)
 scripts/             offline model conversion and upload (ComfyUI-free)
-web/js/              unused_outputs.js (the toast when the unused-outputs saving is off for a run)
 tests/               tests/{nodes,pipelines,models,libs}/ mirror the layers; the gate, the layer test
 ```
 
@@ -115,9 +120,11 @@ ComfyUI's cache key holds a node's own inputs and its ancestors only, so an on_p
 heavy outputs of each heavy node into its inputs as `bcv_linked_heavy` before validation; every
 input key is part of the cache key, and an undeclared one never reaches the function. No stamp (no
 server, a direct executor call, a node a wrapper calls): every output full. A link the stamp
-missed: full, with a warning. Another pack's on_prompt handler registered after ours turns the
-saving off for that prompt, with a console line and a toast; the owner chose that over reordering
-the handlers.
+missed: full, with a warning. The stamping handlers (marked `bc_link_stamp`: ours and
+ComfyUI-BCNodes') run last: once every custom node has loaded, a startup hook on the aiohttp app
+(`app.on_startup`, `stamps_last` in `nodes/unused_outputs.py`) moves them to the end of
+`on_prompt_handlers`, each group in its order; idempotent, BCNodes does the same. A handler another
+pack adds after that still turns the saving off for that prompt, with a console line.
 
 - A whole-clip IMAGE or MASK output the node makes, among two or more outputs (or on an output
   node), is a heavy output: list it in `HEAVY_OUTPUTS` (names from `RETURN_NAMES`), add
@@ -126,8 +133,10 @@ the handlers.
   prompt_graph, unique_id)` and return through `drop_unwanted(type(self), outputs, wanted)`.
 - When the output is a step of its own that no other output reads, pass `wants(wanted, name)` down
   so the step does not run (the pose images, the face crops, the driving colored mask, the driving
-  video on black, the WanAnimate SAM track); when another output needs the step (SCAIL-2
-  Preprocess `mask`, Load Video `images`, the samplers' `images`), it is only dropped at return.
+  video on black, the WanAnimate SAM track and final mask, the WanAnimate `bg_images` painting);
+  when another output needs the step (SCAIL-2 Preprocess `mask`, WanAnimate Preprocess `mask`
+  under a linked `final_mask` or `bg_images` and `final_mask` under a linked `bg_images`, Load
+  Video `images`, the samplers' `images`), it is only dropped at return.
 - A pass-through (the input tensor itself, the guards' masks), a one-frame output (a reference
   mask, a timeline) and the output of a single-output node that is not an output node (it runs
   only when that output is linked) are not heavy.
@@ -148,8 +157,10 @@ the handlers.
   `person_detector` family with its model file (see `models/vitpose/__init__.py`).
 - Add the package to the import list in `models/__init__.py`. The loader loads the pose
   estimator and the person detector by their registry names (`models/common/loader.py`:
-  `POSE_ESTIMATOR`, `DETECTOR`); offering a choice between models means a node widget, which
-  changes the node surface and needs the owner's word.
+  `POSE_ESTIMATOR`, `DETECTOR`), and another pose estimator by the name Pose Detection's
+  `pose_model` widget picks (`load_pose_estimator`; `POSE_MODELS` in `nodes/pose.py`, which the
+  tests tie to the registry). A new choice there changes the node surface and needs the owner's
+  word.
 - Keep its module-level imports to torch, numpy and the standard library.
 - List its modules in `CHECK3_MODULES` of `tests/test_import_time.py` (with an `ALLOWED` row if
   one may pull in a heavy module): the gate fails on a layer module that is not listed there.
@@ -209,6 +220,9 @@ the handlers.
   frames. The last chunk decodes only the latent frames `total_frames` needs: the Wan VAE
   decodes causally, so the latent frames that decode only to frames past it are left out
   instead of decoded and cut.
+- The loop runs `gc.collect()` right after each core conditioning call: core's
+  `WanAnimateToVideo` leaves the Wan VAE encoder's features in a reference cycle (GiBs of VRAM at
+  720p until Python's own collector runs).
 - The colour anchor is not the adapter's either, beyond its region: it is the samplers'
   `color_anchor_strength` widget (optional, the last widget, after the `sigmas_override` link;
   default 0 = off, and 0 skips the code path), `libs/color.py`.
@@ -263,7 +277,7 @@ the handlers.
     so importing either package triggers neither E1 nor E3.
 - The gate, with the ComfyUI venv's Python: `PYTHONPATH=/path/to/ComfyUI python
   tests/test_import_time.py`. A standalone script (pytest does not collect it). It checks the
-  package import (under 0.1 s, no heavy module, the 22 keys in order), each node module, each
+  package import (under 0.1 s, no heavy module, the 21 keys in order), each node module, each
   module against its allowed heavy set, and the ComfyUI-free set.
 - Code outside the pack binds the repo root as a package and imports through it: tests and
   `scripts/` as `bcvideonodes` (`tests/conftest.py` runs the root `__init__` as ComfyUI does; the
@@ -310,7 +324,8 @@ the handlers.
 - BCV_VIDEO_INFO is a plain dict at runtime too: `libs/video_info.VideoInfo` is its annotation
   and fixes its key order, which is Get Video Info's output order.
 - What the frontend reads from the node definitions: Load Video's `resolution` input carries
-  `bcv_sizes` (model -> label -> [width, height], portrait), from `libs/video_sizes.MODELS`, so
+  `bcv_sizes` (model -> label -> [width, height], portrait; null for `source`, the video's own
+  size), from `libs/video_sizes.MODELS`, so
   the table has no second copy in JS;
   Save Video's `codec` input carries `bcv_codecs` (codec -> the values of its crf, preset and
   pix_fmt, `libs/video_encode.widget_values`).
@@ -336,9 +351,9 @@ the handlers.
   where the A/B dump node installs its sink. The A/B test scripts and the A/B dump node are both
   outside the repo.
 - Locked for the unused heavy outputs: the stamp key `bcv_linked_heavy` (part of every heavy node's
-  cache key), the `bcvideonodes.unused_outputs` event `web/js/unused_outputs.js` listens to, and the
-  `bc_link_stamp` marker on the stamping handler, which ComfyUI-BCNodes' handler reads to leave ours
-  out of "another pack" (and ours reads on its).
+  cache key) and the `bc_link_stamp` marker on the stamping handler, which ComfyUI-BCNodes' handler
+  reads to leave ours out of "another pack" and `stamps_last` reads to move it last (and ours reads
+  on its).
 
 ## Closed decisions
 

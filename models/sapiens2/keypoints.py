@@ -1,8 +1,8 @@
 """Sapiens2's keypoints: its 308-keypoint output size, the names of keypoints 0-69 (body, feet, hands,
 arm and neck extras; the rest are face), and the 70 -> 133 table into COCO-WholeBody, the layout the
 pack's pose drawing reads (libs/pose_utils/pose2d_utils.py split_kp2ds_for_aa: body 0-22, face 22:91,
-left hand 91:112, right hand 112:133). The table covers everything but the face: Sapiens2 Pose takes
-the 68 face points from ViTPose-H (pipelines/sapiens2_pose.py).
+left hand 91:112, right hand 112:133). The table covers everything but the face: Pose Detection with a
+Sapiens2 pose_model takes the 68 face points from ViTPose-H (pipelines/sapiens2_pose.py).
 
 Sources (fetched 2026-10-01):
 - SAPIENS2_70_NAMES: facebookresearch/sapiens2 sapiens/pose/configs/_base_/keypoints308.py

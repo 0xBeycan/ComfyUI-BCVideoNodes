@@ -1,7 +1,7 @@
 """Convert a transformers Sapiens2 pose checkpoint (HF facebook/sapiens2-pose-<size>: config.json +
-model.safetensors, fp32) to the model file Sapiens2 Pose loads: the native module's state dict in bf16,
-with the pack's model-file metadata (format_version, architecture, config, dtype;
-models/common/checkpoint.py) plus where it came from.
+model.safetensors, fp32) to the model file a Sapiens2 pose_model of Pose Detection loads: the native
+module's state dict in bf16, with the pack's model-file metadata (format_version, architecture,
+config, dtype; models/common/checkpoint.py) plus where it came from.
 
 Offline only (needs huggingface_hub to fetch; transformers is not needed). The file written is loaded
 back the way the node loads it (models/sapiens2/wrapper.build, strict) before the script reports it.
