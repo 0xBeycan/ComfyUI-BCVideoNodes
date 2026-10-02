@@ -2,9 +2,10 @@
 resizes and scales what it gets in its dtype, so it gets every video it seeks one chunk's window
 at a time, requantized to float32 (libs/video.requantized), and every image (the reference,
 SCAIL-2's reference mask, a one-frame character mask) whole and requantized. The run is the float32
-run: the core node reads the same frames, the output is the same. A video is never widened as a
-whole: the largest window is the first chained chunk's, its length plus the anchor it is seeded
-with, and the clips themselves stay as they are.
+run: the core node reads the same frames and is seeded with the same decoded frames; the output is
+stored in the pose video's float16. A video is never widened as a whole: the largest window is the
+first chained chunk's, its length plus the anchor it is seeded with, and the clips themselves stay
+as they are.
 
 ComfyUI itself is stubbed (comfy.*, nodes); torch is real. Every core call is wrapped so what it is
 handed is kept. The videos are frame-index valued (whole numbers, exact in float16 and through the
@@ -90,7 +91,8 @@ def test_the_core_node_reads_the_float32_runs_frames_from_float32_windows(receiv
     half = halved(exact)
     half_images, half_count, half_plan = run(module, pose_frames=FRAMES, node=node, vae=IndexVAE(), **half)
     got = calls[first:]
-    assert (half_count, half_plan) == (count, plan) and torch.equal(half_images, images)
+    assert (half_count, half_plan) == (count, plan) and half_images.dtype == torch.float16
+    assert images.dtype == torch.float32 and torch.equal(half_images, images.half())
     assert [scalars(r) for r in Calls.animate] == [scalars(r) for r in expected_calls] and len(got) == len(expected) > 2
     for call, core, reference, reference_core in zip(got, Calls.animate, expected, expected_calls):
         assert all(value.dtype == torch.float32 for value in call.values())
@@ -147,3 +149,36 @@ def test_the_colored_masks_mode_is_read_from_the_requantized_first_frame(node_mo
     for replacement_mode in (False, True):
         mask = reference_mask(replacement_mode)
         assert node_module.mask_convention(mask.half()) == node_module.mask_convention(mask)
+
+
+class ThirdsVAE(IndexVAE):
+    """IndexVAE whose decoded frames are a third above the frame index: values float16 cannot hold."""
+
+    def decode(self, latent):
+        return super().decode(latent) + 1 / 3
+
+
+ANCHOR = {ANIMATE1: "continue_motion", ANIMATE2: "continue_motion", SCAIL2: "previous_frames"}
+
+
+@pytest.mark.parametrize("node", NODES)
+def test_every_chunk_is_seeded_with_the_decoded_frames_not_the_stored_float16(received, node, monkeypatch):
+    module, calls = received
+    seeds = []
+    mappings = sys.modules["nodes"].NODE_CLASS_MAPPINGS
+    core = mappings[CORE_NODE[node]]
+
+    def execute(cls, **kwargs):
+        seeds.append(kwargs.get(ANCHOR[node]))
+        return core.EXECUTE_NORMALIZED.__func__(cls, **kwargs)
+
+    monkeypatch.setitem(mappings, CORE_NODE[node], type(core.__name__, (core,), {"EXECUTE_NORMALIZED": classmethod(execute)}))
+    exact = inputs(node)
+    images, _, _ = run(module, pose_frames=FRAMES, node=node, vae=ThirdsVAE(), **exact)
+    expected, seeds = seeds, []
+    half_images, _, _ = run(module, pose_frames=FRAMES, node=node, vae=ThirdsVAE(), **halved(exact))
+    assert expected[0] is None and seeds[0] is None and len(seeds) == len(expected) > 2
+    for seed, reference in zip(seeds[1:], expected[1:]):
+        assert seed.dtype == torch.float32 and torch.equal(seed, reference)
+    assert half_images.dtype == torch.float16 and torch.equal(half_images, images.half())
+    assert not torch.equal(half_images.float(), images)  # the stored float16 rounds the thirds

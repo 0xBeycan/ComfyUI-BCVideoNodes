@@ -287,7 +287,7 @@ def segment_by_pose(model, images, bboxes, pose_metas: list[PoseMeta], config, m
     device, dtype = mm.get_torch_device(), model.model.get_dtype()
     sam3 = multiplex_parts(model)[0]
     frames_chw = images[..., :3].movedim(-1, 1)
-    masks = torch.zeros(N, H, W)
+    masks = torch.zeros(N, H, W, dtype=images.dtype)
     pbar = ProgressBar(N)
     counts: PoseCounts = {"prompted": 0, "propagated": 0, "re-seeded early": 0, "kept at low recall": 0,
                           "no prompt": 0, "empty prompt": 0}

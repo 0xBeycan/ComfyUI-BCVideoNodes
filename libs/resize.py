@@ -72,7 +72,7 @@ def fit(frame, out, how=CROP, method=LANCZOS):
         _resize(frame, out[y:y + h, x:x + w], method)
     elif how == CUT:
         x, y = (width - target_width) // 2, (height - target_height) // 2
-        _store(frame[y:y + target_height, x:x + target_width], out)
+        store(frame[y:y + target_height, x:x + target_width], out)
     else:
         raise ValueError(f"fit {how!r} is not one of {', '.join([*FITS, CUT])}.")
 
@@ -81,13 +81,13 @@ def _resize(frame, out, method):
     """`frame` resized to `out`'s size (no resampling at that size) and written into it."""
     height, width = out.shape[:2]
     if frame.shape[:2] == (height, width):
-        _store(frame, out)
+        store(frame, out)
     elif method == LANCZOS:
         # comfy.utils.lanczos: PIL LANCZOS on 8-bit pixels, then / 255
         from PIL import Image
 
         image = Image.fromarray(np.ascontiguousarray(_pixels(frame)))
-        _store(np.array(image.resize((width, height), resample=Image.Resampling.LANCZOS)), out)
+        store(np.array(image.resize((width, height), resample=Image.Resampling.LANCZOS)), out)
     elif method in METHODS:
         from comfy.utils import common_upscale
 
@@ -99,10 +99,10 @@ def _resize(frame, out, method):
         raise ValueError(f"method {method!r} is not one of {', '.join(METHODS)}.")
 
 
-def _store(frame, out):
-    """`frame` written into `out`: uint8 pixels as / 255 (the float32 values comfy.utils.lanczos
-    gives; computed in float32 and then stored for an `out` of another dtype, float16 arithmetic on
-    the CPU being slow), a float frame as it is."""
+def store(frame, out):
+    """`frame` written into `out`: uint8 pixels (numpy) as / 255 (the float32 values
+    comfy.utils.lanczos gives; computed in float32 and then stored for an `out` of another dtype,
+    float16 arithmetic on the CPU being slow), a float frame (a tensor) as it is."""
     if isinstance(frame, torch.Tensor):
         out.copy_(frame)
     elif out.dtype == torch.float32:

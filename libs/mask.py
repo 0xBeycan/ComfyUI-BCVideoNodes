@@ -8,8 +8,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .video import requantized
-
 
 def to_frame_size(low_res, H, W, threshold=0.0):
     """One frame's [1, 1, h, w] mask logits as an [H, W] float mask of the frame, cut at
@@ -80,13 +78,14 @@ def clean_mask(mask, config):
 
 
 def render_identity(mask, color, background, threshold=0.5, chunk=16):
-    """A [T, H, W] mask as a [T, H, W, 3] float32 image: `color` where the mask is above
-    `threshold`, `background` elsewhere. Both colours are RGB in 0..1. Cut and filled `chunk` frames
-    at a time: the cut is a boolean copy of what it reads, over the whole clip about half a GB on a
-    609-frame 720p clip."""
-    color = torch.tensor(color, dtype=torch.float32, device=mask.device)
-    background = torch.tensor(background, dtype=torch.float32, device=mask.device)
-    out = torch.empty(*mask.shape, 3, dtype=torch.float32, device=mask.device)
+    """A [T, H, W] mask as a [T, H, W, 3] image of the mask's dtype (float32, or float16 from a
+    float16 clip: pure colours are exact in it): `color` where the mask is above `threshold`,
+    `background` elsewhere. Both colours are RGB in 0..1. Cut and filled `chunk` frames at a time:
+    the cut is a boolean copy of what it reads, over the whole clip about half a GB on a 609-frame
+    720p clip."""
+    color = torch.tensor(color, dtype=mask.dtype, device=mask.device)
+    background = torch.tensor(background, dtype=mask.dtype, device=mask.device)
+    out = torch.empty(*mask.shape, 3, dtype=mask.dtype, device=mask.device)
     for s in range(0, len(mask), chunk):
         on = (mask[s:s + chunk].float() > threshold).unsqueeze(-1)
         torch.where(on, color, background, out=out[s:s + chunk])
@@ -176,12 +175,14 @@ def lay_out(blocks, out):
 
 
 def final_mask(mask, grow=GROW, block_size=BLOCK_SIZE):
-    """The final mask (see GROW) of the raw MASK `mask` [N, H, W], as a float32 0 / 1 MASK on the CPU,
-    frame by frame into one output. A pixel of the raw mask is set where MaskGrow's 8-bit quantisation
-    keeps a level (255 x value >= 1; SAM 3.1 Multiplex's mask is 0 or 1)."""
-    out = torch.zeros(mask.shape, dtype=torch.float32)
+    """The final mask (see GROW) of the raw MASK `mask` [N, H, W], as a 0 / 1 MASK of the raw mask's
+    dtype (float32, or float16 from a float16 clip) on the CPU, frame by frame into one output. A
+    pixel of the raw mask is set where MaskGrow's 8-bit quantisation keeps a level (255 x value >= 1,
+    in float32: a float16 frame is widened first, not requantized, which would round a value under
+    1 / 255 up to it; SAM 3.1 Multiplex's mask is 0 or 1)."""
+    out = torch.zeros(mask.shape, dtype=mask.dtype)
     for f in range(len(mask)):
-        blocks = final_blocks((mask[f] * 255 >= 1).cpu().numpy(), grow, block_size)
+        blocks = final_blocks((mask[f].cpu().float() * 255 >= 1).numpy(), grow, block_size)
         if blocks is not None:
             lay_out(blocks, out[f].numpy())
     return out
@@ -189,11 +190,11 @@ def final_mask(mask, grow=GROW, block_size=BLOCK_SIZE):
 
 def painted_black(images, mask):
     """The IMAGE `images` [N, H, W, C] with every pixel `mask` [N, H, W] holds (above 0) black and the
-    rest unchanged, frame by frame into one output on the CPU: ComfyUI-BCNodes' Draw Mask On Image
-    with the colour "0, 0, 0" on a 0 / 1 mask. A half-precision frame is requantized to the float32
-    values a float32 clip holds (libs/video.requantized)."""
-    out = torch.empty(images.shape, dtype=torch.promote_types(images.dtype, torch.float32))
+    rest unchanged, frame by frame into one output of the images' dtype on the CPU: ComfyUI-BCNodes'
+    Draw Mask On Image with the colour "0, 0, 0" on a 0 / 1 mask. A pixel is selected, never
+    computed, so a float16 clip gives the float16 of the float32 result."""
+    out = torch.empty(images.shape, dtype=images.dtype)
     black = torch.zeros((), dtype=out.dtype)
     for f in range(len(images)):
-        torch.where(mask[f].unsqueeze(-1).cpu() > 0, black, requantized(images[f].cpu()), out=out[f])
+        torch.where(mask[f].unsqueeze(-1).cpu() > 0, black, images[f].cpu(), out=out[f])
     return out

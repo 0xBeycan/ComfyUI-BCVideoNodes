@@ -77,9 +77,17 @@ Core resizes and scales a clip in the dtype it gets, and OpenCV refuses
 float16, so the pack's nodes read an `fp16` clip back as the float32 values
 an `fp32` load holds, a frame at a time (the samplers a chunk's window at a
 time, before core sees it), never the whole clip at once, and compute what
-they compute on `fp32`. Save Video writes the frames as they come: 8-bit
-output is the same, 10-bit output of an `fp16` clip can be one 10-bit step
-off. Nodes of other packs, core's included, get the float16 clip as it is.
+they compute on `fp32`. What they make from an `fp16` clip is float16 too:
+the pose images, the SAM 3.1 Multiplex mask, the final mask, `bg_images` and
+SCAIL-2's colored driving mask (8-bit levels or 0 / 1, exact in float16), and
+the samplers' output (core's decoded frames rounded to float16; every chunk
+is still seeded with them as decoded, so the generation is `fp32`'s). Face
+Crop's crops stay float32: resized, they are not 8-bit levels. Save Video
+writes the frames as they come: from Load Video's `fp16` clip 8-bit output is
+the same and 10-bit output can be one 10-bit step off; from the samplers'
+float16 output about 2% of the values sit close enough to a rounding edge to
+come out one 8-bit level off. Nodes of other packs, core's included, get the
+float16 clips as they are.
 
 Colour: YUV is converted to RGB with the stream's own colour matrix and range,
 as the file is tagged; an untagged stream is read as BT.601 limited range,

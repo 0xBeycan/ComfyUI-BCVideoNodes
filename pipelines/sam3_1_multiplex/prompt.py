@@ -488,7 +488,7 @@ def segment_by_prompt(model, clip, images, prompt, config, result=None, logits=N
         if best_iou:
             record["mask_index"] = [None] * N
 
-    masks = torch.zeros(N, H, W)
+    masks = torch.zeros(N, H, W, dtype=images.dtype)  # 0 / 1: exact in a float16 clip's dtype too
     output_dict = new_output_dict()
     mux = seed = None
     birth = -1            # the frame the live track was born on, -1 while there is none
@@ -875,7 +875,7 @@ def segment_by_prompt_multi(model, clip, images, prompt, config, max_objects, ob
     if object_index >= len(objects):
         raise ValueError(f"object_index {object_index}: {len(objects)} object(s) were tracked "
                          f"for '{prompt}' (numbered from 0)")
-    masks = torch.zeros(N, H, W)
+    masks = torch.zeros(N, H, W, dtype=images.dtype)
     ids = [t["id"] for t in objects]
     for f in range(N):
         present = [i for i in ids if i in outputs[f]]

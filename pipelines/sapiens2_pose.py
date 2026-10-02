@@ -57,4 +57,4 @@ def sapiens2_pose(images, detector, sapiens2, vitpose, bboxes=None, config=None,
     pose_data, boxes = detect_with(detector, [sapiens2, vitpose], lambda frames, boxes, progress: hybrid_keypoints(
         sapiens2, vitpose, frames, boxes, progress), images, bboxes=bboxes, config=config)
     return pose_outputs(pose_data, boxes, config, body_stick_width, hand_stick_width, draw_head, draw_threshold,
-                        draw_images, size)
+                        draw_images, size, images.dtype)

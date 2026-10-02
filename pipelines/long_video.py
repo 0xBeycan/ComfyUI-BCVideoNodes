@@ -15,7 +15,8 @@ driving videos are extended past their end. With its color_anchor_strength widge
 chained chunk is colour-matched to the frames it was seeded with (libs/color.py), in the region
 the adapter names. A half-precision input (Load Video at precision fp16) reaches the core node
 requantized to the float32 values a float32 input holds (libs/video.requantized): an image whole,
-a video one chunk's window at a time.
+a video one chunk's window at a time. The output is then stored in the pose video's half dtype,
+while every chained chunk is still seeded with its frames as decoded.
 """
 
 import gc
@@ -185,6 +186,9 @@ def generate(
     progress = comfy.utils.ProgressBar(len(plan))
     seed_frames = snap_down(frames_per_chunk)  # the last output frames every chained chunk is seeded with
     output = None  # [total, H, W, C], allocated at the first decode of a run of more than one chunk
+    # the output's dtype: a half-precision pose video's (Load Video at precision fp16), else the
+    # decoded frames' (core's VAE output)
+    stored = pose_video.dtype if is_half(pose_video) else None
     lengths = []
     produced = 0
     anchor = None
@@ -295,19 +299,29 @@ def generate(
         added = decoded - trim_image  # the frames the chunk adds, the ones past total included, as the plan counts them
         if added <= 0:
             raise RuntimeError("Chunk {} (length {}) contributed no frames after trimming {}; the overlap exceeds the chunk.".format(index, length, trim_image))
+        kept = min(added, total - produced)
         if output is None and added >= total:
-            output = images[:total].cpu()  # the only chunk: its frames are the output, not copied
+            # the only chunk: its frames are the output, not copied (but to a stored dtype)
+            output = images[:total].to(device="cpu", dtype=stored or images.dtype)
         else:
             if output is None:
-                output = torch.empty((total, *images.shape[1:]), dtype=images.dtype, device="cpu")
-            kept = min(added, total - produced)
+                output = torch.empty((total, *images.shape[1:]), dtype=stored or images.dtype, device="cpu")
             output[produced:produced + kept] = images[:kept]
+        # the output's last frames, for the next chunk's seed: a middle chunk adds only chunk -
+        # overlap frames, so this reaches back into the chunks before it. An output stored in
+        # another dtype rounds the frames, so the seed is then kept apart, as decoded: the chain
+        # is the one the decoded dtype gives
+        if output.dtype == images.dtype:
+            anchor = output[max(0, produced + added - seed_frames):produced + added]
+        else:
+            fresh = images[:kept].cpu()
+            if anchor is None or kept >= seed_frames:
+                anchor = fresh[-seed_frames:]
+            else:
+                anchor = torch.cat((anchor[kept - seed_frames:], fresh))
         del images
         lengths.append(length)
         produced += added
-        # the output's last frames, for the next chunk's seed: a middle chunk adds only
-        # chunk - overlap frames, so this reaches back into the chunks before it
-        anchor = output[max(0, produced - seed_frames):produced]
         if index > 0 and trim_image != overlap:
             logging.warning("%s %s trimmed %d frames, planner assumed %d; using %d from here on.", log_prefix, animate_node, trim_image, overlap, trim_image)
             overlap = trim_image

@@ -69,9 +69,10 @@ class BCVWanAnimatePreprocess:
             (mask,) = BCVSAM3VideoTrack().track(images, mode, prompt, 1, -1, pose_data=pose_data if reads_pose else None,
                                                 sam3_config=sam3_config)
         else:
-            mask = torch.empty((0, *images.shape[1:3]))  # SAM's float mask, no frame of it tracked
+            mask = torch.empty((0, *images.shape[1:3]), dtype=images.dtype)  # SAM's float mask, no frame of it tracked
         face_images, face_bboxes = BCVFaceCrop().crop(images, pose_data, face_padding, wanted=wanted)
-        final = final_mask(mask, **_final_widgets(widgets)) if finals else torch.empty((0, *images.shape[1:3]))
+        final = (final_mask(mask, **_final_widgets(widgets)) if finals
+                 else torch.empty((0, *images.shape[1:3]), dtype=images.dtype))
         background = painted_black(images, final) if wants(wanted, "bg_images") else images.new_empty((0, *images.shape[1:]))
         return drop_unwanted(type(self), (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes, final,
                                           background), wanted)

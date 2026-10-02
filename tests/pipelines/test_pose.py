@@ -334,3 +334,16 @@ def test_a_half_clip_is_read_frame_by_frame_as_its_float32_levels(monkeypatch):
     assert all(np.array_equal(a[0], b[0]) and a[0].dtype == np.float32 for a, b in zip(detections, expected[0]))
     assert all(np.array_equal(a[0], b[0]) and a[0].dtype == np.float32 for a, b in zip(crops, expected[1]))
     assert (data, boxes) == (expected[2], expected[3])
+
+
+def test_a_half_clip_s_pose_images_are_half_with_the_same_levels():
+    # every drawn level k / 255 is exact in float16: the float16 of the float32 clip's pose images
+    from video_input_fakes import levels
+
+    exact = levels(B, H, W, 3)
+    images = pose.pose_detection(exact, FakeDetector(), FakePose())[0]
+    half = pose.pose_detection(exact.half(), FakeDetector(), FakePose())[0]
+    assert images.dtype == torch.float32 and half.dtype == torch.float16 and torch.equal(half, images.half())
+    assert images.max() == 1.0  # something is drawn
+    empty = pose.pose_detection(exact.half(), FakeDetector(), FakePose(), draw_images=False)[0]
+    assert empty.shape == (0, H, W, 3) and empty.dtype == torch.float16

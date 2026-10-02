@@ -1091,7 +1091,8 @@ def test_the_defaults_run_easy_sam3_s_policy(rig):
 
 def test_a_half_clip_reaches_the_model_frame_by_frame_as_its_float32_levels(monkeypatch):
     """Load Video at precision fp16: every frame core resizes for the tracker, and the box_keypoint
-    decoder's frame, is the float32 clip's, each read on its own, never the whole clip."""
+    decoder's frame, is the float32 clip's, each read on its own, never the whole clip; the mask is
+    float16, the float32 clip's mask (0 or 1)."""
     from video_input_fakes import levels, record_reads
 
     class IndexTracker(FakeTracker):
@@ -1129,4 +1130,4 @@ def test_a_half_clip_reaches_the_model_frame_by_frame_as_its_float32_levels(monk
     assert prepared and decoded and set(reads) == {(1, 3, H, W)} and len(reads) == len(prepared) + len(decoded)
     assert all(a.dtype == torch.float32 and torch.equal(a, b) for a, b in zip(half[1], prepared))
     assert all(a.dtype == torch.float32 and torch.equal(a, b) for a, b in zip(half[2], decoded))
-    assert torch.equal(half[0], masks) and half[3] == log
+    assert half[0].dtype == torch.float16 and torch.equal(half[0], masks.half()) and half[3] == log

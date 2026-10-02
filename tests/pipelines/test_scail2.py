@@ -167,7 +167,9 @@ from sam3_1_multiplex_fakes import sam3  # noqa: E402
 from test_sam3_1_multiplex_ab import LOW, FakeModel, FakeSam3, FakeTracker, person_detection  # noqa: E402
 
 
-def test_the_sam_track_runs_on_a_one_frame_reference(monkeypatch, caplog):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_the_sam_track_runs_on_a_one_frame_reference(monkeypatch, caplog, dtype):
+    # a float16 image (Load Video at precision fp16) gets a float16 mask, its coverage counted in float32
     tracker = FakeTracker()
 
     def detect(detector, backbone, trunk_out, embedding, text_mask, config):
@@ -192,7 +194,9 @@ def test_the_sam_track_runs_on_a_one_frame_reference(monkeypatch, caplog):
     monkeypatch.setattr(sam3, "ProgressBar", ProgressBar)
     caplog.set_level(logging.INFO)
     caplog.set_level(logging.INFO, logger="BCVideoNodes")
-    images = torch.rand(1, 2 * LOW, 2 * LOW, 3, generator=torch.Generator().manual_seed(1))
-    sam3.track((FakeModel(), object()), images)
+    images = torch.rand(1, 2 * LOW, 2 * LOW, 3, generator=torch.Generator().manual_seed(1)).to(dtype)
+    mask = sam3.track((FakeModel(), object()), images)
     closing = [r for r in caplog.records if r.name in ("BCVideoNodes", "root")][-1].getMessage()
-    assert "frames without a mask 0" in closing
+    assert "frames without a mask 0" in closing and mask.dtype == dtype
+    covered = float((mask > 0).float().mean() * 100)
+    assert f"mask coverage {covered:.1f}-{covered:.1f}%" in closing

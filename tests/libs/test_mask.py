@@ -181,17 +181,37 @@ def test_the_defaults_are_the_wan_animate_workflow_s():
     assert torch.equal(final.final_mask(masks), grown_and_blockified(masks, 10, 32))
 
 
-def test_painted_black_paints_a_half_clip_from_its_float32_levels_a_frame_at_a_time(monkeypatch):
-    # Load Video at precision fp16: the float32 clip's bg_images, each frame read as float32 on its own
+@pytest.mark.parametrize("mask_dtype", [torch.float32, torch.float16])
+def test_painted_black_keeps_a_half_clip_half(monkeypatch, mask_dtype):
+    # Load Video at precision fp16: bg_images is float16 too, the float16 of the float32 clip's,
+    # its pixels selected rather than computed (nothing is read as float32)
     from video_input_fakes import levels, record_reads
 
     exact = levels(4, 30, 20, 3)
     mask = (torch.rand(4, 30, 20, generator=torch.Generator().manual_seed(1)) > 0.5).float()
     expected = final.painted_black(exact, mask)
     reads = record_reads(monkeypatch)
-    out = final.painted_black(exact.half(), mask)
-    assert out.dtype == torch.float32 and torch.equal(out, expected)
-    assert reads == [(30, 20, 3)] * 4
+    out = final.painted_black(exact.half(), mask.to(mask_dtype))
+    assert out.dtype == torch.float16 and torch.equal(out, expected.half()) and reads == []
+
+
+def test_the_final_mask_of_a_half_mask_is_half_and_cut_where_the_float32_one_is():
+    # the SAM mask of a float16 clip is float16: its final mask too, from the same 8-bit levels;
+    # a soft value is widened, not requantized (0.003 would round up to a level)
+    masks = (torch.rand(3, 64, 48, generator=torch.Generator().manual_seed(2)) > 0.97).float()
+    masks[0, 5, 5], masks[1, 5, 5], masks[2] = 0.003, 0.004, 0.0
+    expected = final.final_mask(masks, 3, 16)
+    out = final.final_mask(masks.half(), 3, 16)
+    assert out.dtype == torch.float16 and torch.equal(out, expected.half())
+
+
+def test_a_half_mask_is_rendered_half_in_the_same_pure_colours():
+    from scail2_fakes import scail2
+
+    mask = (torch.rand(5, 16, 12, generator=torch.Generator().manual_seed(3)) > 0.5).float()
+    expected = scail2.render_identity(mask, (0.0, 0.0, 1.0), (1.0, 1.0, 1.0))
+    out = scail2.render_identity(mask.half(), (0.0, 0.0, 1.0), (1.0, 1.0, 1.0))
+    assert expected.dtype == torch.float32 and out.dtype == torch.float16 and torch.equal(out, expected.half())
 
 
 def test_painted_black_is_draw_mask_on_image_in_black():

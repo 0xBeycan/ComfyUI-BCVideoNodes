@@ -3,6 +3,7 @@ import json
 from typing import Optional
 
 import numpy as np
+import torch
 
 # At module level and above every pack import on purpose: the SAM 3.1 Multiplex nodes'
 # INPUT_TYPES import this module, so a ComfyUI without the tracker primitives fails there, before
@@ -127,7 +128,7 @@ LOGITS_SINK = None
 def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None, positive_coords=None,
           negative_coords=None, mode=MODE_PROMPT, prompt=PROMPT, max_objects=1, object_index=-1, config=None,
           logits_sink=None):
-    """[N, H, W] float mask of the person (or people) in `images` [N, H, W, 3], the one function
+    """[N, H, W] float mask, of the images' dtype, of the person (or people) in `images` [N, H, W, 3], the one function
     the SAM3 node calls. `sam3_model` is the (model, clip) pair from `load_sam3_1_multiplex`.
 
     `mode` picks how the person is described to SAM:
@@ -277,7 +278,8 @@ def track(sam3_model, images, pose_data: Optional[PoseData] = None, bboxes=None,
                                    result=result, **dump)
         if mode == MODE_PROMPT and object_index == 0 and max_objects == 1 and not bool(mask.any()):
             raise ValueError("object_index 0: 0 objects were tracked (numbered from 0)")
-        coverage = mask.mean(dim=(1, 2))
+        # in float32, a few frames at a time: a float16 mask's whole-clip mean would run in float16
+        coverage = torch.cat([mask[s:s + 16].float().mean(dim=(1, 2)) for s in range(0, len(mask), 16)])
         result["frames without a mask"] = int((coverage == 0).sum())
         result["mask coverage"] = f"{coverage.min() * 100:.1f}-{coverage.max() * 100:.1f}%"
     if collected is not None:

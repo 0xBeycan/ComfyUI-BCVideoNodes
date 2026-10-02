@@ -51,6 +51,7 @@ import torch
 import torch.nn.functional as F
 
 from ...libs import log
+from ...libs.video import requantized
 from ...models.scail2.adapter import ON, REPLACEMENT, mask_convention
 from .common import (FRAGMENT_FRACTION, LATENT_READ, SCAIL2_CHECKS, SCAIL2_DRIVING_CHECKS, SCAIL2_POSE_FREE_CHECKS,
                      SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
@@ -109,7 +110,7 @@ def driving_person(pose_video_mask):
     masks = np.zeros((T, H, W), dtype=bool)
     kept, cells = [], []
     for i in range(T):
-        frame = pose_video_mask[i, ..., :3].float().cpu()
+        frame = requantized(pose_video_mask[i, ..., :3].cpu()).float()
         person, half = _person(frame), _half(frame)
         masks[i] = person.numpy()
         kept.append(_latent_kept(half, person, int(masks[i].sum())))
@@ -178,7 +179,7 @@ def reference_record(reference_image_mask, width, height, first_frame, t) -> Sca
     booleans, None without driving frames), placed as core places it (reference.reference_fit).
     `t` has the thresholds."""
     mode = mask_convention(reference_image_mask)
-    person = _person(reference_image_mask[0, ..., :3].float().cpu()).numpy()
+    person = _person(requantized(reference_image_mask[0, ..., :3].cpu()).float()).numpy()
     fit = reference_fit(person, width, height, first_frame)
     fragments = mask_regions(person, None)[1] if fit["area"] else []
     record = {"mode": mode, "area": fit["area"], "fragments": fragments, "cropped": fit["cropped"],

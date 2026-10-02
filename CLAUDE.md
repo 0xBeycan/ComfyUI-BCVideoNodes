@@ -259,7 +259,11 @@ pack adds after that still turns the saving off for that prompt, with a console 
 - A half-precision clip (Load Video's `precision` fp16) is read through `libs/video.requantized`
   (or `as_numpy`'s HalfFrames for numpy): every value back to the float32 8-bit level an fp32 load
   holds, a frame at a time, or a chunk's window in the samplers, never the whole clip at once (that
-  holds both copies). Core resizes and scales in the dtype it gets, and cv2 refuses float16.
+  holds both copies). Core resizes and scales in the dtype it gets, and cv2 refuses float16. No
+  float16 arithmetic on the CPU (selections and comparisons are not arithmetic). The clips the pack
+  makes from a half clip keep its dtype (pose images, the SAM mask, the final mask, bg_images, the
+  colored driving mask, the sampler output, whose chunks are still seeded as decoded); Face Crop's
+  crops stay float32 (resized: not 8-bit levels).
 - A node never resizes itself to its content; previews and widgets scale to the node.
 - Values that can differ between uses are widgets, not constants.
 

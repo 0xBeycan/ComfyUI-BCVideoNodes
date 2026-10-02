@@ -19,8 +19,8 @@ video = Names("video", {
     **refs("libs.video", "FP32", "FP16", "PRECISIONS", "precision_dtype", "is_half", "HalfFrames", "as_numpy"),
     # read from libs/video.py; patched on every module that reads a half clip through it
     "requantized": Seam(*(Ref(module, "requantized") for module in (
-        "libs.video", "libs.mask", "libs.video_compare", "pipelines.video_input", "pipelines.sam3_1_multiplex.pose",
-        "models.sam3_1_multiplex.adapter", "models.scail2.adapter"))),
+        "libs.video", "libs.video_compare", "pipelines.video_input", "pipelines.sam3_1_multiplex.pose",
+        "pipelines.guard.scail2", "models.sam3_1_multiplex.adapter", "models.scail2.adapter"))),
 })
 
 # a grey clip's frame i has luma 16 + LUMA_STEP * i: distinct after the RGB conversion
