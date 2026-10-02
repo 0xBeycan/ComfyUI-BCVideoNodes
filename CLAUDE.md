@@ -412,13 +412,14 @@ in the Load Video, Save Video and Video Comparer previews).
 
 ## Roadmap
 
-- SCAIL-2 pose-driven mode (planned, not started): the SCAIL-Pose pipeline
-  (https://github.com/zai-org/SCAIL-Pose/tree/519c7f54cb972e7f92684213b7ef6c3e05a8f3b2): SAM3
-  per person, NLF `nlf_l_multi_0.3.2` 3D pose, 3D cylinder render plus DWPose hands and face in
-  2D, and the skeleton in the person's colour on black as the driving mask. The pack runs
-  end-to-end mode only (the raw driving video as the pose input). When it is built it follows the
-  layers: the NLF model as its own `models/` package, the render in `pipelines/`, new preprocess
-  nodes; the SCAIL-2 sampler needs no change (it takes any pose video and colored mask).
+- SCAIL-2 pose-driven mode: not planned. The pack runs end-to-end mode only (the raw driving
+  video as the pose input), which SCAIL-Pose
+  (https://github.com/zai-org/SCAIL-Pose/tree/519c7f54cb972e7f92684213b7ef6c3e05a8f3b2) marks
+  "(Recommended) ... More accurate and easier than pose-driven for most cases"; it keeps
+  pose-driven (NLF 3D pose rendered as a skeleton) for extremely challenging inputs. Added only if
+  a need appears; then it follows the layers: the NLF model as its own `models/` package, the
+  render in `pipelines/`, new preprocess nodes, and no change to the SCAIL-2 sampler (it takes any
+  pose video and colored mask).
 - Multi-person: phase 2 (see Closed decisions).
 
 ## Git and process

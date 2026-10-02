@@ -127,6 +127,12 @@ class SCAIL2Adapter(AnimateAdapter):
         if mask.shape[0] != pose_video.shape[0]:
             raise ValueError("pose_video_mask has {} frames but pose_video has {}: both come from the same driving "
                              "video; re-run the preprocess (SCAIL-2 Preprocess).".format(int(mask.shape[0]), int(pose_video.shape[0])))
+        # core crops and resizes each of the two to half the generation size on its own, so a mask
+        # of another size would cover another part of the frame than the pose
+        if mask.shape[1:3] != pose_video.shape[1:3]:
+            raise ValueError("pose_video_mask is {}x{} but pose_video is {}x{}: both come from the same driving video; "
+                             "re-run the preprocess (SCAIL-2 Preprocess), or resize the mask to the pose video's "
+                             "size.".format(int(mask.shape[2]), int(mask.shape[1]), int(pose_video.shape[2]), int(pose_video.shape[1])))
 
     def continuation(self, anchor, offset):
         return {"video_frame_offset": offset, "previous_frames": anchor}

@@ -5,6 +5,7 @@ ComfyUI itself is stubbed (comfy.*, nodes); torch is real. For the end-to-end al
 pose video, output frame i must then show driving frame i. Skipped when torch is not installed.
 """
 
+import re
 import sys
 
 import pytest
@@ -99,6 +100,21 @@ def test_the_pose_mask_is_held_like_the_pose(node_module, caplog):
 def test_a_pose_mask_of_another_length_is_an_error(node_module):
     with pytest.raises(ValueError, match="pose_video_mask has 80 frames but pose_video has 100: both come from the same driving video"):
         run(node_module, pose_frames=100, node=SCAIL2, pose_video_mask=torch.zeros(80, 64, 32, 3))
+    assert Calls.animate == []
+
+
+def test_a_pose_mask_of_the_pose_size_passes(node_module):
+    run(node_module, pose_frames=81, node=SCAIL2, pose_video_mask=torch.zeros(81, 64, 32, 3))
+    assert len(Calls.animate) == 1
+
+
+# run()'s pose video is 64 high and 32 wide: another height, another width, half the size
+@pytest.mark.parametrize("height, width, size", [(48, 32, "32x48"), (64, 64, "64x64"), (32, 16, "16x32")])
+def test_a_pose_mask_of_another_size_is_an_error(node_module, height, width, size):
+    message = ("pose_video_mask is {} but pose_video is 32x64: both come from the same driving video; re-run the "
+               "preprocess (SCAIL-2 Preprocess), or resize the mask to the pose video's size.".format(size))
+    with pytest.raises(ValueError, match=re.escape(message)):
+        run(node_module, pose_frames=81, node=SCAIL2, pose_video_mask=torch.zeros(81, height, width, 3))
     assert Calls.animate == []
 
 
