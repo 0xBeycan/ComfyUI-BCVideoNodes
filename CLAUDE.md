@@ -347,7 +347,7 @@ pack adds after that still turns the saving off for that prompt, with a console 
   the pose pipeline writes. The guard rows and the SAM counts work the same way
   (`test_guard_rows.py`, `test_sam3_1_multiplex_counts.py`).
 - BCV_VIDEO_INFO is a plain dict at runtime too: `libs/video_info.VideoInfo` is its annotation
-  and fixes its key order, which is Get Video Info's output order. Its last key, `audio`, is Load
+  and fixes its key order, which is Get Video Info's output order. Its first key, `audio`, is Load
   Video's audio output itself (core's AUDIO dict or None, never a copy): Save Video and the Video
   Comparer run last, and a link to Load Video would keep all its outputs, the frames included,
   until they have run (ComfyUI keeps a node's outputs while any consumer is pending).

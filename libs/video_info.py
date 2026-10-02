@@ -11,12 +11,13 @@ class Audio(TypedDict):
 
 
 class VideoInfo(TypedDict):
-    """The model, resolution and resolved orientation (portrait or landscape) Load Video loaded
-    with, the source's frame rate, frame count, duration and displayed size, then the loaded
-    batch's, then Load Video's audio output itself (the same object; None when the file has no
-    audio). Get Video Info hands the audio on, so the nodes that run last (Save Video, the Video
-    Comparer) can take it without a link to Load Video, which keeps all of Load Video's outputs, its
-    frames included, until they have run."""
+    """Load Video's audio output itself (the same object; None when the file has no audio), then
+    the model, resolution and resolved orientation (portrait or landscape) Load Video loaded with,
+    the source's frame rate, frame count, duration and displayed size, then the loaded batch's. Get
+    Video Info hands the audio on, so the nodes that run last (Save Video, the Video Comparer) can
+    take it without a link to Load Video, which keeps all of Load Video's outputs, its frames
+    included, until they have run."""
+    audio: Optional[Audio]
     model: str
     resolution: str
     orientation: str
@@ -30,7 +31,6 @@ class VideoInfo(TypedDict):
     loaded_duration: float
     loaded_width: int
     loaded_height: int
-    audio: Optional[Audio]
 
 
 # ComfyUI's type of a field's Python type: Get Video Info's output types, in VideoInfo's order

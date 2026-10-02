@@ -96,12 +96,12 @@ FFmpeg's default. A video stored rotated is turned upright.
 Audio: the first audio stream, from `start_frame`'s time for the loaded
 frames' duration.
 
-`video_info` holds the `model` (`None` for no model), the `resolution` and
-the resolved `orientation`, then the source's `source_fps`, `source_frame_count`,
+`video_info` holds `audio`, the `audio` output itself (not a copy), then the
+`model` (`None` for no model), the `resolution` and the resolved
+`orientation`, then the source's `source_fps`, `source_frame_count`,
 `source_duration`, `source_width` and `source_height` (as displayed), then
 the loaded batch's `loaded_fps` (`force_fps`, or the source's rate),
-`loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`,
-then `audio`: the `audio` output itself (not a copy).
+`loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`.
 
 The preview plays the source file in the browser as the loader will take it:
 sampled at `force_fps`, looping over `start_frame` / `frame_count`, the part
@@ -117,11 +117,11 @@ value stays empty.
 ## Get Video Info
 
 - in: `video_info`
-- out: its 14 fields in the order above: `model`, `resolution`,
-  `orientation` (STRING), `source_fps` (FLOAT), `source_frame_count` (INT),
-  `source_duration` (FLOAT), `source_width`, `source_height` (INT),
-  `loaded_fps` (FLOAT), `loaded_frame_count` (INT), `loaded_duration`
-  (FLOAT), `loaded_width`, `loaded_height` (INT), `audio` (AUDIO).
+- out: its 14 fields in the order above: `audio` (AUDIO), `model`,
+  `resolution`, `orientation` (STRING), `source_fps` (FLOAT),
+  `source_frame_count` (INT), `source_duration` (FLOAT), `source_width`,
+  `source_height` (INT), `loaded_fps` (FLOAT), `loaded_frame_count` (INT),
+  `loaded_duration` (FLOAT), `loaded_width`, `loaded_height` (INT).
   `loaded_fps` is the rate to give Save Video.
 
 Wire Save Video's and the Video Comparer's `audio` from here, not from Load

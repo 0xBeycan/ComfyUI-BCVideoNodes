@@ -131,7 +131,7 @@ def frame_indices(source, rate, start_frame, count, model):
 
 def video_info(model, resolution, planned, frames):
     """The VideoInfo of `frames` frames loaded as `planned` (plan's) says, but its audio, which
-    load_video adds once read (the preview reads no samples)."""
+    load_video puts first once read (the preview reads no samples)."""
     source = planned["source"]
     loaded_fps = planned["rate"] if planned["rate"] is not None else source["fps"]
     frame_time = 1 / loaded_fps
@@ -173,7 +173,7 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
         frame_time = 1 / info["loaded_fps"]
         audio = video_decode.read_audio(path, (start_frame - 1) * frame_time, len(indices) * frame_time,
                                         origin=source["start"])
-        info["audio"] = audio  # the audio output itself, for Get Video Info
+        info = VideoInfo(audio=audio, **info)  # the audio output itself, first, for Get Video Info
         result["frames"] = len(indices)
         result["audio"] = "none" if audio is None else f"{audio['waveform'].shape[-1]} samples"
     return images, audio, info
