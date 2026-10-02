@@ -24,6 +24,7 @@ CORE_NODE = {ANIMATE1: "WanAnimateToVideo", ANIMATE2: "WanAnimate2ToVideo", SCAI
 ANCHOR = {ANIMATE1: "continue_motion", ANIMATE2: "continue_motion", SCAIL2: "previous_frames"}
 # pose frames whose last_chunk full plan is four chunks of 81, the last one past the pose's end
 FOUR_CHUNKS = {ANIMATE1: 240, ANIMATE2: 250, SCAIL2: 240}
+SEED = {ANIMATE1: 5, ANIMATE2: 1, SCAIL2: 5}  # the anchor frames each core node keeps, at run()'s defaults
 
 
 def own_buffer(tensor):
@@ -161,7 +162,8 @@ def test_a_chained_chunk_is_seeded_with_the_output_s_own_frames(animate_aligned,
     for seed in seeds[1:]:
         assert seed.untyped_storage().data_ptr() == images.untyped_storage().data_ptr()  # a view, not a copy
         last = int(seed[-1, 0, 0, 0])
-        assert torch.equal(seed, images[last + 1 - 81:last + 1])  # the output's last 81 frames before the chunk
+        # the output's last frames before the chunk, just the ones the core node keeps
+        assert torch.equal(seed, images[last + 1 - SEED[node]:last + 1])
 
 
 # --- the last chunk decodes only what total_frames needs ----------------------------------------

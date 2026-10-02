@@ -4,7 +4,6 @@ a connected clip_vision re-encodes the pose CLIP embedding per chunk."""
 
 import logging
 
-from ...libs.chunking import overlap_for_motion_frames
 from ..common.animate import AnimateAdapter, check_pose_percents
 from ..common.core_nodes import clip_vision_encode, node_class
 from .attention import seed_frame_attention_bias
@@ -26,10 +25,9 @@ class WanAnimate2Adapter(AnimateAdapter):
         if self._clip_vision is not None:
             animate_inputs.pop("clip_vision_output_pose", None)
             logging.info("[%s] clip_vision connected: pose CLIP embedding is re-encoded per chunk.", self.node_name)
-        # The node keeps the last CONTINUE_MOTION_FRAMES frames of continue_motion
-        # and trims their decoded span back off every chained chunk; that span
-        # is the overlap. Read from the class so a core change is picked up.
-        return overlap_for_motion_frames(continue_motion_frames(animate_cls))
+        # The node keeps the last CONTINUE_MOTION_FRAMES frames of continue_motion.
+        # Read from the class so a core change is picked up.
+        return continue_motion_frames(animate_cls)
 
     def patch_model(self, patched, animate_inputs):
         if self._log_scale == 0.0:

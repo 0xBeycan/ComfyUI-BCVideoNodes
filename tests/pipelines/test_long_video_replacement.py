@@ -23,7 +23,7 @@ from video_input_fakes import levels  # noqa: E402
 
 FRAMES = 240
 VIDEOS = ("pose_video", "face_video", "background_video", "character_mask")
-LONGEST = 81 + 81  # the first chained chunk's window: its length and the anchor before it
+LONGEST = 81 + 5  # the first chained chunk's window: its length and the 5 seed frames the core node keeps
 
 
 @pytest.fixture

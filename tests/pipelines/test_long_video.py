@@ -11,7 +11,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import (ANIMATE1, ANIMATE2, LATENT_DOWN, Calls, FakeProgressBar,  # noqa: E402,F401
+from sampler_fakes import (ANIMATE1, ANIMATE2, LATENT_DOWN, Calls, FakeNodeOutput, FakeProgressBar,  # noqa: E402,F401
                            FakeWanAnimate2ToVideo, core_concat_mask, node_module, reference_concat_mask, run)
 
 
@@ -159,8 +159,7 @@ class _KeepsFive(FakeWanAnimate2ToVideo):
 
 
 class KeepsFiveFrames(FakeWanAnimate2ToVideo):
-    """Keeps 5 continue_motion frames while its constant says 1: the planner assumes an overlap
-    of 1, the node trims 5."""
+    """Would keep 5 continue_motion frames while its constant says 1."""
 
     CONTINUE_MOTION_FRAMES = 1
 
@@ -169,9 +168,27 @@ class KeepsFiveFrames(FakeWanAnimate2ToVideo):
         return _KeepsFive.EXECUTE_NORMALIZED(**kwargs)
 
 
-def test_animate2_overlap_self_correction_is_logged(node_module, monkeypatch, caplog):
-    # a core that trims more than its constant says: the loop takes the trim it found
+def test_animate2_is_seeded_with_the_frames_its_constant_names(node_module, monkeypatch, caplog):
+    # the loop hands the core node only the anchor frames its constant names: it keeps those
     monkeypatch.setitem(sys.modules["nodes"].NODE_CLASS_MAPPINGS, "WanAnimate2ToVideo", KeepsFiveFrames)
+    caplog.set_level("INFO")
+    images, count, plan = run(node_module, pose_frames=200, frames_per_chunk=49)
+    assert count == 200 and plan.endswith("overlap 1)")
+    assert all(c["continue"] == 1 for c in Calls.animate[1:]) and "planner assumed" not in caplog.text
+
+
+class TrimsFive(FakeWanAnimate2ToVideo):
+    """Trims 5 decoded frames back off a chained chunk, whatever it was seeded with."""
+
+    @classmethod
+    def EXECUTE_NORMALIZED(cls, **kwargs):
+        positive, negative, latent, trim_latent, trim_image, offset = super().EXECUTE_NORMALIZED(**kwargs).args
+        return FakeNodeOutput(positive, negative, latent, trim_latent, 5 if trim_image else 0, offset)
+
+
+def test_animate2_overlap_self_correction_is_logged(node_module, monkeypatch, caplog):
+    # a core that trims more than the frames it keeps decode to: the loop takes the trim it found
+    monkeypatch.setitem(sys.modules["nodes"].NODE_CLASS_MAPPINGS, "WanAnimate2ToVideo", TrimsFive)
     caplog.set_level("INFO")
     run(node_module, pose_frames=200, frames_per_chunk=49)
     assert "planner assumed 1; using 5" in caplog.text and " ran: " in caplog.text
@@ -308,14 +325,13 @@ def test_animate1_overshooting_last_chunk_holds_every_video(node_module, caplog,
     assert count == frames
     assert plan.startswith("81 + 77 -> {} produced".format(produced))
     last = Calls.animate[-1]
-    assert last["offset_in"] + last["length"] == produced
+    first = int(last["pose"])  # the driving frame the last chunk reads from
+    assert first + last["length"] == produced
     videos = _videos(frames)
     for key, source in (("face", videos["face_video"]), ("background", _painted(videos))):
-        video = last[key]
-        assert video.shape[0] == produced
-        assert torch.equal(video[:frames], source)
-        assert torch.equal(video[frames:], source[-1:].expand_as(video[frames:]))  # the last frame, held
-    assert last["mask"].shape[0] == frames
+        held = torch.cat((source, source[-1:].expand(produced - frames, *source.shape[1:])))  # the last frame, held
+        assert torch.equal(_reads(last, key), held[first:produced])
+    assert torch.equal(_reads(last, "mask"), videos["character_mask"][first:])  # cut at its end, never held
     padded = [line for line in caplog.text.splitlines() if "held" in line]
     assert len(padded) == 1 and "character_mask" not in padded[0]
     for name in ("pose_video", "face_video", "background_video"):

@@ -36,7 +36,8 @@ one output allocated at `total_frames`. The
 seam between chunks is the frames the core node carries over and trims back
 off (1 for Animate 2, `continue_motion_max_frames` for Animate,
 `previous_frame_count` for SCAIL-2), so there is no cross-window blending and
-no re-denoising. After each core conditioning call the loop runs
+no re-denoising. A chunk is handed just those seed frames, the ones its core
+node keeps. After each core conditioning call the loop runs
 `gc.collect()`: core's `WanAnimateToVideo` leaves the Wan VAE encoder's
 features in a reference cycle, GiBs of VRAM at 720p that otherwise stay
 until Python's own collector runs (see [Measured against the earlier workflow](measurements.md)).

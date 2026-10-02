@@ -100,9 +100,9 @@ def test_every_chunk_reads_the_extended_driving_frames(received, node, option, p
             assert frames(call[name][seek:seek + length]) == extended[first:first + length], name
         if node == ANIMATE1:  # never extended: past its end the core node reads nothing
             assert frames(call["character_mask"][seek:seek + length]) == list(range(first, min(first + length, pose_frames)))
-        # the seed: the output's last frames before the chunk, at most a chunk of them
+        # the seed: the output's last frames before the chunk, just the ones the core node keeps
         if made:
-            assert frames(call[ANCHOR[node]]) == extended[max(0, made - 81):made]
+            assert frames(call[ANCHOR[node]]) == extended[max(0, made - OVERLAP[node]):made]
         else:
             assert ANCHOR[node] not in call
 
@@ -128,13 +128,13 @@ def test_a_chunk_inside_the_videos_gets_them_and_one_past_their_end_its_window(r
 
 def test_the_first_chained_chunk_s_window_reaches_back_as_far_as_its_seed(received):
     # before core has moved an offset back, the window reaches back as far as the anchor it is
-    # handed is long (core keeps at most all of it); from then on as far as core moved back
+    # handed is long: the 5 frames it keeps; from then on as far as core moved back
     module, calls = received
     run(module, pose_frames=100, total_frames=250, node=SCAIL2, vae=IndexVAE())
     assert [c["length"] for c in Calls.animate] == [81] * 4
-    assert [frames(call["previous_frames"])[0] for call in calls[1:]] == [0, 76, 99]  # 81 frames seed each
-    assert [call["pose_video"].shape[0] for call in calls] == [100, 81 + 81, 81, 81]
-    assert [c["offset_in"] for c in Calls.animate] == [0, 76, 0, 0]
+    assert [frames(call["previous_frames"]) for call in calls[1:]] == [[76, 77, 78, 79, 80], [99] * 5, [99] * 5]
+    assert [call["pose_video"].shape[0] for call in calls] == [100, 81 + 5, 81, 81]
+    assert [c["offset_in"] for c in Calls.animate] == [0, 0, 0, 0]
     assert [c["pose"] for c in Calls.animate] == [0.0, 76.0, 99.0, 99.0]
 
 

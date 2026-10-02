@@ -65,7 +65,9 @@ class AnimateAdapter:
 
     def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         """Validate / normalize the pass-through inputs before the loop and
-        return the frames the core node trims back off every chained chunk.
+        return how many frames of the anchor the core node keeps (its last
+        ones): the loop seeds every chained chunk with just those output frames,
+        and trims back off what they decode to (the overlap).
         Inputs that are the node's own (not the core node's) are popped here."""
         raise NotImplementedError
 

@@ -28,7 +28,7 @@ CORE_NODE = {ANIMATE1: "WanAnimateToVideo", ANIMATE2: "WanAnimate2ToVideo", SCAI
 VIDEOS = ("pose_video", "face_video", "background_video", "character_mask", "pose_video_mask")
 IMAGES = ("reference_image", "reference_image_mask")
 FRAMES = 240  # 81 + 81 + 81 + 81 at overlap 5: four chunks (Animate 2, at overlap 1: three)
-LONGEST = 81 + 81  # the first chained chunk's window: its length and the anchor before it
+LONGEST = 81 + 5  # the first chained chunk's window: its length and the 5 seed frames the core node keeps
 
 
 @pytest.fixture
@@ -160,6 +160,7 @@ class ThirdsVAE(IndexVAE):
 
 
 ANCHOR = {ANIMATE1: "continue_motion", ANIMATE2: "continue_motion", SCAIL2: "previous_frames"}
+SEED = {ANIMATE1: 5, ANIMATE2: 1, SCAIL2: 5}  # the anchor frames each core node keeps, at run()'s defaults
 
 
 @pytest.mark.parametrize("node", NODES)
@@ -181,5 +182,7 @@ def test_every_chunk_is_seeded_with_the_decoded_frames_not_the_stored_float16(re
     assert expected[0] is None and seeds[0] is None and len(seeds) == len(expected) > 2
     for seed, reference in zip(seeds[1:], expected[1:]):
         assert seed.dtype == torch.float32 and torch.equal(seed, reference)
+        # just the frames the core node keeps, a copy of them: not a view keeping the decoded chunk
+        assert seed.shape[0] == SEED[node] and seed.untyped_storage().nbytes() == seed.numel() * seed.element_size()
     assert half_images.dtype == torch.float16 and torch.equal(half_images, images.half())
     assert not torch.equal(half_images.float(), images)  # the stored float16 rounds the thirds

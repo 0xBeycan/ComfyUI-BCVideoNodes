@@ -201,7 +201,11 @@ pack adds after that still turns the saving off for that prompt, with a console 
     window and the offset into it, so a hook indexes what it is handed;
   - `prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)`:
     validate, rename or pop the node's own inputs, encode what is encoded once per run; returns
-    the overlap;
+    how many frames of the anchor the core node keeps, its last ones (Wan Animate's
+    `continue_motion_max_frames`, Wan Animate 2's `CONTINUE_MOTION_FRAMES`, SCAIL-2's
+    `previous_frame_count`): the loop seeds every chained chunk with just those output frames, so
+    the first chained chunk's window reaches back by no more than them, and the overlap is what
+    they decode to (`libs/chunking.overlap_for_motion_frames`);
   - `check_videos(pose_video, animate_inputs)`: checks between the videos, before any is held;
   - `patch_model`: model patches, once per run;
   - `continuation(anchor, offset)`: the core call's chaining inputs (default `continue_motion`,
@@ -230,8 +234,10 @@ pack adds after that still turns the saving off for that prompt, with a console 
   end: a view when they lie inside it, else one gather of just those frames. The Wan Animate
   `character_mask` is never extended.
 - The loop writes each chunk's frames into one output on the CPU, allocated once at
-  `total_frames` (no list joined at the end), and seeds the next chunk from that output's last
-  frames. The last chunk decodes only the latent frames `total_frames` needs: the Wan VAE
+  `total_frames` (no list joined at the end), and seeds the next chunk with that output's last
+  frames the core node keeps: a view of the output, or, when the output is stored in another
+  dtype (a half pose video), a copy of just those frames as decoded (a view would keep the whole
+  decoded chunk). The last chunk decodes only the latent frames `total_frames` needs: the Wan VAE
   decodes causally, so the latent frames that decode only to frames past it are left out
   instead of decoded and cut.
 - The loop runs `gc.collect()` right after each core conditioning call: core's

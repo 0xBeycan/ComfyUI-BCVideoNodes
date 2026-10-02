@@ -26,7 +26,7 @@ import logging
 
 # torch and comfy.* are imported inside the functions that use them, so this
 # module (and the package __init__) imports without a ComfyUI install.
-from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frames, snap_down, snap_up
+from ..libs.chunking import LAST_CHUNK, format_plan, overlap_for_motion_frames, plan_chunks, produced_frames, snap_up
 from ..libs.color import apply_transfer, feather, lab_transfer
 from ..libs.log import active_bar, log_beside_bar
 from ..libs.sigmas import WAN_BETA, WAN_DPMPP, wan_beta_sigmas
@@ -124,7 +124,10 @@ def generate(
     animate_cls = node_class(animate_node)
     if len(animate_cls.RETURN_TYPES) < adapter.OUTPUTS:
         raise RuntimeError("{} returns {} outputs, {} expected. {}".format(animate_node, len(animate_cls.RETURN_TYPES), adapter.OUTPUTS, update_hint))
-    overlap = adapter.prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)
+    # the core node keeps only the anchor's last seed_frames frames: every chained chunk is seeded
+    # with just those output frames, and the overlap is what they decode to
+    seed_frames = adapter.prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)
+    overlap = overlap_for_motion_frames(seed_frames)
 
     pose_frames = int(pose_video.shape[0])
     if pose_frames < 1:
@@ -196,7 +199,6 @@ def generate(
     sampler = _StepLogger(inner, log_prefix)
 
     progress = comfy.utils.ProgressBar(len(plan))
-    seed_frames = snap_down(frames_per_chunk)  # the last output frames every chained chunk is seeded with
     output = None  # [total, H, W, C], allocated at the first decode of a run of more than one chunk
     # the output's dtype: a half-precision pose video's (Load Video at precision fp16), else the
     # decoded frames' (core's VAE output)
@@ -323,18 +325,15 @@ def generate(
             if output is None:
                 output = torch.empty((total, *images.shape[1:]), dtype=stored or images.dtype, device="cpu")
             output[produced:produced + kept] = images[:kept]
-        # the output's last frames, for the next chunk's seed: a middle chunk adds only chunk -
-        # overlap frames, so this reaches back into the chunks before it. An output stored in
-        # another dtype rounds the frames, so the seed is then kept apart, as decoded: the chain
-        # is the one the decoded dtype gives
+        # the output's last seed_frames frames, the next chunk's seed: a view of the output. An
+        # output stored in another dtype rounds the frames, so the seed is then kept apart, as
+        # decoded: a copy of just those frames (a view would keep the whole decoded chunk), the
+        # frames before them taken from the last seed when the chunk adds fewer
         if output.dtype == images.dtype:
             anchor = output[max(0, produced + added - seed_frames):produced + added]
         else:
-            fresh = images[:kept].cpu()
-            if anchor is None or kept >= seed_frames:
-                anchor = fresh[-seed_frames:]
-            else:
-                anchor = torch.cat((anchor[kept - seed_frames:], fresh))
+            fresh = images[max(0, kept - seed_frames):kept].to("cpu", copy=True)
+            anchor = fresh if anchor is None or kept >= seed_frames else torch.cat((anchor[kept - seed_frames:], fresh))
         del images
         lengths.append(length)
         produced += added
