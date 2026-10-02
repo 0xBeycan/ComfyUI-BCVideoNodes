@@ -270,9 +270,9 @@ def test_fp16_stores_the_fp32_frames_exactly(tmp_path, model, resolution):
     assert half_info == info and half_audio is None and audio is None
 
 
-def test_the_default_precision_is_fp32(tmp_path):
+def test_the_default_precision_is_fp16(tmp_path):
     images, _, _ = video.load_video(grey_clip(tmp_path / "clip.mkv", 5), "Wan", "480p", "auto", "", 1, "")
-    assert images.dtype == torch.float32
+    assert images.dtype == torch.float16
 
 
 # --- audio and video_info -------------------------------------------------------------------------

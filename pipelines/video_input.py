@@ -11,7 +11,7 @@ import torch
 
 from ..libs import log, resize, video_decode
 from ..libs import video_sizes as sizes
-from ..libs.video import FP32, precision_dtype, requantized
+from ..libs.video import FP16, FP32, precision_dtype, requantized
 from ..libs.video_info import VideoInfo
 
 # a force_fps this close to the video's rate (as a share of it) is that rate
@@ -84,7 +84,7 @@ def kept_rate(rate, fps):
     return rate
 
 
-def plan(path, model, resolution, orientation, force_fps, frame_count, precision=FP32, probe=None):
+def plan(path, model, resolution, orientation, force_fps, frame_count, precision=FP16, probe=None):
     """Load Video's widgets checked against the video at `path`, before a frame is loaded:
     {"source": the probe (video_decode.probe's dict), "force_fps": the rate typed or None, "rate":
     the rate frames are kept at (kept_rate's), "count": frame_count or None, "orientation": portrait
@@ -142,10 +142,10 @@ def video_info(model, resolution, planned, frames):
                      loaded_width=planned["width"], loaded_height=planned["height"])
 
 
-def load_video(path, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP32):
+def load_video(path, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP16):
     """(IMAGE [N, H, W, 3], AUDIO or None, VideoInfo) of the video file at `path`, as Load Video's
-    widgets say; the IMAGE float32, or float16 at precision fp16 (every 8-bit level k / 255 is
-    kept: libs/video.requantized gives back the float32 values exactly). N is fixed before the
+    widgets say; the IMAGE float16 at precision fp16, the default (every 8-bit level k / 255 is
+    kept: libs/video.requantized gives back the float32 values exactly), float32 at fp32. N is fixed before the
     batch is allocated: the container's packets give the frame count; should the decoder disagree,
     the load runs once more with the decoder's count."""
     planned = plan(path, model, resolution, orientation, force_fps, frame_count, precision)
@@ -205,7 +205,7 @@ class LoadPreview(TypedDict):
     error: Optional[str]
 
 
-def preview(path, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP32, probe=None):
+def preview(path, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP16, probe=None):
     """The LoadPreview of Load Video's widget values on the video at `path`, from the loader's own
     checks and frame selection. Its counts are the container's: should the decoder disagree when
     the video loads, the loader goes by the decoder's (load_video). `probe` as plan's."""

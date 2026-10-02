@@ -3,7 +3,7 @@ Video's preview asks what the loader will load (PLAN_ROUTE)."""
 from functools import lru_cache, partial
 
 from ..libs import log
-from ..libs.video import FP32, PRECISIONS
+from ..libs.video import FP16, PRECISIONS
 from ..libs.video_info import COMFY_TYPES, VideoInfo
 from .common import VIDEO, prompt_server
 from .unused_outputs import LINK_INPUTS, drop_unlinked_heavy
@@ -50,8 +50,8 @@ class BCVLoadVideo:
                 "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1 (Wan, SCAIL; None keeps it)."}),
             },
             "optional": {
-                # the last widget, so a workflow saved before it keeps its widget values and loads fp32
-                "precision": (list(PRECISIONS), {"default": FP32, "tooltip": "The dtype the frames are stored in. fp32: float32, as every IMAGE. fp16: float16, half the RAM of the kept clip, for low-RAM machines; every 8-bit level of the video is kept exactly, and the BCVideoNodes nodes read it back as those float32 values a frame at a time (the samplers a chunk's window at a time), so their results are fp32's. Nodes of other packs, core's included, get the float16 clip."}),
+                # the last widget, so a workflow saved before it keeps its widget values (and gets the default)
+                "precision": (list(PRECISIONS), {"default": FP16, "tooltip": "The dtype the frames are stored in. fp16 (the default): float16, half the RAM of fp32's clip; every 8-bit level of the video is kept exactly, and the BCVideoNodes nodes read it back as those float32 values a frame at a time (the samplers a chunk's window at a time), so their results are fp32's. Nodes of other packs, core's included, get the float16 clip. fp32: float32, as every IMAGE."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -63,9 +63,9 @@ class BCVLoadVideo:
     HEAVY_OUTPUTS = ("images",)
     FUNCTION = "load"
     CATEGORY = VIDEO
-    DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory (resolution source keeps the video's own size, no resize). Colours follow the file's own colour tags. The frames are float32, or float16 at precision fp16. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
+    DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory (resolution source keeps the video's own size, no resize). Colours follow the file's own colour tags. The frames are float16 at precision fp16 (the default; every 8-bit level kept exactly), float32 at fp32. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
 
-    def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP32,
+    def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP16,
              prompt_graph=None, unique_id=None):
         import folder_paths
 

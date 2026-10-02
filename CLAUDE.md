@@ -256,7 +256,7 @@ pack adds after that still turns the saving off for that prompt, with a console 
   original.
 - Precision is decided per tensor, by measurement, never globally.
 - Unused heavy outputs are not kept: see Unused heavy outputs above.
-- A half-precision clip (Load Video's `precision` fp16) is read through `libs/video.requantized`
+- A half-precision clip (Load Video's `precision` fp16, its default) is read through `libs/video.requantized`
   (or `as_numpy`'s HalfFrames for numpy): every value back to the float32 8-bit level an fp32 load
   holds, a frame at a time, or a chunk's window in the samplers, never the whole clip at once (that
   holds both copies). A loop over the frames iterates HalfFrames: the next frame is converted on a
