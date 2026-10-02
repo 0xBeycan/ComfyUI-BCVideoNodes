@@ -62,8 +62,9 @@ libs/                log, bbox, keypoints, mask (and the final mask: FinalMaskCo
                      color, config_widgets,
                      pose_data, draw_rules (the Pose Config draw rules: parts left out of the pose images),
                      video_sizes (the model table: sizes, frame rule, grid; the orientation rule; the Conform
-                     Video ladder), video_info (the VideoInfo TypedDict), resize (the one fit function: crop,
-                     pad or cut, a frame into a preallocated output; center_crop, core's center-crop rule),
+                     Video ladder), video_info (the VideoInfo TypedDict, its audio an Audio), resize (the one
+                     fit function: crop, pad or cut, a frame into a preallocated output; center_crop, core's
+                     center-crop rule),
                      video_decode (PyAV decode, frame
                      selection, audio), video_encode (the codec table, the writer), video_compare (the
                      Video Comparer's side by side), pose_utils/ (vendored, with its LICENSE)
