@@ -138,7 +138,9 @@ pack adds after that still turns the saving off for that prompt, with a console 
   video on black, the WanAnimate SAM track and final mask, the WanAnimate `bg_images` painting);
   when another output needs the step (SCAIL-2 Preprocess `mask`, WanAnimate Preprocess `mask`
   under a linked `final_mask` or `bg_images` and `final_mask` under a linked `bg_images`, Load
-  Video `images`, the samplers' `images`), it is only dropped at return.
+  Video `images`, the samplers' `images`), it is dropped once nothing reads it any more: at return,
+  or as soon as its readers are done (WanAnimate Preprocess `mask`, emptied (`emptied`) right after
+  the final mask is made, before the face crops and `bg_images`).
 - A pass-through (the input tensor itself, the guards' masks), a one-frame output (a reference
   mask, a timeline) and the output of a single-output node that is not an output node (it runs
   only when that output is linked) are not heavy.

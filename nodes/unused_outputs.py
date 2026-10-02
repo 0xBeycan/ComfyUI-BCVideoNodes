@@ -196,10 +196,15 @@ def wants(wanted, name):
     return wanted is None or name in wanted
 
 
+def emptied(tensor):
+    """A new 0-frame tensor of `tensor`'s dtype, device and trailing shape (IMAGE [0, H, W, C], MASK
+    [0, H, W]): what an unwanted heavy output becomes. A new tensor, never a view, so it keeps no
+    storage alive."""
+    return tensor.new_empty((0, *tensor.shape[1:]))
+
+
 def drop_unwanted(cls, outputs, wanted):
-    """`outputs` as a tuple, each heavy output not in `wanted` a new 0-frame tensor of its dtype,
-    device and trailing shape (IMAGE [0, H, W, C], MASK [0, H, W]). A new tensor, never a view, so
-    it keeps no storage alive. `wanted` None: unchanged."""
+    """`outputs` as a tuple, each heavy output not in `wanted` emptied. `wanted` None: unchanged."""
     import torch
 
     outputs = tuple(outputs)
@@ -208,7 +213,7 @@ def drop_unwanted(cls, outputs, wanted):
     outputs = list(outputs)
     for index, name in _heavy_indices(cls).items():
         if name not in wanted and isinstance(outputs[index], torch.Tensor):
-            outputs[index] = outputs[index].new_empty((0, *outputs[index].shape[1:]))
+            outputs[index] = emptied(outputs[index])
     return tuple(outputs)
 
 

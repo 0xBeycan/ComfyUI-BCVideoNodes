@@ -12,7 +12,8 @@
 - per node: each unlinked heavy output is a new 0-frame tensor of the full output's dtype and
   trailing shape, every other output equals the full run's, and where the output is a step of its
   own the step does not run (pose images not drawn, faces not cut, the driving colored mask not
-  rendered, the driving video not blacked out, the WanAnimate SAM track not run).
+  rendered, the driving video not blacked out, the WanAnimate SAM track not run), and the
+  WanAnimate raw mask, unlinked, is freed once the final mask is made.
 
 Fake models, synthetic frames; the full run is the same node call without a stamp. The runtime
 behaviour through ComfyUI's executor is in test_unused_outputs_runtime.py.
@@ -381,6 +382,39 @@ def test_wan_animate_preprocess_computes_only_linked_heavy_outputs(fake_models, 
     assert len(painted) == ("bg_images" in linked)
     assert len(drawn) == ("pose_images" in linked)
     assert ("cropping the faces" in caplog.text) == ("face_images" in linked)
+
+
+@pytest.mark.parametrize("linked", [("final_mask", "bg_images", "face_images"), ("mask", "final_mask", "bg_images", "face_images")])
+def test_wan_animate_preprocess_frees_an_unlinked_raw_mask_once_the_final_mask_is_made(fake_models, monkeypatch, linked):
+    # the final mask is the raw mask's only reader: unlinked, the raw mask is gone before the face
+    # crops and the painting, not held to the return
+    import gc
+    import weakref
+
+    cls, images = nodes.BCVWanAnimatePreprocess, frames()
+    widgets = dict(WIDGETS, face_padding=8, mode="box_keypoint", prompt=sam3.PROMPT)
+    full = cls().process(images, **widgets)
+    tracked, alive = [], []
+    track, crop, paint = nodes.BCVSAM3VideoTrack.track, nodes.BCVFaceCrop.crop, unused.painted_black
+
+    def tracking(self, *args, **kwargs):
+        out = track(self, *args, **kwargs)
+        tracked.append(weakref.ref(out[0]))
+        return out
+
+    def seen(step, call):
+        def wrapper(*args, **kwargs):
+            gc.collect()
+            alive.append((step, tracked[0]() is not None))
+            return call(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(nodes.BCVSAM3VideoTrack, "track", tracking)
+    monkeypatch.setattr(nodes.BCVFaceCrop, "crop", seen("face crops", crop))
+    monkeypatch.setattr(unused, "painted_black", seen("painting", paint))
+    out = cls().process(images, **widgets, **hidden(cls, linked))
+    check_outputs(cls, out, full, set(cls.HEAVY_OUTPUTS) - set(linked))
+    assert alive == [("face crops", "mask" in linked), ("painting", "mask" in linked)]
 
 
 def test_scail2_colored_mask_does_not_render_an_unlinked_driving_mask(monkeypatch):

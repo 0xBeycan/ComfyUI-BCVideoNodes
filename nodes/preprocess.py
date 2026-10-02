@@ -7,7 +7,7 @@ from .face import BCVFaceCrop
 from .guard import BCVMaskGuard, BCVPoseGuard, _final_widgets, _reference_mask
 from .pose import VITPOSE, BCVPoseDetection
 from .sam3_1_multiplex import BCVSAM3VideoTrack
-from .unused_outputs import LINK_INPUTS, drop_unwanted, heavy_wanted, wants
+from .unused_outputs import LINK_INPUTS, drop_unwanted, emptied, heavy_wanted, wants
 
 
 class BCVWanAnimatePreprocess:
@@ -42,7 +42,8 @@ class BCVWanAnimatePreprocess:
     RETURN_NAMES = ("pose_images", "face_images", "mask", "pose_data", "bboxes", "key_frame_body_points", "face_bboxes",
                     "final_mask", "bg_images")
     # not computed when nothing links them (nodes/unused_outputs.py); mask, which the final mask is made
-    # of, and final_mask, which bg_images is cut by, are only dropped at return when another needs them
+    # of, is emptied as soon as the final mask is made, and final_mask, which bg_images is cut by, is
+    # dropped at return, when another needs them
     HEAVY_OUTPUTS = ("pose_images", "face_images", "mask", "final_mask", "bg_images")
     FUNCTION = "process"
     CATEGORY = "BCVideoNodes/Wan/Animate"
@@ -70,10 +71,12 @@ class BCVWanAnimatePreprocess:
                                                 sam3_config=sam3_config)
         else:
             mask = torch.empty((0, *images.shape[1:3]), dtype=images.dtype)  # SAM's float mask, no frame of it tracked
-        face_images, face_bboxes = BCVFaceCrop().crop(images, pose_data, face_padding, wanted=wanted)
         final = (final_mask(mask, **_final_widgets(widgets)) if finals
                  else torch.empty((0, *images.shape[1:3]), dtype=images.dtype))
-        background = painted_black(images, final) if wants(wanted, "bg_images") else images.new_empty((0, *images.shape[1:]))
+        if not wants(wanted, "mask"):
+            mask = emptied(mask)  # the raw mask, read by the final mask only, freed before the face crops and bg_images
+        face_images, face_bboxes = BCVFaceCrop().crop(images, pose_data, face_padding, wanted=wanted)
+        background = painted_black(images, final) if wants(wanted, "bg_images") else emptied(images)
         return drop_unwanted(type(self), (pose_images, face_images, mask, pose_data, bboxes, key_points, face_bboxes, final,
                                           background), wanted)
 
