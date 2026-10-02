@@ -9,6 +9,7 @@ from .nodes.scail2 import BCVSCAIL2ColoredMask, BCVSCAIL2Preprocess, BCVSCAIL2Pr
 from .nodes.video_input import BCVConformVideo, BCVGetVideoInfo, BCVLoadReferenceImage, BCVLoadVideo, register_plan_route
 from .nodes.video_output import BCVSaveVideo, BCVVideoComparer
 from .nodes.unused_outputs import register_link_stamp
+from .nodes.full_clear import register_full_clear_hook
 
 NODE_CLASS_MAPPINGS = {
     "BCVWanAnimateLongVideoSampler": BCVWanAnimateLongVideoSampler,
@@ -61,6 +62,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # writes the link state of the heavy outputs into each prompt, after the other packs' on_prompt
 # handlers (nodes/unused_outputs.py)
 register_link_stamp(NODE_CLASS_MAPPINGS)
+# lets ComfyUI-BCNodes' full clear drop the models the loaders keep (nodes/full_clear.py)
+register_full_clear_hook()
 # what Load Video will load, for its preview (nodes/video_input.py)
 register_plan_route()
 

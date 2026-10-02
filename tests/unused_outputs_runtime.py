@@ -204,7 +204,9 @@ async def main():
 
     nodes.NODE_CLASS_MAPPINGS.update({"MaskSource": MaskSource, "Shape": Shape, COLORED: package.NODE_CLASS_MAPPINGS[COLORED]})
     h = Harness(instance, execution, unused)
-    facts = {"handlers_loaded": names(instance.on_prompt_handlers)}
+    facts = {"handlers_loaded": names(instance.on_prompt_handlers),
+             # ComfyUI-BCNodes' full clear calls these (nodes/full_clear.py)
+             "full_clear_hooks": [hook.__qualname__ for hook in getattr(instance, "bc_full_clear_hooks", None) or []]}
     instance.add_on_prompt_handler(later_pack)
     facts["handlers_later_pack"] = names(instance.on_prompt_handlers)
     runner = web.AppRunner(instance.app)

@@ -140,6 +140,7 @@ CHECK3_MODULES = [
     "models.sapiens2.wrapper",
     "libs.video_sizes",
     "libs.video_info",
+    "libs.tensor_bytes",
     "libs.resize",
     "libs.video_decode",
     "pipelines.video_input",

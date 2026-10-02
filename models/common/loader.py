@@ -1,6 +1,7 @@
 """The loader the pose code calls: the person detector and the pose model, built once per process
 from the files their model packages register."""
 from ...libs import log
+from ...libs.tensor_bytes import module_bytes
 from . import registry
 from .download import detection_model_path
 
@@ -12,6 +13,14 @@ POSE_ESTIMATOR = "ViTPose-H"
 # built once per process and kept; ComfyUI's model management moves the weights between
 # devices, so holding the wrappers costs no VRAM while another model runs
 _loaded = {}
+
+
+def unload():
+    """Drops every model built so far (the next load_* call builds it again): {file name: bytes of its
+    weights}, {} when none was built. The full clear calls it (nodes/full_clear.py)."""
+    held = {filename: module_bytes(model.net) for filename, model in _loaded.items()}
+    _loaded.clear()
+    return held
 
 
 def _load(cls, filename, repo=None):

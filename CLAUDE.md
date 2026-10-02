@@ -35,7 +35,7 @@ Four layers, `nodes -> pipelines -> models -> libs`:
 __init__.py          registration only: the 21 node classes, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS,
                      WEB_DIRECTORY = "./web", the link stamp of the unused heavy outputs (register_link_stamp,
                      which also hooks stamps_last to the server's startup), Load Video's plan route
-                     (register_plan_route)
+                     (register_plan_route), the full-clear hook (register_full_clear_hook)
 nodes/               common (the PREPROCESS and VIDEO categories, _config, _ConfigNode, prompt_server), unused_outputs (the
                      unused-heavy-outputs helper: LinkStamp, register_link_stamp, stamps_last, heavy_wanted, wants,
                      drop_unwanted, drop_unlinked_heavy), sampler, pose (Pose Detection, Pose Config, the
@@ -44,7 +44,8 @@ nodes/               common (the PREPROCESS and VIDEO categories, _config, _Conf
                      preprocess (the two WanAnimate wrappers, composed of the nodes above),
                      scail2 (SCAIL-2 Colored Mask, the SCAIL-2 Preprocess wrapper, SCAIL-2 Preprocess Guard),
                      video_input (Load Video, Get Video Info, Load Reference Image, Conform Video),
-                     video_output (Save Video, Video Comparer)
+                     video_output (Save Video, Video Comparer), full_clear (drop_cached_models: the hook
+                     ComfyUI-BCNodes' full clear calls, and its registration)
 pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Pose Detection with a Sapiens2 pose_model:
                      Sapiens2 body, feet and hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
                      on black), guard/ (config, common, pose, mask, reference, report, timeline, combine,
@@ -59,7 +60,7 @@ libs/                log, bbox, keypoints, mask (and the final mask: FinalMaskCo
                      grow + blockify the preprocess and the guards call, final_mask, painted_black; block_size 0
                      cuts no blocks, the Mask Guard's raw-mask mode), chunking, sigmas, video (tail padding;
                      Load Video's precision values; requantized and HalfFrames, a half clip read as float32),
-                     color, config_widgets,
+                     color, config_widgets, tensor_bytes (module_bytes: the bytes of a model's weights),
                      pose_data, draw_rules (the Pose Config draw rules: parts left out of the pose images),
                      video_sizes (the model table: sizes, frame rule, grid; the orientation rule; the Conform
                      Video ladder), video_info (the VideoInfo TypedDict, its audio an Audio), resize (the one
@@ -383,6 +384,16 @@ pack adds after that still turns the saving off for that prompt, with a console 
   cache key) and the `bc_link_stamp` marker on the stamping handler, which ComfyUI-BCNodes' handler
   reads to leave ours out of "another pack" and `stamps_last` reads to move it last (and ours reads
   on its).
+- Locked for ComfyUI-BCNodes' full clear (its Process Monitor brings ComfyUI back to its startup
+  state): `bc_full_clear_hooks`, a list attribute on `PromptServer.instance`, created by whichever
+  pack registers first (`getattr(server, "bc_full_clear_hooks", None)`, a new list when None). Each
+  entry is a zero-argument callable that drops that pack's cached models and returns {model name:
+  bytes it held} (counted from the tensors it dropped, `libs/tensor_bytes.module_bytes`; {} when
+  nothing was loaded); idempotent, and the next node call loads the model again. Ours is
+  `drop_cached_models` (`nodes/full_clear.py`, registered by the root `__init__` when a PromptServer
+  exists): the `unload()` of `models/common/loader.py` (every detector and pose model `_loaded`
+  holds) and of `models/sam3_1_multiplex/loader.py`. A loader that keeps a model between runs gets
+  an `unload()` and is called from it.
 
 ## Closed decisions
 

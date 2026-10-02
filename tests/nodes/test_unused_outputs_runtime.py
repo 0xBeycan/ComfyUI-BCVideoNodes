@@ -45,6 +45,10 @@ def test_the_root_init_registers_the_stamp_on_comfyuis_server(facts):
     assert facts["handlers_loaded"] == ["LinkStamp"]
 
 
+def test_the_root_init_registers_the_full_clear_hook_on_comfyuis_server(facts):
+    assert facts["full_clear_hooks"] == ["drop_cached_models"]
+
+
 def test_a_handler_registered_after_ours_runs_before_it_once_the_server_starts(facts):
     assert facts["handlers_later_pack"] == ["LinkStamp", "later_pack"]
     assert facts["handlers_started"] == ["later_pack", "LinkStamp"]
