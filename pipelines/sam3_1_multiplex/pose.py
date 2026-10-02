@@ -17,6 +17,7 @@ from ...libs import log
 from ...libs.keypoints import L_ANKLE, L_FOOT, L_HIP, L_SHOULDER, R_ANKLE, R_FOOT, R_HIP, R_SHOULDER
 from ...libs.mask import clean_mask
 from ...libs.pose_data import PoseMeta
+from ...libs.video import requantized
 from ...models.sam3_1_multiplex.adapter import SAM3_1_MULTIPLEX_SIZE, decode, multiplex_parts, propagate
 from ...models.sam3_1_multiplex.postprocess import low_res_logits
 from .config import logits_record, report_counts
@@ -328,7 +329,7 @@ def segment_by_pose(model, images, bboxes, pose_metas: list[PoseMeta], config, m
                 continue
             carried = True
         else:
-            frame = common_upscale(frames_chw[i:i + 1], SAM3_1_MULTIPLEX_SIZE, SAM3_1_MULTIPLEX_SIZE, "bilinear", crop="disabled").to(device, dtype)
+            frame = common_upscale(requantized(frames_chw[i:i + 1]), SAM3_1_MULTIPLEX_SIZE, SAM3_1_MULTIPLEX_SIZE, "bilinear", crop="disabled").to(device, dtype)
             with torch.inference_mode():
                 decoded = decode(sam3, frame, point_inputs, box_inputs, refine)
                 seed = (F.interpolate(decoded.float(), size=(H, W), mode="bilinear",

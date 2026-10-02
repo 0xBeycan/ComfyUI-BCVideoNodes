@@ -29,7 +29,7 @@ web = pytest.importorskip("aiohttp.web")
 from video_input_fakes import grey_clip, ramp_audio, video  # noqa: E402
 
 WIDGETS = {"model": "Wan", "resolution": "480p", "orientation": "auto", "force_fps": "", "start_frame": 1,
-           "frame_count": ""}
+           "frame_count": "", "precision": "fp32"}
 
 
 @pytest.fixture
@@ -54,7 +54,7 @@ def loader_error(path, **widgets):
     values = {**WIDGETS, **widgets}
     with pytest.raises(ValueError) as error:
         video.load_video(str(path), values["model"], values["resolution"], values["orientation"], values["force_fps"],
-                         values["start_frame"], values["frame_count"])
+                         values["start_frame"], values["frame_count"], values["precision"])
     return str(error.value)
 
 
@@ -87,13 +87,14 @@ def test_audio_longer_than_the_video_gives_the_loaders_count(folders):
     ({"resolution": "source"}, 57, 60),
     ({"resolution": "source", "orientation": "portrait", "frame_count": "10"}, 9, 60),  # 16x32, on Wan's grid
     ({"model": "SCAIL", "resolution": "source", "start_frame": 50}, 9, 11),
+    ({"precision": "fp16"}, 57, 60),  # the same frames, stored in float16
 ])
 def test_the_answer_is_the_loaders_video_info(folders, widgets, info_frames, available):
     path = grey_clip(folders / "input" / "clip.mkv", 60)
     status, answer = ask("clip.mkv", **widgets)
     values = {**WIDGETS, **widgets}
     _, _, info = video.load_video(path, values["model"], values["resolution"], values["orientation"],
-                                  values["force_fps"], values["start_frame"], values["frame_count"])
+                                  values["force_fps"], values["start_frame"], values["frame_count"], values["precision"])
     assert status == 200 and answer["error"] is None and answer["info"] == info
     assert answer["info"]["loaded_frame_count"] == info_frames and answer["available"] == available
     assert answer["source"]["audio"] is False
@@ -114,6 +115,7 @@ def test_the_answer_is_the_loaders_video_info(folders, widgets, info_frames, ava
     ({"model": "None", "resolution": "512p"}, True, 30),
     ({"model": "SCAIL", "resolution": "source", "orientation": "portrait"}, True, 30),  # 16x32: under the grid
     ({"orientation": "sideways"}, True, 30),
+    ({"precision": "fp8"}, True, 30),
 ])
 def test_errors_are_the_loaders_messages(folders, widgets, has_source, available):
     path = grey_clip(folders / "input" / "clip.mkv", 30)
@@ -177,7 +179,7 @@ def test_anything_outside_the_input_folder_is_refused(folders, name):
 
 
 @pytest.mark.parametrize("query, text", [
-    ({"video": "clip.mkv", "model": "Wan"}, "missing resolution, orientation, force_fps, start_frame, frame_count"),
+    ({"video": "clip.mkv", "model": "Wan"}, "missing resolution, orientation, force_fps, start_frame, frame_count, precision"),
     ({**WIDGETS, "video": "clip.mkv", "start_frame": "two"}, "start_frame is not a whole number"),
 ])
 def test_a_malformed_query_is_refused(folders, query, text):
@@ -199,4 +201,5 @@ def test_the_route_is_registered_only_on_a_server(folders, monkeypatch, caplog):
     assert video.register_plan_route() is video.plan_route
     assert [(route.method, route.path, route.handler) for route in routes] == [("GET", video.PLAN_ROUTE, video.plan_route)]
     assert video.PLAN_ROUTE == "/bcvideonodes/load_video/plan"
-    assert video.PLAN_PARAMS == tuple(video.BCVLoadVideo.INPUT_TYPES()["required"])
+    widgets = video.BCVLoadVideo.INPUT_TYPES()
+    assert video.PLAN_PARAMS == (*widgets["required"], *widgets["optional"])

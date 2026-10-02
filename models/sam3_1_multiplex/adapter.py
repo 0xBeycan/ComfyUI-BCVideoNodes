@@ -20,6 +20,7 @@ The model is ComfyUI's own SAM3 implementation, loaded by loader.py.
 import torch
 import torch.nn.functional as F
 
+from ...libs.video import is_half, requantized
 from .postprocess import clean_channel_logits, low_res_logits
 
 
@@ -67,9 +68,14 @@ def backbone_frame(tracker, backbone_fn, frames, frame_idx, device, dtype, size,
 
     Core hands the image encoder the resized frame in [0, 1]. `signed_input` maps it to [-1, 1],
     x * 2 - 1: SAM's (x - 0.5) / 0.5, applied after the resize as Meta's SAM 3.1 preprocessing
-    does. The returned frame is the one the encoder saw."""
+    does. A half-precision clip's frame goes to `device` as it is (half the bytes) and is
+    requantized there (libs/video.requantized), so core resizes the values a float32 clip holds.
+    The returned frame is the one the encoder saw."""
     from comfy.ldm.sam3.tracker import _prep_frame
-    frame = _prep_frame(frames, slice(frame_idx, frame_idx + 1), device, dtype, size)
+    index = slice(frame_idx, frame_idx + 1)
+    if is_half(frames):
+        frames, index = requantized(frames[index].to(device)), slice(0, 1)
+    frame = _prep_frame(frames, index, device, dtype, size)
     if signed_input:
         frame = frame * 2 - 1
     vision_feats, vision_pos, feat_sizes, high_res, trunk_out = tracker._compute_backbone_frame(

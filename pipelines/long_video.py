@@ -13,7 +13,9 @@ seeks and the input checks. The chunk-length policy is the node's last_chunk wid
 (libs/chunking.LAST_CHUNK); its tail_padding widget (libs/video.TAIL_PADDING) says how the
 driving videos are extended past their end. With its color_anchor_strength widget above 0 every
 chained chunk is colour-matched to the frames it was seeded with (libs/color.py), in the region
-the adapter names.
+the adapter names. A half-precision input (Load Video at precision fp16) reaches the core node
+requantized to the float32 values a float32 input holds (libs/video.requantized): an image whole,
+a video one chunk's window at a time.
 """
 
 import gc
@@ -25,7 +27,7 @@ from ..libs.chunking import LAST_CHUNK, format_plan, plan_chunks, produced_frame
 from ..libs.color import apply_transfer, feather, lab_transfer
 from ..libs.log import active_bar, log_beside_bar
 from ..libs.sigmas import WAN_BETA, WAN_DPMPP, wan_beta_sigmas
-from ..libs.video import TAIL_PADDING
+from ..libs.video import TAIL_PADDING, is_half, requantized
 from ..models.common import registry
 from ..models.common.core_nodes import call_node, node_class
 
@@ -104,6 +106,18 @@ def generate(
     log_prefix = "[{}]".format(node_name)
     update_hint = adapter.UPDATE_HINT.format(animate_node)
 
+    # Core resizes and scales what it gets in its dtype, so a half-precision input is handed over
+    # requantized to float32: an image (the reference, SCAIL-2's reference mask, a one-frame
+    # character mask) here, whole; a video the core node seeks in the loop below, one chunk's
+    # window at a time, never as a whole.
+    reference_image = requantized(reference_image)
+    for name, value in list(animate_inputs.items()):
+        if not isinstance(value, torch.Tensor) or name in adapter.HELD_VIDEOS:
+            continue
+        if name in adapter.SEEKED_VIDEOS and value.ndim >= 3 and value.shape[0] > 1:
+            continue  # a video
+        animate_inputs[name] = requantized(value)
+
     animate_cls = node_class(animate_node)
     if len(animate_cls.RETURN_TYPES) < adapter.OUTPUTS:
         raise RuntimeError("{} returns {} outputs, {} expected. {}".format(animate_node, len(animate_cls.RETURN_TYPES), adapter.OUTPUTS, update_hint))
@@ -145,6 +159,10 @@ def generate(
     # not seeked (core repeats it over the chunk), so it is not among them
     seeked = {name: int(videos[name].shape[0]) for name in adapter.SEEKED_VIDEOS
               if videos.get(name) is not None and videos[name].ndim >= 3 and videos[name].shape[0] > 1}
+    # the videos the core node seeks that are half precision: every chunk gets its window of them
+    half = [name for name in (*adapter.HELD_VIDEOS, *seeked) if videos.get(name) is not None and is_half(videos[name])]
+    if half:
+        logging.info("%s %s half precision: every chunk gets its window requantized to float32.", log_prefix, ", ".join(half))
 
     patched = adapter.patch_model(call_node("ModelSamplingSD3", model=model, shift=shift)[0], animate_inputs)
     if sigmas_override is not None:
@@ -179,13 +197,14 @@ def generate(
         chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
         pose_offset = offset
         start, inputs = 0, videos
-        if any(offset + length > frames for frames in short.values()):
-            # The chunk reads past the end of a held video: every video the core node seeks is cut
-            # to the window it reads, a held one extended there as tail_padding says, and the core
-            # node gets the offset into that window. Before it seeks, the core node moves the offset
-            # back by the frames of the anchor it keeps: as far as on the last chained chunk once
-            # seen, and until then by at most the whole anchor. Nor is a seeked video cut to one
-            # frame, which core would repeat over the chunk.
+        if half or any(offset + length > frames for frames in short.values()):
+            # The chunk reads past the end of a held video, or a video is half precision: every
+            # video the core node seeks is cut to the window it reads, a held one extended there as
+            # tail_padding says, a half one requantized, and the core node gets the offset into that
+            # window. Before it seeks, the core node moves the offset back by the frames of the
+            # anchor it keeps: as far as on the last chained chunk once seen, and until then by at
+            # most the whole anchor. Nor is a seeked video cut to one frame, which core would repeat
+            # over the chunk.
             if anchor is not None and moved is None:
                 start, stop = max(0, offset - int(anchor.shape[0])), offset + length
             else:
@@ -196,9 +215,9 @@ def generate(
             inputs = dict(videos)
             for name in adapter.HELD_VIDEOS:
                 if videos.get(name) is not None:
-                    inputs[name] = pad(videos[name], start, min(stop, max(reach, int(videos[name].shape[0]))))
+                    inputs[name] = requantized(pad(videos[name], start, min(stop, max(reach, int(videos[name].shape[0])))))
             for name in seeked:
-                inputs[name] = videos[name][start:stop]
+                inputs[name] = requantized(videos[name][start:stop])
         seek = offset - start
         chunk_inputs = dict(inputs, **adapter.chunk_inputs(index, seek, anchor, inputs["pose_video"], inputs))
 

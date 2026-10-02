@@ -3,13 +3,14 @@ Video's preview asks what the loader will load (PLAN_ROUTE)."""
 from functools import lru_cache, partial
 
 from ..libs import log
+from ..libs.video import FP32, PRECISIONS
 from ..libs.video_info import COMFY_TYPES, VideoInfo
 from .common import VIDEO, prompt_server
 from .unused_outputs import LINK_INPUTS, drop_unlinked_heavy
 
 # GET, with Load Video's widget values as the query (PLAN_PARAMS): web/js/load_video.js
 PLAN_ROUTE = "/bcvideonodes/load_video/plan"
-PLAN_PARAMS = ("video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count")
+PLAN_PARAMS = ("video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count", "precision")
 
 
 def _input_files(kind):
@@ -48,6 +49,10 @@ class BCVLoadVideo:
                 "start_frame": ("INT", {"default": 1, "min": 1, "max": 2 ** 31 - 1, "step": 1, "tooltip": "The first frame loaded, counted from 1, after force_fps."}),
                 "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1 (Wan, SCAIL; None keeps it)."}),
             },
+            "optional": {
+                # the last widget, so a workflow saved before it keeps its widget values and loads fp32
+                "precision": (list(PRECISIONS), {"default": FP32, "tooltip": "The dtype the frames are stored in. fp32: float32, as every IMAGE. fp16: float16, half the RAM of the kept clip, for low-RAM machines; every 8-bit level of the video is kept exactly, and the BCVideoNodes nodes read it back as those float32 values a frame at a time (the samplers a chunk's window at a time), so their results are fp32's. Nodes of other packs, core's included, get the float16 clip."}),
+            },
             "hidden": dict(LINK_INPUTS),
         }
 
@@ -58,17 +63,18 @@ class BCVLoadVideo:
     HEAVY_OUTPUTS = ("images",)
     FUNCTION = "load"
     CATEGORY = VIDEO
-    DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory (resolution source keeps the video's own size, no resize). Colours follow the file's own colour tags. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
+    DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory (resolution source keeps the video's own size, no resize). Colours follow the file's own colour tags. The frames are float32, or float16 at precision fp16. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
 
-    def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, prompt_graph=None,
-             unique_id=None):
+    def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP32,
+             prompt_graph=None, unique_id=None):
         import folder_paths
 
         from ..pipelines import video_input
 
         path = folder_paths.get_annotated_filepath(video)
         return drop_unlinked_heavy(type(self), video_input.load_video(path, model, resolution, orientation, force_fps,
-                                                                      start_frame, frame_count), prompt_graph, unique_id)
+                                                                      start_frame, frame_count, precision),
+                                   prompt_graph, unique_id)
 
     @classmethod
     def IS_CHANGED(cls, video, **kwargs):
@@ -129,7 +135,7 @@ async def plan_route(request):
     # the probe reads the whole container: off the event loop
     answer = await asyncio.get_running_loop().run_in_executor(None, partial(
         video_input.preview, path, query["model"], query["resolution"], query["orientation"], query["force_fps"],
-        start_frame, query["frame_count"], probe=_probe))
+        start_frame, query["frame_count"], query["precision"], probe=_probe))
     return web.json_response(answer)
 
 

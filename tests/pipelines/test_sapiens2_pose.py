@@ -36,6 +36,36 @@ def test_the_face_rows_are_vitposes_and_every_other_row_is_sapiens2s():
     assert (keypoints[:, NOT_FACE, 2] == np.float32(0.7)).all()
 
 
+def test_a_half_clip_gives_both_models_the_float32_runs_crops(monkeypatch):
+    # Load Video at precision fp16: ViTPose-H's frames are read one at a time, Sapiens2's a batch
+    # at a time, each as the float32 clip's levels
+    from video_input_fakes import levels, record_reads, video
+
+    class Recording(FakeSapiens2):
+        def __init__(self):
+            super().__init__()
+            self.crops = []
+
+        def __call__(self, crops, centers, scales):
+            self.crops.append(crops.copy())
+            return super().__call__(crops, centers, scales)
+
+    def run(images_np):
+        model, vitpose = Recording(), RecordingPose()
+        return sapiens2.hybrid_keypoints(model, vitpose, images_np, boxes), model.crops, vitpose.calls
+
+    exact = levels(B, H, W, 3)
+    boxes = [np.array([30.0 + i, 20.0, 90.0 + i, 140.0, 1.0]) for i in range(B)]
+    keypoints, crops, calls = run(exact.numpy())
+    reads = record_reads(monkeypatch)
+    half_keypoints, half_crops, half_calls = run(video.as_numpy(exact.half()))
+    size = sapiens2.BATCH_SIZE
+    assert reads == [(H, W, 3)] * B + [(min(size, B - start), H, W, 3) for start in range(0, B, size)]
+    assert np.array_equal(half_keypoints, keypoints)
+    assert all(np.array_equal(a, b) for a, b in zip(half_crops, crops))
+    assert all(np.array_equal(a[0], b[0]) for a, b in zip(half_calls, calls))
+
+
 def test_sapiens2_runs_in_batches_and_reports_progress():
     model, done = FakeSapiens2(), []
     boxes = [np.array([30.0, 20.0, 90.0, 140.0, 1.0])] * B

@@ -36,9 +36,9 @@ sampler = Names("sampler", {
     **refs("models.common.animate", "AnimateAdapter"),
     "registry": Ref("models.common.registry"),
     **refs("models.wan_animate.adapter", "WanAnimateAdapter"),
-    **refs("models.scail2.adapter", "SCAIL2Adapter"),
+    **refs("models.scail2.adapter", "SCAIL2Adapter", "mask_convention"),
     **refs("libs.color", "srgb_to_lab"),
-    **seams("pipelines.long_video", "lab_transfer"),
+    **seams("pipelines.long_video", "lab_transfer", "requantized"),
 }, alias="walong")
 
 

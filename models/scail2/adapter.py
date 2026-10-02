@@ -15,6 +15,7 @@ import logging
 import torch
 
 from ...libs.chunking import FULL, overlap_for_motion_frames, snap_down
+from ...libs.video import requantized
 from ..common.animate import AnimateAdapter, check_pose_percents, mask_window
 from ..common.core_nodes import clip_vision_encode
 
@@ -49,8 +50,8 @@ def mask_convention(mask, background=BACKGROUND):
     """The mode a colored mask was rendered for, read from the border of its first frame: the
     mode whose `background` (mode -> "white" / "black": BACKGROUND for the reference mask,
     DRIVING_BACKGROUND for the driving mask) most border pixels have, None when neither colour
-    has most of them."""
-    frame = mask[0, ..., :3].float()
+    has most of them. A half-precision mask's frame is requantized first (libs/video.requantized)."""
+    frame = requantized(mask[0, ..., :3]).float()
     border = [frame[0], frame[-1]]
     if frame.shape[0] > 2:
         border += [frame[1:-1, 0], frame[1:-1, -1]]

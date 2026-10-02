@@ -1,7 +1,8 @@
 """pipelines/video_input.py: Load Video end to end on small lossless clips (the frames it keeps,
 4n+1 and model None's every frame, the orientation and size, resolution source, the audio range,
-video_info, every error), the load again when
-the decoder disagrees with the container's count, Load Reference Image and Conform Video."""
+video_info, every error, precision fp16: the float32 frames kept exactly), the load again when
+the decoder disagrees with the container's count, Load Reference Image and Conform Video (a
+float16 clip resized from its float32 levels, a frame at a time)."""
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -9,11 +10,13 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("av")
 pytest.importorskip("comfy.utils")
 
-from video_input_fakes import grey_clip, grey_index, ramp_audio, video, write_clip, yuv_frame  # noqa: E402
+from video_input_fakes import (grey_clip, grey_index, levels, ramp_audio, record_reads, video, write_clip,  # noqa: E402
+                               yuv_frame)
 
 
-def load(path, model="Wan", resolution="480p", orientation="auto", force_fps="", start_frame=1, frame_count=""):
-    return video.load_video(str(path), model, resolution, orientation, force_fps, start_frame, frame_count)
+def load(path, model="Wan", resolution="480p", orientation="auto", force_fps="", start_frame=1, frame_count="",
+         precision="fp32"):
+    return video.load_video(str(path), model, resolution, orientation, force_fps, start_frame, frame_count, precision)
 
 
 def frame_indices(images):
@@ -69,6 +72,7 @@ def test_errors_say_what_to_change(tmp_path):
         ({"resolution": "704p"}, "resolution '704p' does not belong to model Wan; pick one of 480p, 720p, source."),
         ({"model": "None", "resolution": "512p"}, "resolution '512p' does not belong to model None; pick one of 480p, "
                                                   "720p, 1080p, source."),
+        ({"precision": "fp8"}, "precision must be one of fp32, fp16; got 'fp8'."),
     ]
     for widgets, message in cases:
         with pytest.raises(ValueError) as error:
@@ -242,6 +246,35 @@ def test_frames_are_the_fit_of_the_decoded_frame(tmp_path):
     assert torch.equal(images[0], expected)
 
 
+# --- precision ------------------------------------------------------------------------------------
+
+def ramp_clip(path, frames=5, width=70, height=34):
+    """Frames with luma ramps across and down and chroma ramps, so they hold many 8-bit levels."""
+    def frame(i):
+        luma = (16 + 2 * np.arange(width)[None, :] + np.arange(height)[:, None] + i).astype(np.uint8)
+        u = (64 + 3 * np.arange(width // 2)[None, :] + np.zeros((height // 2, 1), int)).astype(np.uint8)
+        v = (200 - 2 * np.arange(height // 2)[:, None] + np.zeros((1, width // 2), int) - i).astype(np.uint8)
+        return yuv_frame(luma, u, v)
+    return write_clip(path, [frame(i) for i in range(frames)])
+
+
+@pytest.mark.parametrize("model, resolution", [("Wan", "480p"), ("None", "source")])
+def test_fp16_stores_the_fp32_frames_exactly(tmp_path, model, resolution):
+    path = ramp_clip(tmp_path / "clip.mkv")
+    exact, audio, info = load(path, model=model, resolution=resolution)
+    half, half_audio, half_info = load(path, model=model, resolution=resolution, precision="fp16")
+    assert exact.dtype == torch.float32 and half.dtype == torch.float16 and half.is_contiguous()
+    assert len(torch.unique(exact)) > 100  # many levels, so the round trip is put to the test
+    assert torch.equal(half, exact.half())  # each level's nearest float16
+    assert torch.equal(video.requantized(half), exact)
+    assert half_info == info and half_audio is None and audio is None
+
+
+def test_the_default_precision_is_fp32(tmp_path):
+    images, _, _ = video.load_video(grey_clip(tmp_path / "clip.mkv", 5), "Wan", "480p", "auto", "", 1, "")
+    assert images.dtype == torch.float32
+
+
 # --- audio and video_info -------------------------------------------------------------------------
 
 def test_audio_is_the_loaded_range(tmp_path):
@@ -353,6 +386,16 @@ def test_conform_crop_fits_frame_by_frame():
         expected = torch.empty((1280, 720, 3))
         video.fit(images[index], expected, "crop", "lanczos")
         assert torch.equal(out[index], expected)
+
+
+@pytest.mark.parametrize("fit, method", [("crop", "lanczos"), ("crop", "bicubic"), ("pad", "area")])
+def test_conform_resizes_a_half_clip_from_its_float32_levels_a_frame_at_a_time(monkeypatch, fit, method):
+    exact = levels(3, 600, 340, 3)
+    expected = video.conform_video(exact, fit, method)
+    reads = record_reads(monkeypatch)
+    out = video.conform_video(exact.half(), fit, method)
+    assert out.dtype == torch.float16 and torch.equal(out, expected.half())
+    assert reads == [(600, 340, 3)] * 3  # one frame per read
 
 
 def test_conform_pad_puts_black_bars_around_the_whole_frame():

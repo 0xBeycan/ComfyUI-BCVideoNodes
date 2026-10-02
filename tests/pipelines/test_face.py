@@ -209,3 +209,21 @@ def test_supplied_face_boxes_ignore_the_smoothing_and_say_so(caplog):
     lines = [r.getMessage() for r in caplog.records if "not used" in r.getMessage()]
     assert lines == ["[BCVideoNodes] face_bboxes connected: cut as given; pose_data's face keypoints and face_padding 10"
                      " and face_box_smoothing size not used"]
+
+
+def test_a_half_clip_is_cut_from_its_float32_levels_one_box_at_a_time(monkeypatch):
+    # Load Video at precision fp16: the crops are the float32 clip's (float32, as they are made
+    # from the float32 frames), and only each frame's face box is read, never a whole frame
+    from video_input_fakes import levels, record_reads
+
+    data = pose_data()
+    data["pose_metas_original"][2]["keypoints_face"][:, 0] += 10.0  # frame 2: the fallback centre crop
+    exact = levels(B, H, W, 3)
+    expected, boxes = face.crop_faces(exact, data)
+    reads = record_reads(monkeypatch)
+    crops, half_boxes = face.crop_faces(exact.half(), data)
+    assert crops.dtype == torch.float32 and torch.equal(crops, expected) and half_boxes == boxes
+    size = int(min(H, W) * 0.3)
+    regions = [tuple(exact[i, y1:y2, x1:x2].shape) for i, (x1, y1, x2, y2) in enumerate(boxes)]
+    assert regions[2][0] * regions[2][1] == 0  # frame 2's empty box, then its fallback
+    assert reads == regions[:3] + [(size, size, 3)] + regions[3:]

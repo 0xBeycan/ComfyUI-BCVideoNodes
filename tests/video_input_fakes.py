@@ -16,6 +16,11 @@ video = Names("video", {
            "load_reference_image", "conform_video", "preview", "LoadPreview"),
     **refs("nodes.video_input", "BCVLoadVideo", "BCVGetVideoInfo", "BCVLoadReferenceImage", "BCVConformVideo",
            "PLAN_ROUTE", "PLAN_PARAMS", "register_plan_route", "plan_route", "_probe_file"),
+    **refs("libs.video", "FP32", "FP16", "PRECISIONS", "precision_dtype", "is_half", "HalfFrames", "as_numpy"),
+    # read from libs/video.py; patched on every module that reads a half clip through it
+    "requantized": Seam(*(Ref(module, "requantized") for module in (
+        "libs.video", "libs.mask", "libs.video_compare", "pipelines.video_input", "pipelines.sam3_1_multiplex.pose",
+        "models.sam3_1_multiplex.adapter", "models.scail2.adapter"))),
 })
 
 # a grey clip's frame i has luma 16 + LUMA_STEP * i: distinct after the RGB conversion
@@ -96,3 +101,24 @@ def ramp_audio(seconds, sample_rate=48000):
 
     ramp = (np.arange(round(seconds * sample_rate)) % 30000).astype(np.int16)
     return np.stack([ramp, -ramp]), sample_rate
+
+
+def levels(*shape, seed=0):
+    """A float32 tensor of random 8-bit levels k / 255, the values Load Video loads (uint8 / 255)."""
+    import torch
+
+    pixels = torch.randint(0, 256, shape, dtype=torch.uint8, generator=torch.Generator().manual_seed(seed))
+    return torch.empty(shape, dtype=torch.float32).copy_(pixels).div_(255)
+
+
+def record_reads(monkeypatch):
+    """Patches video.requantized on every module that reads a half clip through it: each call's
+    tensor shape is appended to the returned list, then it requantizes as before."""
+    real, shapes = video.requantized, []
+
+    def recording(frames):
+        shapes.append(tuple(frames.shape))
+        return real(frames)
+
+    monkeypatch.setattr(video, "requantized", recording)
+    return shapes

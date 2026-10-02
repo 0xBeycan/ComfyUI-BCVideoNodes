@@ -2,6 +2,7 @@
 clips, and the frames A | B, each built into one reused buffer that the video encoder reads before
 the next is built. The browser then decodes a single stream, so the two halves cannot drift apart.
 """
+from .video import requantized
 
 
 def side_by_side_geometry(sides):
@@ -17,9 +18,10 @@ def side_by_side_geometry(sides):
 def fit_into(out, frame):
     """Writes `frame` [H, W, C] into `out` [h, w, 3]: a clip at least as large only loses the odd
     row / column an even size cuts off; a smaller clip is scaled to fit (bicubic, antialiased) and
-    letterboxed on black."""
+    letterboxed on black. A half-precision frame is requantized to float32 first (requantized)."""
     import torch.nn.functional as F
 
+    frame = requantized(frame)
     h, w = out.shape[0], out.shape[1]
     fh, fw = frame.shape[0], frame.shape[1]
     if fh >= h and fw >= w:

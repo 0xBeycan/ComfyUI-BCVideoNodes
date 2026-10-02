@@ -23,7 +23,8 @@ the full-resolution clip never sits in memory.
   video to upload` button, or a video file dropped on the node, uploads one
   there and selects it)
 - widgets: `model` `Wan` (or `SCAIL`, `None`), `resolution` `720p`, `orientation` `auto`,
-  `force_fps` (empty), `start_frame` 1, `frame_count` (empty)
+  `force_fps` (empty), `start_frame` 1, `frame_count` (empty), `precision`
+  `fp32` (or `fp16`)
 - out: `images` (IMAGE), `audio` (AUDIO of the loaded range; none when the
   file has no audio), `video_info` (BCV_VIDEO_INFO, for Get Video Info and
   Load Reference Image)
@@ -67,6 +68,18 @@ Which frames are loaded:
 - The count is then cut down to the model's 4n+1 (a 100-frame range loads 97;
   with `None`, 100).
 - A `force_fps` or a `frame_count` that is not a number is an error.
+
+`precision`: `fp32` stores the frames as float32, as every IMAGE. `fp16`
+stores them as float16, half the RAM of the loaded clip (901 frames at 720 x
+1280: 9.96 GB, or 4.98 GB), for machines short of RAM. float16 keeps every
+8-bit level of the video exactly (its step near 1.0 is an eighth of a level).
+Core resizes and scales a clip in the dtype it gets, and OpenCV refuses
+float16, so the pack's nodes read an `fp16` clip back as the float32 values
+an `fp32` load holds, a frame at a time (the samplers a chunk's window at a
+time, before core sees it), never the whole clip at once, and compute what
+they compute on `fp32`. Save Video writes the frames as they come: 8-bit
+output is the same, 10-bit output of an `fp16` clip can be one 10-bit step
+off. Nodes of other packs, core's included, get the float16 clip as it is.
 
 Colour: YUV is converted to RGB with the stream's own colour matrix and range,
 as the file is tagged; an untagged stream is read as BT.601 limited range,

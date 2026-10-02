@@ -181,6 +181,19 @@ def test_the_defaults_are_the_wan_animate_workflow_s():
     assert torch.equal(final.final_mask(masks), grown_and_blockified(masks, 10, 32))
 
 
+def test_painted_black_paints_a_half_clip_from_its_float32_levels_a_frame_at_a_time(monkeypatch):
+    # Load Video at precision fp16: the float32 clip's bg_images, each frame read as float32 on its own
+    from video_input_fakes import levels, record_reads
+
+    exact = levels(4, 30, 20, 3)
+    mask = (torch.rand(4, 30, 20, generator=torch.Generator().manual_seed(1)) > 0.5).float()
+    expected = final.painted_black(exact, mask)
+    reads = record_reads(monkeypatch)
+    out = final.painted_black(exact.half(), mask)
+    assert out.dtype == torch.float32 and torch.equal(out, expected)
+    assert reads == [(30, 20, 3)] * 4
+
+
 def test_painted_black_is_draw_mask_on_image_in_black():
     images = torch.rand(4, 30, 20, 3)
     mask = (torch.rand(4, 30, 20) > 0.5).float()

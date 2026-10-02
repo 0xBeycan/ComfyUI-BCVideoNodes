@@ -1,6 +1,6 @@
 """The flows of the video input nodes: Load Video (a file decoded frame by frame, cropped and
 resized to the model's generation size, or kept at the source size, straight into one preallocated
-IMAGE batch, with its audio and its video_info), Load Reference Image (an image fitted to the video's loaded size) and Conform
+IMAGE batch in the dtype of its precision, with its audio and its video_info), Load Reference Image (an image fitted to the video's loaded size) and Conform
 Video (a clip fitted to the nearest platform size).
 
 The full-resolution clip never exists: one source frame is decoded at a time, and the batch is
@@ -11,6 +11,7 @@ import torch
 
 from ..libs import log, resize, video_decode
 from ..libs import video_sizes as sizes
+from ..libs.video import FP32, precision_dtype, requantized
 from ..libs.video_info import VideoInfo
 
 # a force_fps this close to the video's rate (as a share of it) is that rate
@@ -83,19 +84,20 @@ def kept_rate(rate, fps):
     return rate
 
 
-def plan(path, model, resolution, orientation, force_fps, frame_count, probe=None):
+def plan(path, model, resolution, orientation, force_fps, frame_count, precision=FP32, probe=None):
     """Load Video's widgets checked against the video at `path`, before a frame is loaded:
     {"source": the probe (video_decode.probe's dict), "force_fps": the rate typed or None, "rate":
     the rate frames are kept at (kept_rate's), "count": frame_count or None, "orientation": portrait
     or landscape, "width", "height": the loaded size, "fit": how a frame gets there (resize.CROP, or
-    resize.CUT for source)}. Raises ValueError, saying what to change, in
-    the order load_video meets them: the widgets, then the file. `probe` reads the file
-    (video_decode.probe when None)."""
+    resize.CUT for source), "dtype": the batch's (libs/video.precision_dtype)}. Raises ValueError,
+    saying what to change, in the order load_video meets them: the widgets, then the file. `probe`
+    reads the file (video_decode.probe when None)."""
     size = sizes.model_size(model, resolution)
     typed = parse_force_fps(force_fps)
     count = parse_frame_count(frame_count)
     if orientation not in sizes.ORIENTATIONS:
         raise ValueError(f"orientation {orientation!r} is not one of {', '.join(sizes.ORIENTATIONS)}.")
+    dtype = precision_dtype(precision)
     source = (probe or video_decode.probe)(path)
     rate = kept_rate(typed, source["fps"])
     own = sizes.orientation_of(source["width"], source["height"])
@@ -115,7 +117,7 @@ def plan(path, model, resolution, orientation, force_fps, frame_count, probe=Non
                              f"grid; pick model None or one of {model}'s sized resolutions.")
         width, height = width // grid * grid, height // grid * grid
     return {"source": source, "force_fps": typed, "rate": rate, "count": count, "orientation": turned,
-            "width": width, "height": height, "fit": resize.CROP if size is not None else resize.CUT}
+            "width": width, "height": height, "fit": resize.CROP if size is not None else resize.CUT, "dtype": dtype}
 
 
 def frame_indices(source, rate, start_frame, count, model):
@@ -140,26 +142,31 @@ def video_info(model, resolution, planned, frames):
                      loaded_width=planned["width"], loaded_height=planned["height"])
 
 
-def load_video(path, model, resolution, orientation, force_fps, start_frame, frame_count):
-    """(IMAGE [N, H, W, 3] float32, AUDIO or None, VideoInfo) of the video file at `path`, as Load
-    Video's widgets say. N is fixed before the batch is allocated: the container's packets give the
-    frame count; should the decoder disagree, the load runs once more with the decoder's count."""
-    planned = plan(path, model, resolution, orientation, force_fps, frame_count)
+def load_video(path, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP32):
+    """(IMAGE [N, H, W, 3], AUDIO or None, VideoInfo) of the video file at `path`, as Load Video's
+    widgets say; the IMAGE float32, or float16 at precision fp16 (every 8-bit level k / 255 is
+    kept: libs/video.requantized gives back the float32 values exactly). N is fixed before the
+    batch is allocated: the container's packets give the frame count; should the decoder disagree,
+    the load runs once more with the decoder's count."""
+    planned = plan(path, model, resolution, orientation, force_fps, frame_count, precision)
     source, rate, width, height = planned["source"], planned["rate"], planned["width"], planned["height"]
     if planned["force_fps"] is not None and rate is None:
         log.info(f"force_fps {planned['force_fps']:g} is the video's frame rate ({source['fps']:.6g}): every frame kept")
     result = {}
-    with log.step(f"loading {model} {resolution} {planned['orientation']} ({width}x{height}) from a "
+    stored = "" if precision == FP32 else f" as {precision}"
+    with log.step(f"loading {model} {resolution} {planned['orientation']} ({width}x{height}){stored} from a "
                   f"{source['width']}x{source['height']} video", result):
         try:
-            loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model)
+            loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model,
+                             planned["dtype"])
         except video_decode.FrameCountChanged as changed:
             log.warning(f"the container promised {source['frames']} frames, the decoder gave {changed.frames}; "
                         f"loading again with {changed.frames}")
             source["frames"] = changed.frames
             loaded = None
         if loaded is None:  # outside the except block: its traceback would keep the first batch alive
-            loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model)
+            loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model,
+                             planned["dtype"])
         images, indices = loaded
         info = video_info(model, resolution, planned, len(indices))
         frame_time = 1 / info["loaded_fps"]
@@ -170,13 +177,13 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
     return images, audio, info
 
 
-def _decode(path, source, width, height, how, rate, start_frame, count, model):
+def _decode(path, source, width, height, how, rate, start_frame, count, model, dtype):
     """(the batch, its source indices): the kept frames decoded one at a time and fitted (resize.fit
-    `how`) into a batch allocated at its final size."""
+    `how`) into a batch of `dtype` allocated at its final size."""
     from comfy.utils import ProgressBar
 
     indices = frame_indices(source, rate, start_frame, count, model)
-    images = torch.empty((len(indices), height, width, 3), dtype=torch.float32)
+    images = torch.empty((len(indices), height, width, 3), dtype=dtype)
     bar = ProgressBar(len(indices))
     for pixels, positions in video_decode.kept_frames(path, indices, source["frames"], to_end=count is None):
         resize.fit(pixels, images[positions[0]], how)
@@ -198,7 +205,7 @@ class LoadPreview(TypedDict):
     error: Optional[str]
 
 
-def preview(path, model, resolution, orientation, force_fps, start_frame, frame_count, probe=None):
+def preview(path, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP32, probe=None):
     """The LoadPreview of Load Video's widget values on the video at `path`, from the loader's own
     checks and frame selection. Its counts are the container's: should the decoder disagree when
     the video loads, the loader goes by the decoder's (load_video). `probe` as plan's."""
@@ -209,7 +216,7 @@ def preview(path, model, resolution, orientation, force_fps, start_frame, frame_
     probe = lru_cache(maxsize=1)(probe or video_decode.probe)
     answer = LoadPreview(source=None, info=None, available=None, error=None)
     try:
-        planned = plan(path, model, resolution, orientation, force_fps, frame_count, probe)
+        planned = plan(path, model, resolution, orientation, force_fps, frame_count, precision, probe)
         indices = frame_indices(planned["source"], planned["rate"], start_frame, planned["count"], model)
         answer["info"] = video_info(model, resolution, planned, len(indices))
     except (ValueError, FFmpegError) as error:
@@ -250,8 +257,9 @@ def load_reference_image(path, width, height):
 
 def conform_video(images, how, method):
     """`images` fitted to the CONFORM_SIZES entry nearest its short edge, oriented as its frames
-    (video_sizes.conform_size), frame by frame into one preallocated batch; the input itself when
-    it already has that size."""
+    (video_sizes.conform_size), frame by frame into one preallocated batch of its dtype (a
+    half-precision frame is resized requantized to float32: libs/video.requantized); the input
+    itself when it already has that size."""
     frames, height, width, channels = images.shape
     target_width, target_height = sizes.conform_size(width, height)
     if (target_width, target_height) == (width, height):
@@ -261,5 +269,5 @@ def conform_video(images, how, method):
     with log.step(f"conforming {frames} frames of {width}x{height} to {target_width}x{target_height} "
                   f"({how}, {method})"):
         for index in range(frames):
-            resize.fit(images[index], out[index], how, method)
+            resize.fit(requantized(images[index]), out[index], how, method)
     return out

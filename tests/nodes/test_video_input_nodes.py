@@ -1,5 +1,6 @@
 """The video input nodes' ComfyUI surface: Load Video's widgets as the contract fixes them (order,
-defaults, the resolution sizes for the frontend, no core video upload), its validation of a
+defaults, the resolution sizes for the frontend, no core video upload, precision the last widget,
+fp32 by default), its validation of a
 resolution of another model, Get Video Info's outputs in video_info's order, Load Reference
 Image's preview payload, Conform Video. ComfyUI's input and temp folders are a test's tmp dirs."""
 import pytest
@@ -41,6 +42,11 @@ def test_load_video_widgets(folders):
     assert required["start_frame"][0] == "INT" and required["start_frame"][1]["default"] == 1
     assert required["start_frame"][1]["min"] == 1
     assert required["frame_count"][0] == "STRING" and required["frame_count"][1]["default"] == ""
+    # the last widget, optional: a workflow saved before it keeps its widget values and loads fp32
+    optional = video.BCVLoadVideo.INPUT_TYPES()["optional"]
+    assert list(optional) == ["precision"]
+    assert optional["precision"][0] == ["fp32", "fp16"] and optional["precision"][1]["default"] == "fp32"
+    assert set(optional["precision"][1]) == {"default", "tooltip"}
     assert video.BCVLoadVideo.RETURN_TYPES == ("IMAGE", "AUDIO", "BCV_VIDEO_INFO")
 
 
@@ -64,6 +70,9 @@ def test_load_video_loads_from_the_input_folder(folders):
     assert images.shape == (9, 512, 896, 3) and audio is None and info["resolution"] == "512p"
     images, _, info = video.BCVLoadVideo().load("clip.mkv", "None", "source", "auto", "", 1, "8")
     assert images.shape == (8, 32, 64, 3) and (info["model"], info["resolution"]) == ("None", "source")
+    assert images.dtype == torch.float32
+    half, _, half_info = video.BCVLoadVideo().load("clip.mkv", "None", "source", "auto", "", 1, "8", "fp16")
+    assert half.dtype == torch.float16 and torch.equal(half, images.half()) and half_info == info
 
 
 def test_get_video_info_outputs_every_field_in_order():

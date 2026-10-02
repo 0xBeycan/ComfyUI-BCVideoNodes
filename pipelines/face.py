@@ -177,14 +177,14 @@ def crop_faces(images, pose_data: PoseData, face_padding=0, face_bboxes=None, sm
     result = {"fallback crops": 0}
     with log.step(f"cropping the faces on {B} frames", result):
         for i, (x1, y1, x2, y2) in enumerate(boxes):
-            face = images_np[i][y1:y2, x1:x2]
+            face = images_np[i, y1:y2, x1:x2]  # a half clip: only the box is read (as float32)
             if face.size == 0:
                 # no usable face box on this frame: fall back to the upper centre of the frame
                 log.warning(f"empty face crop on frame {i}, using a centre crop instead")
                 result["fallback crops"] += 1
                 size = int(min(H, W) * 0.3)
                 fx, fy = (W - size) // 2, int(H * 0.1)
-                face = images_np[i][fy:fy + size, fx:fx + size]
+                face = images_np[i, fy:fy + size, fx:fx + size]
                 if face.size == 0:
                     face = np.zeros((size, size, C), dtype=images_np.dtype)
             face_images[i] = cv2.resize(face, (FACE_SIZE, FACE_SIZE))

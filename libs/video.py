@@ -42,9 +42,73 @@ TAIL_PADDING = {
 }
 
 
+# Load Video's precision widget: the dtype the loaded clip is stored in
+FP32, FP16 = "fp32", "fp16"
+PRECISIONS = {FP32: "float32", FP16: "float16"}
+
+
+def precision_dtype(precision):
+    """The torch dtype of a precision widget value (PRECISIONS). Raises ValueError for another."""
+    import torch
+
+    if precision not in PRECISIONS:
+        raise ValueError(f"precision must be one of {', '.join(PRECISIONS)}; got {precision!r}.")
+    return getattr(torch, PRECISIONS[precision])
+
+
+def is_half(frames):
+    """Whether the tensor `frames` is float16 or bfloat16."""
+    import torch
+
+    return frames.dtype in (torch.float16, torch.bfloat16)
+
+
+def requantized(frames):
+    """`frames` (a frame, or a chunk's window, of an IMAGE or MASK clip) ready for float32
+    arithmetic: a half-precision tensor (is_half) as a new float32 one, every value rounded to the
+    nearest 8-bit level k / 255; any other tensor itself. float16 keeps every level within 2^-12 of
+    it (its step near 1.0 is 2^-11), so a float16 clip of 8-bit frames (Load Video at precision
+    fp16) comes back as exactly the float32 values a float32 load holds. Core resizes and scales a
+    clip in the dtype it gets and cv2 refuses float16, so the pack reads a half clip through this
+    a frame or a window at a time, never as a whole: the whole clip widened at once would give the
+    saving back and hold both copies."""
+    if not is_half(frames):
+        return frames
+    return frames.float().mul_(255).round_().div_(255)
+
+
+class HalfFrames:
+    """A half-precision IMAGE batch read as float32 numpy frames: [i] is frame i, [a:b] those frames
+    and [i, rows, columns] that region of frame i, each read requantized (requantized), so the batch
+    is never widened as a whole and a region costs only its own pixels. `shape` is the batch's,
+    `dtype` the frames' (float32)."""
+
+    def __init__(self, images):
+        self.images = images
+        self.shape = tuple(images.shape)
+
+    @property
+    def dtype(self):
+        import numpy as np
+
+        return np.dtype(np.float32)
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __getitem__(self, index):
+        return requantized(self.images[index]).numpy()
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+
 def as_numpy(images):
-    """An IMAGE batch as a numpy array: a tensor's own memory, anything else through np.asarray."""
+    """An IMAGE batch as numpy frames: a tensor's own memory, a half-precision tensor as HalfFrames
+    (float32 frames, read one at a time), anything else through np.asarray."""
     import numpy as np
     import torch
 
-    return images.numpy() if isinstance(images, torch.Tensor) else np.asarray(images)
+    if not isinstance(images, torch.Tensor):
+        return np.asarray(images)
+    return HalfFrames(images) if is_half(images) else images.numpy()

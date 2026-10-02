@@ -35,6 +35,17 @@ def test_a_smaller_clip_is_scaled_and_letterboxed():
     assert torch.allclose(out, torch.full((16, 32, 3), 0.25), atol=1e-6)
 
 
+@pytest.mark.parametrize("height, width", [(33, 65), (8, 8)])  # only cut, then scaled up
+def test_a_half_clip_is_fitted_from_its_float32_levels(height, width):
+    from video_input_fakes import levels
+
+    frame = levels(height, width, 3)
+    expected, out = torch.empty(32, 64, 3), torch.empty(32, 64, 3)
+    video.fit_into(expected, frame)
+    video.fit_into(out, frame.half())
+    assert torch.equal(out, expected)
+
+
 def test_frames_are_a_then_b_in_one_buffer():
     a, b = solid(3, 8, 16, 0.0), solid(3, 16, 32, 1.0)
     sides = [("A", a), ("B", b)]

@@ -1085,3 +1085,48 @@ def test_the_defaults_run_easy_sam3_s_policy(rig):
         assert log[i + 1][0] == "encode cond"
     assert tracker.reads[17] == (15, 14, 13, 12, 11) and tracker.reads[18] == (17, 15, 14, 13, 12, 11)
     assert tracked(log, 33)[3] == (2, 16, 32)
+
+
+# --- a half-precision clip ------------------------------------------------------------------------
+
+def test_a_half_clip_reaches_the_model_frame_by_frame_as_its_float32_levels(monkeypatch):
+    """Load Video at precision fp16: every frame core resizes for the tracker, and the box_keypoint
+    decoder's frame, is the float32 clip's, each read on its own, never the whole clip."""
+    from video_input_fakes import levels, record_reads
+
+    class IndexTracker(FakeTracker):
+        """The scripted answers keyed by the frame index, whatever the frame's pixels."""
+        def _compute_backbone_frame(self, backbone_fn, frame, frame_idx=None):
+            return super()._compute_backbone_frame(backbone_fn, frame_idx, frame_idx)
+
+    def run(images):
+        tracker, prepared, decoded = IndexTracker(ring=1), [], []
+
+        def decode(model, frame, point_inputs, box_inputs, refine):
+            decoded.append(frame.clone())
+            y, x = int(box_inputs[0, 0, 1] * H / sam3.SAM3_SIZE) // 2, int(box_inputs[0, 0, 0] * W / sam3.SAM3_SIZE) // 2
+            return box(y, x, ring=1)[None, None]
+
+        def prep(frames, idx, device, dtype, size):
+            prepared.append(frames[idx].clone())
+            return idx.start
+
+        monkeypatch.setattr(sam3.mm, "load_model_gpu", lambda model: None)
+        monkeypatch.setattr(sam3.mm, "get_torch_device", lambda: torch.device("cpu"))
+        monkeypatch.setattr(sam3.mm, "intermediate_device", lambda: torch.device("cpu"))
+        monkeypatch.setattr(sam3, "_multiplex_parts", lambda model: (FakeSam3(tracker), None, tracker, None))
+        monkeypatch.setattr(sam3, "decode", decode)
+        monkeypatch.setattr(sam3, "_prep_frame", prep)
+        monkeypatch.setattr(sam3, "MultiplexState", lambda *a: object())
+        metas, boxes = pose_metas_and_boxes()
+        masks = sam3.segment_by_pose(FakeModel(), images, boxes, metas, sam3.SAM3Config(), 0.3)
+        return masks, prepared, decoded, tracker.log
+
+    exact = levels(N, H, W, 3)
+    masks, prepared, decoded, log = run(exact)
+    reads = record_reads(monkeypatch)
+    half = run(exact.half())
+    assert prepared and decoded and set(reads) == {(1, 3, H, W)} and len(reads) == len(prepared) + len(decoded)
+    assert all(a.dtype == torch.float32 and torch.equal(a, b) for a, b in zip(half[1], prepared))
+    assert all(a.dtype == torch.float32 and torch.equal(a, b) for a, b in zip(half[2], decoded))
+    assert torch.equal(half[0], masks) and half[3] == log

@@ -101,11 +101,14 @@ def _resize(frame, out, method):
 
 def _store(frame, out):
     """`frame` written into `out`: uint8 pixels as / 255 (the float32 values comfy.utils.lanczos
-    gives), a float frame as it is."""
+    gives; computed in float32 and then stored for an `out` of another dtype, float16 arithmetic on
+    the CPU being slow), a float frame as it is."""
     if isinstance(frame, torch.Tensor):
         out.copy_(frame)
-    else:
+    elif out.dtype == torch.float32:
         out.copy_(torch.from_numpy(np.ascontiguousarray(frame))).div_(255)
+    else:
+        out.copy_(torch.from_numpy(np.ascontiguousarray(frame)).float().div_(255))
 
 
 def _pixels(frame):

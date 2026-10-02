@@ -26,7 +26,7 @@ import { PlayerWidget, drawMessage, drawTag, fitRect, guard, installPlayer } fro
 const NODE = "BCVLoadVideo";
 const PLAN_ROUTE = "/bcvideonodes/load_video/plan";
 // the widgets the route is asked with: Load Video's inputs, in order
-const PLAN_PARAMS = ["video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count"];
+const PLAN_PARAMS = ["video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count", "precision"];
 // ms without a widget change before the route is asked
 const ASK_DELAY = 120;
 

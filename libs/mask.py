@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .video import requantized
+
 
 def to_frame_size(low_res, H, W, threshold=0.0):
     """One frame's [1, 1, h, w] mask logits as an [H, W] float mask of the frame, cut at
@@ -188,9 +190,10 @@ def final_mask(mask, grow=GROW, block_size=BLOCK_SIZE):
 def painted_black(images, mask):
     """The IMAGE `images` [N, H, W, C] with every pixel `mask` [N, H, W] holds (above 0) black and the
     rest unchanged, frame by frame into one output on the CPU: ComfyUI-BCNodes' Draw Mask On Image
-    with the colour "0, 0, 0" on a 0 / 1 mask."""
+    with the colour "0, 0, 0" on a 0 / 1 mask. A half-precision frame is requantized to the float32
+    values a float32 clip holds (libs/video.requantized)."""
     out = torch.empty(images.shape, dtype=torch.promote_types(images.dtype, torch.float32))
     black = torch.zeros((), dtype=out.dtype)
     for f in range(len(images)):
-        torch.where(mask[f].unsqueeze(-1).cpu() > 0, black, images[f].cpu(), out=out[f])
+        torch.where(mask[f].unsqueeze(-1).cpu() > 0, black, requantized(images[f].cpu()), out=out[f])
     return out

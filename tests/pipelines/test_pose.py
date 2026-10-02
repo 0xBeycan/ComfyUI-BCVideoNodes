@@ -312,3 +312,25 @@ def test_edge_snap_acts_on_supplied_boxes():
     _, off = pose.detect(NoDetector(), FakePose(), frames(), bboxes=box)
     assert on == [(0.0, 20.0, 65.0, 140.0)] * B
     assert off == [(5.0, 20.0, 65.0, 140.0)] * B
+
+
+# --- a half-precision clip -------------------------------------------------------------------
+
+def test_a_half_clip_is_read_frame_by_frame_as_its_float32_levels(monkeypatch):
+    # Load Video at precision fp16: the detector and the pose model get the inputs the float32
+    # clip gives them, each frame read as float32 on its own (once per pass), never the whole clip
+    from video_input_fakes import levels, record_reads
+
+    def run(images):
+        detector, model = ScriptedDetector(), RecordingPose()
+        pose_data, boxes = pose.detect(detector, model, images)
+        return detector.calls, model.calls, pose_data["detections"], boxes
+
+    exact = levels(B, H, W, 3)
+    expected = run(exact)
+    reads = record_reads(monkeypatch)
+    detections, crops, data, boxes = run(exact.half())
+    assert reads == [(H, W, 3)] * (2 * B)  # the detector's pass, then the keypoints'
+    assert all(np.array_equal(a[0], b[0]) and a[0].dtype == np.float32 for a, b in zip(detections, expected[0]))
+    assert all(np.array_equal(a[0], b[0]) and a[0].dtype == np.float32 for a, b in zip(crops, expected[1]))
+    assert (data, boxes) == (expected[2], expected[3])

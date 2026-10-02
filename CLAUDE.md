@@ -57,7 +57,8 @@ models/              __init__ (imports the model packages in registration order)
                      postprocess), wan_animate/, wan_animate2/, scail2/
 libs/                log, bbox, keypoints, mask (and the final mask: FinalMaskConfig, final_blocks, the one
                      grow + blockify the preprocess and the guards call, final_mask, painted_black; block_size 0
-                     cuts no blocks, the Mask Guard's raw-mask mode), chunking, sigmas, video (tail padding),
+                     cuts no blocks, the Mask Guard's raw-mask mode), chunking, sigmas, video (tail padding;
+                     Load Video's precision values; requantized and HalfFrames, a half clip read as float32),
                      color, config_widgets,
                      pose_data, draw_rules (the Pose Config draw rules: parts left out of the pose images),
                      video_sizes (the model table: sizes, frame rule, grid; the orientation rule; the Conform
@@ -255,6 +256,10 @@ pack adds after that still turns the saving off for that prompt, with a console 
   original.
 - Precision is decided per tensor, by measurement, never globally.
 - Unused heavy outputs are not kept: see Unused heavy outputs above.
+- A half-precision clip (Load Video's `precision` fp16) is read through `libs/video.requantized`
+  (or `as_numpy`'s HalfFrames for numpy): every value back to the float32 8-bit level an fp32 load
+  holds, a frame at a time, or a chunk's window in the samplers, never the whole clip at once (that
+  holds both copies). Core resizes and scales in the dtype it gets, and cv2 refuses float16.
 - A node never resizes itself to its content; previews and widgets scale to the node.
 - Values that can differ between uses are widgets, not constants.
 
@@ -330,7 +335,7 @@ pack adds after that still turns the saving off for that prompt, with a console 
   the table has no second copy in JS;
   Save Video's `codec` input carries `bcv_codecs` (codec -> the values of its crf, preset and
   pix_fmt, `libs/video_encode.widget_values`).
-- Load Video's plan route, `GET /bcvideonodes/load_video/plan` (`nodes/video_input.py`): the seven
+- Load Video's plan route, `GET /bcvideonodes/load_video/plan` (`nodes/video_input.py`): the eight
   widget values in, `pipelines/video_input.LoadPreview` out ({source {fps, frames, width,
   height, start, audio}, info (VideoInfo, what the loader would output), available, error (the
   loader's own message or null)}). It answers from the loader's own functions, so the preview
