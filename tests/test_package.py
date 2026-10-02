@@ -40,7 +40,7 @@ PREPROCESS = {
     "BCVGetVideoInfo": ("Get Video Info", "BCVideoNodes/Video",
                         ("model", "resolution", "orientation", "source_fps", "source_frame_count", "source_duration",
                          "source_width", "source_height", "loaded_fps", "loaded_frame_count", "loaded_duration",
-                         "loaded_width", "loaded_height")),
+                         "loaded_width", "loaded_height", "audio")),
     "BCVLoadReferenceImage": ("Load Reference Image", "BCVideoNodes/Video", ("image", "mask")),
     "BCVConformVideo": ("Conform Video", "BCVideoNodes/Video", ("images",)),
 }

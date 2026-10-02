@@ -182,7 +182,7 @@ class BCVGetVideoInfo:
     RETURN_NAMES = tuple(VideoInfo.__annotations__)
     FUNCTION = "get"
     CATEGORY = VIDEO
-    DESCRIPTION = "Splits Load Video's video_info: the model, resolution and orientation it loaded with, then the source's frame rate, frame count, duration and size, then the loaded frames'."
+    DESCRIPTION = "Splits Load Video's video_info: the model, resolution and orientation it loaded with, then the source's frame rate, frame count, duration and size, then the loaded frames', then the audio of the loaded range (Load Video's audio output itself; None when the file has no audio). Wire Save Video's and the Video Comparer's audio from here rather than from Load Video: a link to Load Video keeps its frames in memory until those nodes, which run last, have run."
 
     def get(self, video_info):
         return tuple(video_info[name] for name in self.RETURN_NAMES)

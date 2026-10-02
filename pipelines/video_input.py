@@ -130,7 +130,8 @@ def frame_indices(source, rate, start_frame, count, model):
 
 
 def video_info(model, resolution, planned, frames):
-    """The VideoInfo of `frames` frames loaded as `planned` (plan's) says."""
+    """The VideoInfo of `frames` frames loaded as `planned` (plan's) says, but its audio, which
+    load_video adds once read (the preview reads no samples)."""
     source = planned["source"]
     loaded_fps = planned["rate"] if planned["rate"] is not None else source["fps"]
     frame_time = 1 / loaded_fps
@@ -172,6 +173,7 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
         frame_time = 1 / info["loaded_fps"]
         audio = video_decode.read_audio(path, (start_frame - 1) * frame_time, len(indices) * frame_time,
                                         origin=source["start"])
+        info["audio"] = audio  # the audio output itself, for Get Video Info
         result["frames"] = len(indices)
         result["audio"] = "none" if audio is None else f"{audio['waveform'].shape[-1]} samples"
     return images, audio, info
@@ -195,8 +197,8 @@ def _decode(path, source, width, height, how, rate, start_frame, count, model, d
 
 class LoadPreview(TypedDict):
     """What Load Video's preview shows, from the file's header and packets (no frame is loaded):
-    the probe of the file (None when it cannot be read), the video_info the loader outputs (None on
-    an error), the frames from start_frame on at the kept rate (what an empty frame_count stands
+    the probe of the file (None when it cannot be read), the video_info the loader outputs without
+    its audio (no sample is read; the probe says whether the file has audio; None on an error), the frames from start_frame on at the kept rate (what an empty frame_count stands
     for, before the cut to the model's frame rule; None when force_fps or start_frame is wrong) and the error the
     loader raises, word for word (None when it loads)."""
     source: Optional[dict]

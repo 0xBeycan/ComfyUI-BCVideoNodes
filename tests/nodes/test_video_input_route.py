@@ -2,7 +2,8 @@
 loader's own checks and frame selection, without loading a frame.
 
 - the answer on a clip whose audio runs past its video: the loader's own count (the container's
-  duration would give more), the frames an empty frame_count stands for, the source;
+  duration would give more), the frames an empty frame_count stands for, the source; its info is
+  the loader's video_info without the audio (no sample goes into the JSON);
 - every error is the loader's message, word for word, and the source and the empty frame_count's
   count still come with an error they do not depend on;
 - the probe is read once per file version;
@@ -49,6 +50,11 @@ def ask(video_name, **widgets):
     return response.status, (json.loads(response.text) if response.content_type == "application/json" else response.text)
 
 
+def without_audio(info):
+    """The loader's video_info without its audio, what the route answers."""
+    return {name: value for name, value in info.items() if name != "audio"}
+
+
 def loader_error(path, **widgets):
     """The message load_video raises for these widgets."""
     values = {**WIDGETS, **widgets}
@@ -72,8 +78,9 @@ def test_audio_longer_than_the_video_gives_the_loaders_count(folders):
     assert answer["available"] == 60
     assert answer["info"]["loaded_frame_count"] == 57 and answer["info"]["loaded_fps"] == 30.0
     assert (answer["info"]["loaded_width"], answer["info"]["loaded_height"]) == (832, 480)
-    _, _, info = video.load_video(path, **WIDGETS)
-    assert answer["info"] == info
+    _, audio, info = video.load_video(path, **WIDGETS)
+    assert audio is not None and "audio" not in answer["info"]
+    assert answer["info"] == without_audio(info)
 
 
 @pytest.mark.parametrize("widgets, info_frames, available", [
@@ -95,7 +102,7 @@ def test_the_answer_is_the_loaders_video_info(folders, widgets, info_frames, ava
     values = {**WIDGETS, **widgets}
     _, _, info = video.load_video(path, values["model"], values["resolution"], values["orientation"],
                                   values["force_fps"], values["start_frame"], values["frame_count"], values["precision"])
-    assert status == 200 and answer["error"] is None and answer["info"] == info
+    assert status == 200 and answer["error"] is None and answer["info"] == without_audio(info)
     assert answer["info"]["loaded_frame_count"] == info_frames and answer["available"] == available
     assert answer["source"]["audio"] is False
 

@@ -100,7 +100,8 @@ frames' duration.
 the resolved `orientation`, then the source's `source_fps`, `source_frame_count`,
 `source_duration`, `source_width` and `source_height` (as displayed), then
 the loaded batch's `loaded_fps` (`force_fps`, or the source's rate),
-`loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`.
+`loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`,
+then `audio`: the `audio` output itself (not a copy).
 
 The preview plays the source file in the browser as the loader will take it:
 sampled at `force_fps`, looping over `start_frame` / `frame_count`, the part
@@ -116,12 +117,20 @@ value stays empty.
 ## Get Video Info
 
 - in: `video_info`
-- out: its 13 fields in the order above: `model`, `resolution`,
+- out: its 14 fields in the order above: `model`, `resolution`,
   `orientation` (STRING), `source_fps` (FLOAT), `source_frame_count` (INT),
   `source_duration` (FLOAT), `source_width`, `source_height` (INT),
   `loaded_fps` (FLOAT), `loaded_frame_count` (INT), `loaded_duration`
-  (FLOAT), `loaded_width`, `loaded_height` (INT). `loaded_fps` is the rate to
-  give Save Video.
+  (FLOAT), `loaded_width`, `loaded_height` (INT), `audio` (AUDIO).
+  `loaded_fps` is the rate to give Save Video.
+
+Wire Save Video's and the Video Comparer's `audio` from here, not from Load
+Video: it is Load Video's audio itself, and ComfyUI keeps every output of a
+node, the frames included, until all the nodes linked to it have run. Save
+Video and the Video Comparer run last, so a link from Load Video keeps its
+frames in memory to the end of the run; Get Video Info runs right after Load
+Video, and Load Video's frames go as soon as their last reader is done (when
+ComfyUI's cache lets them go: under RAM pressure, or with `--cache-none`).
 
 The `source_` and `loaded_` outputs are drawn in a colour per group (source
 amber, loaded sky blue), with a thin line and the group's name above each
@@ -166,7 +175,8 @@ a video already at its target size is returned untouched, with no work done.
 
 Writes the frames as a video file, one frame at a time.
 
-- in: `images`; optional `audio` (muxed in and cut to the video's length)
+- in: `images`; optional `audio` (muxed in and cut to the video's length;
+  from Get Video Info, see there)
 - widgets: `fps` 24 (wire Get Video Info's `loaded_fps` to keep the source's
   timing), `filename_prefix` `video/ComfyUI` (subfolders and ComfyUI's name
   tokens work; a counter is appended: `video/ComfyUI_00001_.mp4`), `codec`
@@ -227,7 +237,7 @@ written side by side into one temporary H.264 file (crf 18, a keyframe every
 second), so they play in step from one decoder.
 
 - in: `fps` 24; optional `video_a`, `video_b` (IMAGE), `audio` (played with
-  them, cut to their length)
+  them, cut to their length; from Get Video Info, see there)
 - out: none
 
 Clips of different length are cut to the shorter one, and the node says so;

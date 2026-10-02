@@ -1,7 +1,8 @@
 """The video input nodes' ComfyUI surface: Load Video's widgets as the contract fixes them (order,
 defaults, the resolution sizes for the frontend, no core video upload, precision the last widget,
 fp16 by default), its validation of a
-resolution of another model, Get Video Info's outputs in video_info's order, Load Reference
+resolution of another model, Get Video Info's outputs in video_info's order (Load Video's audio
+itself last), Load Reference
 Image's preview payload, Conform Video. ComfyUI's input and temp folders are a test's tmp dirs."""
 import pytest
 
@@ -9,7 +10,7 @@ torch = pytest.importorskip("torch")
 folder_paths = pytest.importorskip("folder_paths")
 pytest.importorskip("av")
 
-from video_input_fakes import grey_clip, video  # noqa: E402
+from video_input_fakes import grey_clip, ramp_audio, video  # noqa: E402
 
 
 @pytest.fixture
@@ -76,15 +77,24 @@ def test_load_video_loads_from_the_input_folder(folders):
 
 
 def test_get_video_info_outputs_every_field_in_order():
+    audio = {"waveform": torch.zeros(1, 2, 48000), "sample_rate": 48000}
     info = {"model": "Wan", "resolution": "720p", "orientation": "portrait", "source_fps": 30.0,
             "source_frame_count": 612, "source_duration": 20.4, "source_width": 1080, "source_height": 1920,
             "loaded_fps": 30.0, "loaded_frame_count": 609, "loaded_duration": 20.3, "loaded_width": 720,
-            "loaded_height": 1280}
+            "loaded_height": 1280, "audio": audio}
     node = video.BCVGetVideoInfo
     assert node.RETURN_NAMES == tuple(info)
     assert node.RETURN_TYPES == ("STRING", "STRING", "STRING", "FLOAT", "INT", "FLOAT", "INT", "INT", "FLOAT", "INT",
-                                 "FLOAT", "INT", "INT")
-    assert node().get(info) == tuple(info.values())
+                                 "FLOAT", "INT", "INT", "AUDIO")
+    out = node().get(info)
+    assert out == tuple(info.values()) and out[-1] is audio  # Load Video's audio itself, last
+
+
+def test_get_video_info_hands_on_load_videos_audio(folders):
+    # the audio Save Video and the Video Comparer can take from Get Video Info instead of Load Video
+    grey_clip(folders / "input" / "clip.mkv", 9, audio=ramp_audio(0.3))
+    _, audio, info = video.BCVLoadVideo().load("clip.mkv", "Wan", "480p", "auto", "", 1, "")
+    assert audio is not None and video.BCVGetVideoInfo().get(info)[-1] is audio
 
 
 def test_load_reference_image_fits_and_previews(folders):

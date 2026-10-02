@@ -2,7 +2,8 @@ import { app } from "../../../scripts/app.js";
 import { guard } from "./player.js";
 
 // Get Video Info: its outputs come in three groups, the settings Load Video loaded with (model,
-// resolution, orientation), the source's values (source_*) and the loaded frames' (loaded_*). The
+// resolution, orientation), the source's values (source_*) and the loaded frames' (loaded_*, then
+// the audio of the loaded range, which keeps its type's colour). The
 // source and loaded groups each get a slot colour, and a thin line with the group's name above
 // their first slot, so a source_ output and its loaded_ twin cannot be taken for each other. The
 // names and types stay the node's own; a link keeps its type's colour.

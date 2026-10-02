@@ -334,7 +334,10 @@ pack adds after that still turns the saving off for that prompt, with a console 
   the pose pipeline writes. The guard rows and the SAM counts work the same way
   (`test_guard_rows.py`, `test_sam3_1_multiplex_counts.py`).
 - BCV_VIDEO_INFO is a plain dict at runtime too: `libs/video_info.VideoInfo` is its annotation
-  and fixes its key order, which is Get Video Info's output order.
+  and fixes its key order, which is Get Video Info's output order. Its last key, `audio`, is Load
+  Video's audio output itself (core's AUDIO dict or None, never a copy): Save Video and the Video
+  Comparer run last, and a link to Load Video would keep all its outputs, the frames included,
+  until they have run (ComfyUI keeps a node's outputs while any consumer is pending).
 - What the frontend reads from the node definitions: Load Video's `resolution` input carries
   `bcv_sizes` (model -> label -> [width, height], portrait; null for `source`, the video's own
   size), from `libs/video_sizes.MODELS`, so
@@ -343,7 +346,8 @@ pack adds after that still turns the saving off for that prompt, with a console 
   pix_fmt, `libs/video_encode.widget_values`).
 - Load Video's plan route, `GET /bcvideonodes/load_video/plan` (`nodes/video_input.py`): the eight
   widget values in, `pipelines/video_input.LoadPreview` out ({source {fps, frames, width,
-  height, start, audio}, info (VideoInfo, what the loader would output), available, error (the
+  height, start, audio}, info (VideoInfo, what the loader would output, without `audio`: no
+  sample goes into the JSON), available, error (the
   loader's own message or null)}). It answers from the loader's own functions, so the preview
   and the loader cannot drift; the file is resolved only inside ComfyUI's input folder.
 - The codec names (`h264-mp4`, `h265-mp4`, `av1-webm`, `vp9-webm`) are stored in saved

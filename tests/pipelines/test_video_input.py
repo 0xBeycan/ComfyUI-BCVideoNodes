@@ -280,7 +280,8 @@ def test_the_default_precision_is_fp16(tmp_path):
 def test_audio_is_the_loaded_range(tmp_path):
     samples, rate = ramp_audio(1.0)
     path = grey_clip(tmp_path / "clip.mkv", 30, audio=(samples, rate))
-    _, audio, _ = load(path, start_frame=5, frame_count="11")  # 9 frames from 4 / 30 s
+    _, audio, info = load(path, start_frame=5, frame_count="11")  # 9 frames from 4 / 30 s
+    assert info["audio"] is audio  # video_info's last field: the audio output itself, not a copy
     assert audio["sample_rate"] == 48000
     assert np.array_equal(audio["waveform"][0].numpy(), (samples[:, 6400:6400 + 14400] / 32768).astype(np.float32))
 
@@ -298,13 +299,13 @@ def test_video_info_keys_order_and_values(tmp_path):
     assert audio is None
     assert list(info) == ["model", "resolution", "orientation", "source_fps", "source_frame_count",
                           "source_duration", "source_width", "source_height", "loaded_fps", "loaded_frame_count",
-                          "loaded_duration", "loaded_width", "loaded_height"]
+                          "loaded_duration", "loaded_width", "loaded_height", "audio"]
     assert list(info) == list(video.VideoInfo.__annotations__)
     assert info == {"model": "Wan", "resolution": "720p", "orientation": "landscape",
                     "source_fps": 30.0, "source_frame_count": 30, "source_duration": 1.0,
                     "source_width": 64, "source_height": 32,
                     "loaded_fps": 30.0, "loaded_frame_count": 29, "loaded_duration": pytest.approx(29 / 30),
-                    "loaded_width": 1280, "loaded_height": 720}
+                    "loaded_width": 1280, "loaded_height": 720, "audio": None}
 
 
 # --- the decoder's count wins ---------------------------------------------------------------------
