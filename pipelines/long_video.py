@@ -238,6 +238,7 @@ def generate(
                     if paint and name == paint[0]:
                         window = painted_black(window, pad(paint[1], start, reached))
                     inputs[name] = requantized(window)
+                    del window  # a half window, once requantized: not kept through the chunk
             for name in seeked:
                 inputs[name] = requantized(videos[name][start:stop])
         seek = offset - start

@@ -140,6 +140,35 @@ def test_every_chunk_gets_its_window_painted_never_the_whole_background(received
     assert "background_video is painted black where character_mask is above 0, a chunk's window at a time." in caplog.text
 
 
+def test_a_half_window_is_freed_once_requantized(received, monkeypatch):
+    # float16 frames: the painted window is float16 and the core node gets its float32 copy; the
+    # float16 one goes at once, not kept through the chunk
+    import gc
+    import weakref
+
+    module, calls = received
+    painted, real = [], module.painted_black
+
+    def recording(images, mask):
+        out = real(images, mask)
+        painted.append(weakref.ref(out))
+        return out
+
+    monkeypatch.setattr(module, "painted_black", recording)
+    mappings = sys.modules["nodes"].NODE_CLASS_MAPPINGS
+    core, alive = mappings["WanAnimateToVideo"], []
+
+    def execute(cls, **kwargs):
+        gc.collect()
+        alive.append(painted[-1]() is not None)
+        return core.EXECUTE_NORMALIZED(**kwargs)
+
+    monkeypatch.setitem(mappings, "WanAnimateToVideo", type(core.__name__, (core,), {"EXECUTE_NORMALIZED": classmethod(execute)}))
+    images, mask = scene()
+    run(module, pose_frames=FRAMES, node=ANIMATE1, last_chunk="full", background_video=images.half(), character_mask=mask.half())
+    assert len(alive) == 4 and not any(alive)
+
+
 def test_a_mask_of_another_size_is_an_error(node_module):
     images, mask = scene()
     with pytest.raises(ValueError) as error:
