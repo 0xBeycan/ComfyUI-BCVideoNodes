@@ -110,9 +110,9 @@ def test_no_video_is_widened_as_a_whole(received, node, monkeypatch):
     module, calls = received
     widened, real = [], module.requantized
 
-    def recording(frames):
+    def recording(frames, out=None):
         widened.append(tuple(frames.shape))
-        return real(frames)
+        return real(frames, out)
 
     monkeypatch.setattr(module, "requantized", recording)
     run(module, pose_frames=FRAMES, node=node, vae=IndexVAE(), **halved(inputs(node)))

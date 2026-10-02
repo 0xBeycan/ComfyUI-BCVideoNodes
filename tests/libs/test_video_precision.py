@@ -1,8 +1,11 @@
 """Load Video's precision and the half-precision reads of libs/video.py: float16 keeps every 8-bit
 level k / 255 and requantized gives back the float32 values a float32 load holds, exactly, for all
-256 levels (bfloat16 too); a float32 tensor passes through untouched; HalfFrames reads a half clip
-as float32 numpy frames one at a time, and the clip stays as it is. Synthetic tensors, no ComfyUI.
+256 levels (bfloat16 too), into a new tensor or a given one; a float32 tensor passes through
+untouched; HalfFrames reads a half clip as float32 numpy frames one at a time (a loop's frames one
+ahead, into two reused frames), and the clip stays as it is. Synthetic tensors, no ComfyUI.
 """
+import time
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -56,6 +59,26 @@ def test_half_frames_are_read_as_float32_one_at_a_time():
     assert len(frames) == 5 and frames.shape == (5, 6, 4, 3) and frames.dtype == np.float32
     assert all(np.array_equal(frame, exact[i].numpy()) and frame.dtype == np.float32 for i, frame in enumerate(frames))
     assert np.array_equal(frames[1:3], exact[1:3].numpy()) and frames[1:3].dtype == np.float32
+
+
+def test_iterated_half_frames_are_read_one_ahead_into_two_reused_float32_frames():
+    # a loop's frames are read into two float32 frames used in turn, the next one on a worker thread
+    # while the caller has this one: no frame-sized allocation per frame; a frame is valid until the
+    # next is read, and stays intact while the next is being read
+    exact = levels(5, 6, 5, 3)
+    seen = []
+    for i, frame in enumerate(video.as_numpy(exact.half())):
+        time.sleep(0.01)  # the caller's work: the next frame is read meanwhile, into the other frame
+        assert np.array_equal(frame, exact[i].numpy())
+        seen.append(frame)
+    assert all(np.shares_memory(frame, seen[i % 2]) for i, frame in enumerate(seen))
+    assert not np.shares_memory(seen[0], seen[1])
+    assert list(video.as_numpy(exact[:0].half())) == []
+    first = next(iter(video.as_numpy(exact.half())))  # a loop left early stops its worker
+    assert np.array_equal(first, exact[0].numpy())
+    window = exact[1:3].half()
+    out = torch.empty(2, 6, 5, 3)
+    assert video.requantized(window, out) is out and torch.equal(out, exact[1:3])
 
 
 def test_a_float32_batch_is_its_own_memory_and_anything_else_an_array():

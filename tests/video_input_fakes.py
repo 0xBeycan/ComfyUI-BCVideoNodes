@@ -116,9 +116,9 @@ def record_reads(monkeypatch):
     tensor shape is appended to the returned list, then it requantizes as before."""
     real, shapes = video.requantized, []
 
-    def recording(frames):
+    def recording(frames, out=None):
         shapes.append(tuple(frames.shape))
-        return real(frames)
+        return real(frames, out)
 
     monkeypatch.setattr(video, "requantized", recording)
     return shapes

@@ -63,10 +63,11 @@ def is_half(frames):
     return frames.dtype in (torch.float16, torch.bfloat16)
 
 
-def requantized(frames):
+def requantized(frames, out=None):
     """`frames` (a frame, or a chunk's window, of an IMAGE or MASK clip) ready for float32
-    arithmetic: a half-precision tensor (is_half) as a new float32 one, every value rounded to the
-    nearest 8-bit level k / 255; any other tensor itself. float16 keeps every level within 2^-12 of
+    arithmetic: a half-precision tensor (is_half) as a new float32 one, or written into `out` (a
+    float32 tensor of its shape), every value rounded to the nearest 8-bit level k / 255; any other
+    tensor itself. float16 keeps every level within 2^-12 of
     it (its step near 1.0 is 2^-11), so a float16 clip of 8-bit frames (Load Video at precision
     fp16) comes back as exactly the float32 values a float32 load holds. Core resizes and scales a
     clip in the dtype it gets and cv2 refuses float16, so the pack reads a half clip through this
@@ -74,14 +75,18 @@ def requantized(frames):
     saving back and hold both copies."""
     if not is_half(frames):
         return frames
-    return frames.float().mul_(255).round_().div_(255)
+    widened = frames.float() if out is None else out.copy_(frames)
+    return widened.mul_(255).round_().div_(255)
 
 
 class HalfFrames:
-    """A half-precision IMAGE batch read as float32 numpy frames: [i] is frame i, [a:b] those frames
-    and [i, rows, columns] that region of frame i, each read requantized (requantized), so the batch
-    is never widened as a whole and a region costs only its own pixels. `shape` is the batch's,
-    `dtype` the frames' (float32)."""
+    """A half-precision IMAGE batch read as float32 numpy frames, each read requantized
+    (requantized), so the batch is never widened as a whole: [i] is frame i, [a:b] those frames and
+    [i, rows, columns] that region of frame i, each a new array (a region costs only its pixels).
+    Iterating hands out the frames in two float32 frames used in turn, the next one requantized on a
+    worker thread while the caller works on the one it has: the conversion runs while the caller's
+    model does, instead of before it, and no frame-sized array is allocated per frame. A frame is
+    valid until the next one is read. `shape` is the batch's, `dtype` the frames' (float32)."""
 
     def __init__(self, images):
         self.images = images
@@ -100,12 +105,30 @@ class HalfFrames:
         return requantized(self.images[index]).numpy()
 
     def __iter__(self):
-        return (self[i] for i in range(len(self)))
+        from concurrent.futures import ThreadPoolExecutor
+
+        import torch
+
+        if not len(self):
+            return
+        frames = [torch.empty(self.shape[1:], dtype=torch.float32) for _ in range(2)]
+
+        def read(i):
+            return requantized(self.images[i], frames[i % 2]).numpy()
+
+        with ThreadPoolExecutor(1, thread_name_prefix="BCVideoNodes-frames") as worker:
+            ahead = worker.submit(read, 0)
+            for i in range(len(self)):
+                frame = ahead.result()
+                if i + 1 < len(self):
+                    ahead = worker.submit(read, i + 1)  # into the other frame: this one stays as handed out
+                yield frame
 
 
 def as_numpy(images):
     """An IMAGE batch as numpy frames: a tensor's own memory, a half-precision tensor as HalfFrames
-    (float32 frames, read one at a time), anything else through np.asarray."""
+    (float32 frames, read one at a time; iterated, one frame ahead into two reused frames),
+    anything else through np.asarray."""
     import numpy as np
     import torch
 

@@ -37,8 +37,8 @@ def test_the_face_rows_are_vitposes_and_every_other_row_is_sapiens2s():
 
 
 def test_a_half_clip_gives_both_models_the_float32_runs_crops(monkeypatch):
-    # Load Video at precision fp16: ViTPose-H's frames are read one at a time, Sapiens2's a batch
-    # at a time, each as the float32 clip's levels
+    # Load Video at precision fp16: both models' frames are read one at a time, each as the float32
+    # clip's levels
     from video_input_fakes import levels, record_reads, video
 
     class Recording(FakeSapiens2):
@@ -59,8 +59,7 @@ def test_a_half_clip_gives_both_models_the_float32_runs_crops(monkeypatch):
     keypoints, crops, calls = run(exact.numpy())
     reads = record_reads(monkeypatch)
     half_keypoints, half_crops, half_calls = run(video.as_numpy(exact.half()))
-    size = sapiens2.BATCH_SIZE
-    assert reads == [(H, W, 3)] * B + [(min(size, B - start), H, W, 3) for start in range(0, B, size)]
+    assert reads == [(H, W, 3)] * (2 * B)
     assert np.array_equal(half_keypoints, keypoints)
     assert all(np.array_equal(a, b) for a, b in zip(half_crops, crops))
     assert all(np.array_equal(a[0], b[0]) for a, b in zip(half_calls, calls))

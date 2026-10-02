@@ -27,21 +27,25 @@ def hybrid_keypoints(sapiens2, vitpose, images_np, boxes, progress=None):
     """[B, 133, 3] COCO-WholeBody keypoints in frame pixels: the face rows 23-90 from `vitpose` (a
     PoseEstimator, on Pose Detection's crop of each box), every other row from `sapiens2`
     (models/sapiens2/wrapper.Sapiens2Pose, on its own crop of the same box, BATCH_SIZE crops a pass).
-    `progress(done)` after each Sapiens2 batch."""
+    `progress(done)` after each Sapiens2 batch. The frames are read in order, one at a time (a
+    float16 clip's one ahead while the models run: libs/video.HalfFrames)."""
     from tqdm import tqdm
 
     from ..models.sapiens2.decode import crop_input
     from ..models.sapiens2.keypoints import FACE
 
     face = crop_keypoints(vitpose, images_np, boxes, _input_resolution(vitpose))[:, FACE]
-    out = []
-    for start in tqdm(range(0, len(boxes), BATCH_SIZE), desc="Extracting Sapiens2 keypoints"):
-        stop = min(start + BATCH_SIZE, len(boxes))
-        crops, centers, scales = zip(*(crop_input(frame, box) for frame, box in
-                                       zip(_frames_uint8(images_np[start:stop]), boxes[start:stop])))
-        out.append(sapiens2(np.stack(crops), np.stack(centers), np.stack(scales)))
-        if progress is not None:
-            progress(stop)
+    out, batch = [], []
+    with tqdm(total=-(-len(boxes) // BATCH_SIZE), desc="Extracting Sapiens2 keypoints") as bar:
+        for done, (frame, box) in enumerate(zip(images_np, boxes), 1):
+            batch.append(crop_input(_frames_uint8(frame), box))
+            if len(batch) == BATCH_SIZE or done == len(boxes):
+                crops, centers, scales = zip(*batch)
+                out.append(sapiens2(np.stack(crops), np.stack(centers), np.stack(scales)))
+                batch = []
+                bar.update(1)
+                if progress is not None:
+                    progress(done)
     keypoints = np.concatenate(out, 0)
     keypoints[:, FACE] = face
     return keypoints
