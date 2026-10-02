@@ -3,14 +3,16 @@ HELD_VIDEOS past their last frame when a chunk needs frames beyond them. last_fr
 last frame, ping_pong plays the video backwards from its end (libs/video.ping_pong, checked
 against the official padding in tests/libs/test_video.py). Past total_frames the padded frames
 are cut; the Animate character mask is never extended. The videos are never extended as a whole:
-a chunk inside all of them gets the videos themselves, a chunk that reads past the end of one gets
-the window it reads of every video the core node seeks, with its offset moved into the window.
+a chunk inside all of them gets the videos themselves (in Animate's replacement mode every chunk
+gets its window: test_long_video_replacement.py), a chunk that reads past the end of one gets the
+window it reads of every video the core node seeks, with its offset moved into the window.
 
 ComfyUI itself is stubbed (comfy.*, nodes); torch is real. Every core call is wrapped so the
 driving videos and the anchor it is handed are kept; with run()'s frame-index videos a video's
-frame value is its source frame index. What a core call reads is what core's seek takes from what
-it was handed: `length` frames from the offset it moved back (the fakes' `offset_in`). Skipped
-when torch is not installed.
+frame value is its source frame index (read as the frame's largest value: the Animate character
+mask holds it on the character's side of the frame only, where the background is painted black).
+What a core call reads is what core's seek takes from what it was handed: `length` frames from the
+offset it moved back (the fakes' `offset_in`). Skipped when torch is not installed.
 """
 
 import sys
@@ -53,13 +55,16 @@ def received(animate_aligned, monkeypatch):
 
 
 def frames(video):
-    return [int(v) for v in video.flatten(1)[:, 0].tolist()]
+    """Each frame's value: its largest."""
+    return [int(v) for v in video.flatten(1).amax(1).tolist()]
 
 
 def inputs(node, pose_frames):
-    """The driving videos besides the pose, all `pose_frames` long and frame-index valued."""
+    """The driving videos besides the pose, all `pose_frames` long and frame-index valued; the
+    Animate character mask on the right half of the frame only."""
     if node == ANIMATE1:
-        mask = torch.arange(pose_frames, dtype=torch.float32).view(-1, 1, 1).expand(-1, 64, 32).contiguous()
+        mask = torch.zeros(pose_frames, 64, 32)
+        mask[:, :, 16:] = torch.arange(pose_frames, dtype=torch.float32).view(-1, 1, 1)
         return dict(driving_videos(pose_frames), character_mask=mask)
     return {}
 
@@ -105,20 +110,20 @@ def test_every_chunk_reads_the_extended_driving_frames(received, node, option, p
 # --- the videos themselves while a chunk is inside them, only its window past their end --------
 
 def test_a_chunk_inside_the_videos_gets_them_and_one_past_their_end_its_window(received):
+    # animate mode (no background, no character mask)
     module, calls = received
-    driving = inputs(ANIMATE1, 240)
+    driving = {"face_video": driving_videos(240)["face_video"]}
     run(module, pose_frames=240, node=ANIMATE1, vae=IndexVAE(), last_chunk="full", **driving)
     # 81 + 81 + 81 + 81 at overlap 5: the chunks read from 0, 76, 152, 228; the last one past 239
     assert [c["length"] for c in Calls.animate] == [81] * 4
     for call in calls[:3]:
-        assert all(call[name] is driving[name] for name in ("face_video", "background_video", "character_mask"))
+        assert call["face_video"] is driving["face_video"]
         assert call["pose_video"].shape[0] == 240
     last = calls[-1]
     # the frames it reads and no more: core moved back 5 frames on the chunks before
     assert Calls.animate[-1]["offset_in"] == 0
-    for name in HELD[ANIMATE1]:
+    for name in ("pose_video", "face_video"):
         assert frames(last[name]) == list(range(228, 240)) + [239] * 69, name
-    assert frames(last["character_mask"]) == list(range(228, 240))
 
 
 def test_the_first_chained_chunk_s_window_reaches_back_as_far_as_its_seed(received):
@@ -158,10 +163,13 @@ def test_the_padded_chunk_gets_the_padding_on_every_held_video(received, node, o
 
 @pytest.mark.parametrize("option", OPTIONS)
 def test_the_character_mask_is_never_extended(received, option):
+    # replacement mode: every chunk gets its window of the mask, a cut of it
     module, calls = received
     driving = inputs(ANIMATE1, 240)
     run(module, pose_frames=240, node=ANIMATE1, vae=IndexVAE(), last_chunk="full", tail_padding=option, **driving)
-    assert all(call["character_mask"] is driving["character_mask"] for call in calls[:-1])
+    for call in calls:
+        cut = frames(call["character_mask"])
+        assert cut == list(range(cut[0], cut[0] + len(cut))) and cut[-1] <= 239
     assert frames(calls[-1]["character_mask"]) == list(range(228, 240))  # cut to the window, not extended
     assert calls[-1]["background_video"].shape[0] == 81
 

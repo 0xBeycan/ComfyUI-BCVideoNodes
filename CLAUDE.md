@@ -184,6 +184,14 @@ pack adds after that still turns the saving off for that prompt, with a console 
   - `SEEKED_VIDEOS`: the other videos the core node seeks by offset, never extended: on such a
     chunk they are cut to the same window, never padded (Wan Animate's `character_mask`; a
     single frame is not seeked, core repeats it over the chunk);
+  - `PAINTED`: (a held video, a mask the core node gets too) or None (the default; Wan Animate 2,
+    SCAIL-2): with both connected every chunk is windowed and the loop paints the video's window
+    black wherever the mask is above 0 (`libs/mask.painted_black`, the selection WanAnimate
+    Preprocess's `bg_images` is made with), the mask's window taken as the video's (held alike,
+    a single frame repeated over it), so it equals the window of the video painted whole. Wan
+    Animate: (`background_video`, `character_mask`), replacement mode, so the sampler takes Load
+    Video's frames as its background (a painted background stays as it is); its `check_videos`
+    wants the mask the background's size;
   - the per-chunk hooks below (`continuation`, `chunk_inputs`, `after_animate`, `anchor_region`)
     get the chunk's inputs and its offset as the core node gets them: on a windowed chunk the
     window and the offset into it, so a hook indexes what it is handed;

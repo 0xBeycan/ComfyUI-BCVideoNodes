@@ -249,16 +249,23 @@ def test_animate1_overlap_must_be_smaller_than_chunk(node_module):
     assert Calls.animate == []
 
 
+def _reads(call, key):
+    """What core reads of a video it was handed: `length` frames from the offset it moved back to."""
+    return call[key][call["offset_in"]:call["offset_in"] + call["length"]]
+
+
 def test_animate1_optional_videos_reach_core(node_module):
-    face = torch.zeros(81, 512, 512, 3)
-    background = torch.zeros(81, 64, 32, 3)
-    mask = torch.zeros(1, 64, 32)
+    face = torch.rand(81, 16, 16, 3)
+    background = torch.rand(81, 64, 32, 3)
+    mask = torch.zeros(1, 64, 32)  # a still: core repeats it; nothing of the background is painted
     run(node_module, pose_frames=81, node=ANIMATE1, frames_per_chunk=77,
         clip_vision_output="clip", face_video=face, background_video=background, character_mask=mask)
+    assert len(Calls.animate) == 2
     for call in Calls.animate:
+        first = int(call["pose"])  # the driving frame the chunk reads from
         assert call["clip"] == "clip"
-        assert call["face"] is face
-        assert call["background"] is background
+        assert torch.equal(_reads(call, "face"), face[first:first + call["length"]])
+        assert torch.equal(_reads(call, "background"), background[first:first + call["length"]])
         assert call["mask"] is mask
 
 
@@ -275,11 +282,20 @@ def test_animate1_total_beyond_pose_keeps_pose_on_every_chunk(node_module, caplo
 
 
 def _videos(frames):
-    """face / background / multi-frame mask whose content is the frame index, so a held frame is visible."""
+    """face / background / multi-frame mask whose content is the frame index, so a held frame is
+    visible; the mask on the right half of the frame only, so the left half of the background is
+    never painted."""
     index = torch.arange(frames, dtype=torch.float32)
+    mask = torch.zeros(frames, 64, 32)
+    mask[:, :, 16:] = index.view(-1, 1, 1)
     return dict(face_video=index.view(-1, 1, 1, 1).expand(-1, 8, 8, 3).contiguous(),
                 background_video=index.view(-1, 1, 1, 1).expand(-1, 64, 32, 3).contiguous(),
-                character_mask=index.view(-1, 1, 1).expand(-1, 64, 32).contiguous())
+                character_mask=mask)
+
+
+def _painted(videos):
+    """The background black wherever the mask is above 0: WanAnimate Preprocess's bg_images."""
+    return torch.where(videos["character_mask"].unsqueeze(-1) > 0, torch.zeros(()), videos["background_video"])
 
 
 @pytest.mark.parametrize("frames, produced", [(150, 153), (152, 153)])
@@ -293,11 +309,12 @@ def test_animate1_overshooting_last_chunk_holds_every_video(node_module, caplog,
     assert plan.startswith("81 + 77 -> {} produced".format(produced))
     last = Calls.animate[-1]
     assert last["offset_in"] + last["length"] == produced
-    for key in ("face", "background"):
+    videos = _videos(frames)
+    for key, source in (("face", videos["face_video"]), ("background", _painted(videos))):
         video = last[key]
         assert video.shape[0] == produced
-        assert torch.equal(video[:frames], _videos(frames)[{"face": "face_video", "background": "background_video"}[key]])
-        assert (video[frames:] == frames - 1).all()  # the last frame, held
+        assert torch.equal(video[:frames], source)
+        assert torch.equal(video[frames:], source[-1:].expand_as(video[frames:]))  # the last frame, held
     assert last["mask"].shape[0] == frames
     padded = [line for line in caplog.text.splitlines() if "held" in line]
     assert len(padded) == 1 and "character_mask" not in padded[0]
@@ -318,7 +335,7 @@ def test_animate1_total_beyond_inputs_holds_every_video_but_the_mask(node_module
         for key in ("face", "background"):
             read = call[key][seek:seek + length]
             assert read[:, 0, 0, 0].tolist() == [float(min(i, 99)) for i in range(first, first + length)]
-        assert call["mask"][seek:seek + length][:, 0, 0].tolist() == [float(i) for i in range(first, min(first + length, 100))]
+        assert call["mask"][seek:seek + length][:, 0, -1].tolist() == [float(i) for i in range(first, min(first + length, 100))]
         first += length - 5
     assert "total_frames (250) exceeds" in caplog.text
 
@@ -336,9 +353,10 @@ def test_animate1_grid_inputs_reach_core_unchanged(node_module, caplog):
     images, count, plan = run(node_module, pose_frames=161, node=ANIMATE1, frames_per_chunk=81, **videos)
     assert plan.startswith("81 + 81 + 9 -> 161 produced")
     for call in Calls.animate:
-        assert call["face"] is videos["face_video"]
-        assert call["background"] is videos["background_video"]
-        assert call["mask"] is videos["character_mask"]
+        first, length = int(call["pose"]), call["length"]
+        assert torch.equal(_reads(call, "face"), videos["face_video"][first:first + length])
+        assert torch.equal(_reads(call, "background"), _painted(videos)[first:first + length])
+        assert torch.equal(_reads(call, "mask"), videos["character_mask"][first:first + length])
     assert "held" not in caplog.text
 
 
@@ -354,7 +372,8 @@ def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_modu
     frames = 200
     # longer than the video so every chunk, including the short last one, is fully covered
     character_mask = (torch.rand(frames + 80, 64 // LATENT_DOWN, 32 // LATENT_DOWN) > 0.5).float()
-    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask, background_video=torch.zeros(frames + 80, 64, 32, 3))
+    background = torch.zeros(frames + 80, 64 // LATENT_DOWN, 32 // LATENT_DOWN, 3)  # the mask's size: it is painted under it
+    run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask, background_video=background)
     assert [c["length"] for c in Calls.animate] == [77, 77, 57]
     for call, sampled in zip(Calls.animate, Calls.sampler):
         mask = sampled["positive"][0][1]["concat_mask"]
@@ -375,7 +394,7 @@ def test_animate1_mask_repair_reaches_sampler_only_with_character_mask(node_modu
     Calls.animate, Calls.sampler = [], []
     with pytest.raises(ValueError, match="character_mask has 100 frames but background_video has 200"):
         run(node_module, pose_frames=frames, node=ANIMATE1, frames_per_chunk=77, character_mask=character_mask[:100],
-            background_video=torch.zeros(frames, 64, 32, 3))
+            background_video=background[:frames])
     assert Calls.animate == []  # it stops before anything is sampled
 
 

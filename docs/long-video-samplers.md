@@ -125,7 +125,7 @@ official Wan 2.2 Animate template; the template samples 77-frame windows with
 | `continue_motion_max_frames`  | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off: the overlap. Snapped down to the 4k+1 grid (1, 5, 9, ...); must be smaller than `frames_per_chunk`. |
 | `clip_vision_output`          | CLIP_VISION_OUTPUT  | CLIP vision of the reference image.                                |
 | `face_video`                  | IMAGE (optional)    | Face crops of the driving video (512 x 512), read from the same offset as the pose video. |
-| `background_video`            | IMAGE (optional)    | Background to place the character into (replacement mode), same offset. |
+| `background_video`            | IMAGE (optional)    | Background to place the character into (replacement mode), same offset. With `character_mask` connected the character's area is blacked out here, so Load Video's frames can be wired directly. |
 | `character_mask`              | MASK (optional)     | Where the character goes in the background video (replacement mode). One frame is repeated; a video is read from the same offset. |
 
 The optional videos are handed to `WanAnimateToVideo` as they are (a chunk
@@ -134,6 +134,18 @@ padding); the core
 node seeks all of them by `video_frame_offset`, so they only need to be
 aligned with the pose video at frame 0. A face video shorter than the pose
 video is zero-padded by the model for the remaining frames.
+
+Replacement mode (`background_video` and `character_mask` connected): core
+takes every pixel of the background but where the mask places the character,
+and the official preprocess paints the background black under the mask. The
+node does that itself, on each chunk's window of the background (every pixel
+where the mask is above 0 set to 0; a window past the background's end is
+held as `tail_padding` says, the mask held alike), so Load Video's frames can
+be wired as `background_video` directly and WanAnimate Preprocess's
+`bg_images` can stay unconnected (it is then not computed). A background
+painted already, `bg_images` included, comes out the same. In this mode every
+chunk gets its window of the videos. The mask must be the background's size
+and, as a video, its length; another size or length is an error.
 
 With `character_mask` connected the node rebuilds the video part of the
 concat mask that `WanAnimateToVideo` returns. The mask has 4 rows per latent
@@ -341,8 +353,10 @@ chunk reads are extended, never a copy of a whole input: a chunk that reads
 past the end of an input gets its own window of each driving input, extended
 past the end, and the core node the offset into that window. The Animate
 `character_mask` is never extended: it is cut to the same window, and past its
-end the character may be anywhere, so core leaves those mask rows unknown. The
-`tail_padding` widget picks how:
+end the character may be anywhere, so core leaves those mask rows unknown
+(the background painted under it is extended with its mask extended alike, so
+a held frame is painted as its source frame is). The `tail_padding` widget
+picks how:
 
 - `last_frame` (default of all three samplers): the last frame is repeated;
   the motion stops.

@@ -151,7 +151,7 @@ class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
         optional = {
             "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image."}),
             "face_video": ("IMAGE", {"tooltip": "Face crops of the driving video (512x512), read from the same offset as the pose video."}),
-            "background_video": ("IMAGE", {"tooltip": "Background to place the character into (replacement mode), read from the same offset as the pose video."}),
+            "background_video": ("IMAGE", {"tooltip": "Background to place the character into (replacement mode), read from the same offset as the pose video. With character_mask connected the sampler blacks out the character's area (where the mask is above 0) of each chunk's window, so Load Video's frames can be wired here directly; an already painted background (WanAnimate Preprocess's bg_images) stays the same."}),
             "character_mask": ("MASK", {"tooltip": "Where the character goes in the background video (replacement mode). A single frame is repeated; a video is read from the same offset as the pose video."}),
         }
         return required, optional

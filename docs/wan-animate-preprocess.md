@@ -19,7 +19,10 @@ the chained nodes produce with the same settings.
   into blocks of about `block_size` px: ComfyUI-BCNodes' MaskGrow with blur 0,
   then Blockify Mask) and `bg_images` (the frames with `final_mask` painted
   black: Draw Mask On Image with `0, 0, 0`), the character mask and the
-  background video of a replacement run. `mask` stays the raw mask. A workflow
+  background video of a replacement run. The Wan Animate sampler paints the
+  background itself, a chunk's window at a time, so its `background_video`
+  can take Load Video's frames instead of `bg_images`, which then stays
+  unconnected and is not computed (same result). `mask` stays the raw mask. A workflow
   saved before `grow` and `block_size` existed loads with 10 and 32.
 - **WanAnimate Preprocess Guard** = Pose Guard + Mask Guard with one combined
   report. Inputs `mask`, `pose_data`, the `mask_guard` switch and all thresholds,

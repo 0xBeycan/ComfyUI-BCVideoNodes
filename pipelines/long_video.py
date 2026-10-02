@@ -13,10 +13,12 @@ seeks and the input checks. The chunk-length policy is the node's last_chunk wid
 (libs/chunking.LAST_CHUNK); its tail_padding widget (libs/video.TAIL_PADDING) says how the
 driving videos are extended past their end. With its color_anchor_strength widget above 0 every
 chained chunk is colour-matched to the frames it was seeded with (libs/color.py), in the region
-the adapter names. A half-precision input (Load Video at precision fp16) reaches the core node
-requantized to the float32 values a float32 input holds (libs/video.requantized): an image whole,
-a video one chunk's window at a time. The output is then stored in the pose video's half dtype,
-while every chained chunk is still seeded with its frames as decoded.
+the adapter names. In replacement mode the adapter's PAINTED video is painted black under its mask
+a chunk's window at a time (libs/mask.painted_black). A half-precision input (Load Video at
+precision fp16) reaches the core node requantized to the float32 values a float32 input holds
+(libs/video.requantized): an image whole, a video one chunk's window at a time. The output is then
+stored in the pose video's half dtype, while every chained chunk is still seeded with its frames as
+decoded.
 """
 
 import gc
@@ -164,6 +166,16 @@ def generate(
     half = [name for name in (*adapter.HELD_VIDEOS, *seeked) if videos.get(name) is not None and is_half(videos[name])]
     if half:
         logging.info("%s %s half precision: every chunk gets its window requantized to float32.", log_prefix, ", ".join(half))
+    # replacement mode (the adapter's PAINTED video and mask both connected): every chunk gets its
+    # window, the video's painted black where the mask is above 0, with the mask's window taken as
+    # the video's (a single-frame mask repeated over the video, as core repeats it)
+    paint = None
+    if adapter.PAINTED and all(videos.get(name) is not None for name in adapter.PAINTED):
+        from ..libs.mask import painted_black
+
+        video, mask = adapter.PAINTED
+        paint = (video, videos[mask] if mask in seeked else videos[mask].expand(int(videos[video].shape[0]), -1, -1))
+        logging.info("%s %s is painted black where %s is above 0, a chunk's window at a time.", log_prefix, video, mask)
 
     patched = adapter.patch_model(call_node("ModelSamplingSD3", model=model, shift=shift)[0], animate_inputs)
     if sigmas_override is not None:
@@ -201,14 +213,14 @@ def generate(
         chunk_seed = seed if seed_mode == "fixed" else (seed + index) % (1 << 64)
         pose_offset = offset
         start, inputs = 0, videos
-        if half or any(offset + length > frames for frames in short.values()):
-            # The chunk reads past the end of a held video, or a video is half precision: every
-            # video the core node seeks is cut to the window it reads, a held one extended there as
-            # tail_padding says, a half one requantized, and the core node gets the offset into that
-            # window. Before it seeks, the core node moves the offset back by the frames of the
-            # anchor it keeps: as far as on the last chained chunk once seen, and until then by at
-            # most the whole anchor. Nor is a seeked video cut to one frame, which core would repeat
-            # over the chunk.
+        if half or paint or any(offset + length > frames for frames in short.values()):
+            # The chunk reads past the end of a held video, a video is half precision, or one is
+            # painted: every video the core node seeks is cut to the window it reads, a held one
+            # extended there as tail_padding says, the painted one painted, a half one requantized,
+            # and the core node gets the offset into that window. Before it seeks, the core node
+            # moves the offset back by the frames of the anchor it keeps: as far as on the last
+            # chained chunk once seen, and until then by at most the whole anchor. Nor is a seeked
+            # video cut to one frame, which core would repeat over the chunk.
             if anchor is not None and moved is None:
                 start, stop = max(0, offset - int(anchor.shape[0])), offset + length
             else:
@@ -219,7 +231,11 @@ def generate(
             inputs = dict(videos)
             for name in adapter.HELD_VIDEOS:
                 if videos.get(name) is not None:
-                    inputs[name] = requantized(pad(videos[name], start, min(stop, max(reach, int(videos[name].shape[0])))))
+                    reached = min(stop, max(reach, int(videos[name].shape[0])))
+                    window = pad(videos[name], start, reached)
+                    if paint and name == paint[0]:
+                        window = painted_black(window, pad(paint[1], start, reached))
+                    inputs[name] = requantized(window)
             for name in seeked:
                 inputs[name] = requantized(videos[name][start:stop])
         seek = offset - start

@@ -12,6 +12,11 @@ from .mask_repair import fix_replacement_mask, replacement_mask_rows
 class WanAnimateAdapter(AnimateAdapter):
     ANIMATE_NODE = "WanAnimateToVideo"
     SEEKED_VIDEOS = ("character_mask",)
+    # replacement mode: core takes every pixel of the background but where the mask places the
+    # character, so the background is the frames with the character's area black (the official
+    # preprocess's, WanAnimate Preprocess's bg_images): painted here, the frames themselves can be
+    # wired as background_video, and a background painted already stays as it is
+    PAINTED = ("background_video", "character_mask")
 
     def prepare(self, animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk):
         # The overlap is a widget here (continue_motion_max_frames): the core
@@ -30,13 +35,19 @@ class WanAnimateAdapter(AnimateAdapter):
 
     def check_videos(self, pose_video, animate_inputs):
         # The mask says where the character goes in each background frame, so a mask video must
-        # be as long as the background.
+        # be as long as the background, and as large: the background is painted black under it.
         character_mask, background = animate_inputs.get("character_mask"), animate_inputs.get("background_video")
-        if (character_mask is not None and background is not None and character_mask.ndim >= 3
-                and character_mask.shape[0] > 1 and character_mask.shape[0] != background.shape[0]):
+        if character_mask is None or background is None:
+            return
+        if character_mask.ndim >= 3 and character_mask.shape[0] > 1 and character_mask.shape[0] != background.shape[0]:
             raise ValueError("character_mask has {} frames but background_video has {}: the mask marks where the character "
                              "goes in each background frame, so connect the two from the same video.".format(
                                  int(character_mask.shape[0]), int(background.shape[0])))
+        if tuple(character_mask.shape[-2:]) != tuple(background.shape[1:3]):
+            raise ValueError("character_mask is {}x{} but background_video is {}x{}: the background is painted black where "
+                             "the mask marks the character, so connect the two from the same video.".format(
+                                 int(character_mask.shape[-1]), int(character_mask.shape[-2]), int(background.shape[2]),
+                                 int(background.shape[1])))
 
     def after_animate(self, positive, negative, trim_image, length, offset, animate_inputs):
         character_mask = animate_inputs.get("character_mask")

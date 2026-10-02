@@ -138,11 +138,12 @@ def test_the_log_names_the_half_videos(node_module, caplog, node):
 
 
 def test_a_float32_run_hands_the_core_node_the_videos_themselves(received):
+    # animate mode (replacement mode windows every chunk: test_long_video_replacement.py)
     module, calls = received
-    exact = inputs(ANIMATE1)
+    exact = {name: value for name, value in inputs(ANIMATE1).items() if name not in ("background_video", "character_mask")}
     run(module, pose_frames=FRAMES, node=ANIMATE1, vae=IndexVAE(), last_chunk="full", **exact)
     for call in calls[:3]:  # the chunks inside the videos (the last one reads past them: its window)
-        assert all(call[name] is exact[name] for name in ("pose_video", "face_video", "background_video", "character_mask"))
+        assert all(call[name] is exact[name] for name in ("pose_video", "face_video"))
 
 
 def test_the_colored_masks_mode_is_read_from_the_requantized_first_frame(node_module):

@@ -54,6 +54,10 @@ class AnimateAdapter:
     # the other videos the core node seeks by video_frame_offset, never extended: a chunk that
     # reads past the end of a held video gets them cut to its window with the held ones
     SEEKED_VIDEOS = ()
+    # (a held video, a mask the core node gets too) or None: with both connected the loop paints
+    # the video black wherever the mask is above 0 (libs/mask.painted_black), a chunk's window at a
+    # time, the mask's window taken as the video's (held alike; a single frame repeated over it)
+    PAINTED = None
 
     def __init__(self, node_name, last_chunk):
         self.node_name = node_name  # the node's class name, for the log lines

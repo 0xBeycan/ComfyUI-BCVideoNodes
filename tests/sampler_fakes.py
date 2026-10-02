@@ -39,6 +39,7 @@ sampler = Names("sampler", {
     **refs("models.scail2.adapter", "SCAIL2Adapter", "mask_convention"),
     **refs("libs.color", "srgb_to_lab"),
     **seams("pipelines.long_video", "lab_transfer", "requantized"),
+    **seams("libs.mask", "painted_black"),
 }, alias="walong")
 
 
