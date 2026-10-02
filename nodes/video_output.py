@@ -52,7 +52,7 @@ class BCVSaveVideo:
                 "save_metadata": ("BOOLEAN", {"default": True, "tooltip": "Writes the workflow and the prompt into the file, so dropping the file on ComfyUI loads the workflow. ComfyUI's --disable-metadata turns it off for every saver."}),
             },
             "optional": {
-                "audio": ("AUDIO", {"tooltip": "Muxed in and cut to the video's length."}),
+                "audio": ("AUDIO", {"tooltip": "Muxed in and cut to the video's length. Take it from Get Video Info's audio output, not Load Video's: a link to Load Video keeps its whole decoded clip in memory until this node has run, at the end of the run."}),
             },
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
@@ -98,7 +98,7 @@ class BCVVideoComparer:
             "optional": {
                 "video_a": ("IMAGE", {"tooltip": "Fills the node."}),
                 "video_b": ("IMAGE", {"tooltip": "Drawn over A from the left edge up to the pointer."}),
-                "audio": ("AUDIO", {"tooltip": "Played with the clips, cut to their length."}),
+                "audio": ("AUDIO", {"tooltip": "Played with the clips, cut to their length. Take it from Get Video Info's audio output, not Load Video's: a link to Load Video keeps its whole decoded clip in memory until this node has run, at the end of the run."}),
             },
         }
 
