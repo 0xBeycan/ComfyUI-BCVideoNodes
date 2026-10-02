@@ -272,7 +272,9 @@ pack adds after that still turns the saving off for that prompt, with a console 
   holds, a frame at a time, or a chunk's window in the samplers, never the whole clip at once (that
   holds both copies). A loop over the frames iterates HalfFrames: the next frame is converted on a
   worker thread into one of two reused float32 frames while the loop's model runs, so the loop
-  keeps fp32's speed; a frame is valid until the next is read. Core resizes and scales in the dtype it gets, and cv2 refuses float16. No
+  keeps fp32's speed; a frame is valid until the next is read. A worker thread that touches
+  tensors runs in the caller's `torch.inference_mode`: ComfyUI runs every node under it, it holds
+  per thread, and only inference mode may write into the inference tensors the node made. Core resizes and scales in the dtype it gets, and cv2 refuses float16. No
   float16 arithmetic on the CPU (selections and comparisons are not arithmetic). The clips the pack
   makes from a half clip keep its dtype (pose images, the SAM mask, the final mask, bg_images, the
   colored driving mask, the sampler output, whose chunks are still seeded as decoded); Face Crop's

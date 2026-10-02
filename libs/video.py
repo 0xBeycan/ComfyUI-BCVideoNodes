@@ -86,7 +86,10 @@ class HalfFrames:
     Iterating hands out the frames in two float32 frames used in turn, the next one requantized on a
     worker thread while the caller works on the one it has: the conversion runs while the caller's
     model does, instead of before it, and no frame-sized array is allocated per frame. A frame is
-    valid until the next one is read. `shape` is the batch's, `dtype` the frames' (float32)."""
+    valid until the next one is read. The worker reads in the caller's inference mode, which is
+    per thread: ComfyUI runs every node under torch.inference_mode(), so the two frames are inference
+    tensors, which only inference mode may write into. `shape` is the batch's, `dtype` the frames'
+    (float32)."""
 
     def __init__(self, images):
         self.images = images
@@ -112,9 +115,11 @@ class HalfFrames:
         if not len(self):
             return
         frames = [torch.empty(self.shape[1:], dtype=torch.float32) for _ in range(2)]
+        inference = torch.is_inference_mode_enabled()
 
         def read(i):
-            return requantized(self.images[i], frames[i % 2]).numpy()
+            with torch.inference_mode(inference):
+                return requantized(self.images[i], frames[i % 2]).numpy()
 
         with ThreadPoolExecutor(1, thread_name_prefix="BCVideoNodes-frames") as worker:
             ahead = worker.submit(read, 0)

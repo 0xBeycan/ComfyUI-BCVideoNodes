@@ -81,6 +81,18 @@ def test_iterated_half_frames_are_read_one_ahead_into_two_reused_float32_frames(
     assert video.requantized(window, out) is out and torch.equal(out, exact[1:3])
 
 
+def test_iterated_half_frames_read_under_comfyuis_inference_mode():
+    # ComfyUI runs every node under torch.inference_mode(), which holds on the caller's thread only:
+    # the clip and the two reused frames are inference tensors, and the worker reads into them
+    exact = levels(4, 6, 5, 3)
+    with torch.inference_mode():
+        half = exact.half()
+        frames = [frame.copy() for frame in video.as_numpy(half)]
+    assert half.is_inference() and len(frames) == 4
+    assert all(np.array_equal(frame, exact[i].numpy()) for i, frame in enumerate(frames))
+    assert [frame.copy() for frame in video.as_numpy(exact.half())][3].tolist() == frames[3].tolist()  # and outside it
+
+
 def test_a_float32_batch_is_its_own_memory_and_anything_else_an_array():
     exact = levels(2, 3, 4, 3)
     array = video.as_numpy(exact)
