@@ -1,9 +1,13 @@
 """The video input nodes' ComfyUI surface: Load Video's widgets as the contract fixes them (order,
 defaults, the resolution sizes for the frontend, no core video upload, precision the last widget,
 fp16 by default), its validation of a
-resolution of another model, Get Video Info's outputs in video_info's order (Load Video's audio
-itself first), Load Reference
-Image's preview payload, Conform Video. ComfyUI's input and temp folders are a test's tmp dirs."""
+resolution of another model, its file of the output or temp folder the value names (a video
+dragged from the queue) and never one outside it, Get Video Info's outputs in video_info's order
+(Load Video's audio itself first), Load Reference
+Image's preview payload, Conform Video. ComfyUI's input, output and temp folders are a test's tmp
+dirs."""
+import os
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -15,11 +19,10 @@ from video_input_fakes import grey_clip, ramp_audio, video  # noqa: E402
 
 @pytest.fixture
 def folders(tmp_path, monkeypatch):
-    """ComfyUI's input and temp folders moved into tmp_path."""
-    (tmp_path / "input").mkdir()
-    (tmp_path / "temp").mkdir()
-    monkeypatch.setattr(folder_paths, "input_directory", str(tmp_path / "input"))
-    monkeypatch.setattr(folder_paths, "temp_directory", str(tmp_path / "temp"))
+    """ComfyUI's input, output and temp folders moved into tmp_path."""
+    for name in ("input", "output", "temp"):
+        (tmp_path / name).mkdir()
+        monkeypatch.setattr(folder_paths, f"{name}_directory", str(tmp_path / name))
     return tmp_path
 
 
@@ -76,6 +79,28 @@ def test_load_video_loads_from_the_input_folder(folders):
     assert half.dtype == torch.float16 and torch.equal(half, images.half()) and half_info == info
 
 
+@pytest.mark.parametrize("folder", ["output", "temp"])
+def test_load_video_loads_a_file_of_the_folder_its_value_names(folders, folder):
+    # the value a video dragged from the queue gets: core's annotated file path, as Load Image takes it
+    grey_clip(folders / "input" / "clip.mkv", 5)
+    path = grey_clip(folders / folder / "clip.mkv", 9)
+    name = f"clip.mkv [{folder}]"
+    assert video.BCVLoadVideo.VALIDATE_INPUTS(video=name) is True
+    assert video.BCVLoadVideo.IS_CHANGED(name) == os.path.getmtime(path)
+    images, _, info = video.BCVLoadVideo().load(name, "Wan", "480p", "auto", "", 1, "")
+    assert images.shape == (9, 480, 832, 3) and info["source_frame_count"] == 9
+
+
+@pytest.mark.parametrize("name", ["../outside.mkv [output]", "{root}/outside.mkv [temp]", "link.mkv [output]"])
+def test_load_video_never_leaves_the_folder_its_value_names(folders, name):
+    grey_clip(folders / "outside.mkv", 5)
+    os.symlink(folders / "outside.mkv", folders / "output" / "link.mkv")
+    name = name.format(root=folders)
+    assert video.BCVLoadVideo.VALIDATE_INPUTS(video=name) == f"Invalid video file: {name}"
+    with pytest.raises(ValueError, match="Invalid file path"):
+        video.BCVLoadVideo().load(name, "Wan", "480p", "auto", "", 1, "")
+
+
 def test_get_video_info_outputs_every_field_in_order():
     audio = {"waveform": torch.zeros(1, 2, 48000), "sample_rate": 48000}
     info = {"audio": audio, "model": "Wan", "resolution": "720p", "orientation": "portrait", "source_fps": 30.0,
@@ -88,6 +113,22 @@ def test_get_video_info_outputs_every_field_in_order():
                                  "INT", "FLOAT", "INT", "INT")
     out = node().get(info)
     assert out == tuple(info.values()) and out[0] is audio  # Load Video's audio itself, first
+
+
+def test_a_typed_force_fps_is_the_rate_save_video_writes(folders):
+    # Load Video -> Get Video Info's loaded_fps -> Save Video: the file's rate is force_fps as typed,
+    # and with force_fps empty the video's own
+    from fractions import Fraction
+
+    from video_output_fakes import decode
+    from video_output_fakes import video as output
+
+    grey_clip(folders / "input" / "clip.mkv", 9, Fraction(30000, 1001))
+    for force, rate in (("30", Fraction(30)), ("", Fraction(30000, 1001))):
+        images, _, info = video.BCVLoadVideo().load("clip.mkv", "None", "source", "auto", force, 1, "", "fp32")
+        fps = video.BCVGetVideoInfo().get(info)[list(info).index("loaded_fps")]
+        saved = output.BCVSaveVideo().save(images, fps, "clip", "h264-mp4", 19, "medium", "yuv420p", True, False)
+        assert decode(str(folders / "output" / saved["ui"][output.UI_KEY][0]["filename"]))["rate"] == rate
 
 
 def test_get_video_info_hands_on_load_videos_audio(folders):

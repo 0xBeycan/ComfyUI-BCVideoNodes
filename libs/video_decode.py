@@ -51,12 +51,12 @@ def probe(path):
 
 
 def select_frames(fps, frames, force_fps=None):
-    """The source frame indices kept at `force_fps` (None: every frame), of `frames` frames at
-    `fps`: real frames kept or dropped on the target time grid, never blended. Output frame m is
-    the first source frame at or after m / force_fps (a frame would repeat were force_fps above
-    fps; Load Video rejects that before it gets here). The time is accumulated in floats in this
-    order on purpose, so the kept indices are the ones the established loaders keep, float
-    boundaries included (30 -> 24 keeps 0, 2, 3, 4, 5, 7)."""
+    """The source frame indices of `force_fps`'s time grid (None: every frame), of `frames` frames
+    at `fps`: real frames, never blended. Output frame m is the first source frame at or after
+    m / force_fps, so below `fps` frames are dropped and above it frames repeat (16 -> 32 keeps
+    0, 1, 1, 2, 2, ...); the grid ends after the last source frame. The time is accumulated in
+    floats in this order on purpose, so the indices are the ones the established loaders keep,
+    float boundaries included (30 -> 24 keeps 0, 2, 3, 4, 5, 7)."""
     base = 1 / fps
     target = base if force_fps is None else 1 / force_fps
     offset, index, kept = target, 0, []

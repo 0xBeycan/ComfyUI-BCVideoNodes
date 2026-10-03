@@ -62,7 +62,7 @@ libs/                log, bbox, keypoints, mask (and the final mask: FinalMaskCo
                      Load Video's precision values; requantized and HalfFrames, a half clip read as float32),
                      color, config_widgets, tensor_bytes (module_bytes: the bytes of a model's weights),
                      pose_data, draw_rules (the Pose Config draw rules: parts left out of the pose images),
-                     video_sizes (the model table: sizes, frame rule, grid; the orientation rule; the Conform
+                     video_sizes (the model table: sizes, frame rule, grid, NO_MODEL; the orientation rule; the Conform
                      Video ladder), video_info (the VideoInfo TypedDict, its audio an Audio), resize (the one
                      fit function: crop, pad or cut, a frame into a preallocated output; center_crop, core's
                      center-crop rule),
@@ -345,7 +345,9 @@ pack adds after that still turns the saving off for that prompt, with a console 
   ComfyUI loads it, so its root registers the link stamp.
 
 - `tests/nodes/test_video_input_route.py` states Load Video's plan route: its answer equals what
-  `load_video` loads and raises, and the file stays inside the input folder.
+  `load_video` loads and raises, and the file stays inside the input folder, or the output or temp
+  folder its annotation names (`name [output]`, `name [temp]`: a video dragged from the queue or
+  the media assets panel).
 
 ## Contracts at the boundary
 
@@ -369,7 +371,8 @@ pack adds after that still turns the saving off for that prompt, with a console 
   height, start, audio}, info (VideoInfo, what the loader would output, without `audio`: no
   sample goes into the JSON), available, error (the
   loader's own message or null)}). It answers from the loader's own functions, so the preview
-  and the loader cannot drift; the file is resolved only inside ComfyUI's input folder.
+  and the loader cannot drift; the file is resolved only inside ComfyUI's input folder, or the
+  output or temp folder its annotation names.
 - The codec names (`h264-mp4`, `h265-mp4`, `av1-webm`, `vp9-webm`) are stored in saved
   workflows: add codecs, never rename or remove one.
 - The ui payload the players read, `bcv_video` (`UI_KEY` in `nodes/video_output.py`): a list of
@@ -412,8 +415,11 @@ optional `reference_image`); the pose models are ViTPose-H and Sapiens2; the two
 multi-person) default to "ours" and are bit-identical there; features the owner did not adopt
 (the ViTPose flip test, the other SAM A/B switches, the M4 mask-threshold options) are removed;
 multi-person is phase 2; a failed download keeps its `.part` file; Load Video decodes with PyAV,
-YUV -> RGB with the stream's own colour tags (cv2 ignores them); `force_fps` only lowers the
-frame rate (real frames kept or dropped, never repeated); the video player is not a node (it lives
+YUV -> RGB with the stream's own colour tags (cv2 ignores them); `force_fps` is the loaded frame
+rate exactly as typed (empty: the source's rate as it is): the source's real frames on its time
+grid (output m = the first source frame at or after m / force_fps), dropped below the source rate,
+repeated above it, never blended or interpolated, the reference loader's indices; the audio is the
+source's over the loaded span (owner, 2026-10-03); the video player is not a node (it lives
 in the Load Video, Save Video and Video Comparer previews).
 
 ## Roadmap

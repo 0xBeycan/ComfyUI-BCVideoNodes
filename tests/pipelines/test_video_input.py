@@ -80,33 +80,45 @@ def test_errors_say_what_to_change(tmp_path):
         assert str(error.value).startswith(message), widgets
 
 
-@pytest.mark.parametrize("rate, force, message", [
-    (30, "31", "force_fps 31 is above the video's frame rate 30: the loader only lowers the frame rate (it keeps "
-               "or drops real frames, never repeats them). Leave force_fps empty or set it to 30 or less."),
-    (30, "300", "force_fps 300 is above the video's frame rate 30"),
-    (30000 / 1001, "30", "force_fps 30 is above the video's frame rate 29.97"),
+@pytest.mark.parametrize("rate, frames, force, expected", [
+    (16, 5, "32", [0, 1, 1, 2, 2, 3, 3, 4, 4]),
+    (24, 12, "30", [0, 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 9, 10]),  # 14 on the grid, cut to 13
+    (30, 5, "60", [0, 1, 1, 2, 2, 3, 3, 4, 4]),
 ])
-def test_force_fps_above_the_source_rate_is_an_error(tmp_path, monkeypatch, rate, force, message):
+def test_force_fps_above_the_source_rate_repeats_real_frames(tmp_path, monkeypatch, rate, frames, force, expected):
+    # the output batch is allocated once, at its final count; a repeat is a copy of the real frame in it
+    allocated, allocate = [], torch.empty
+
+    def recording(*shape, **kwargs):
+        allocated.append(tuple(shape[0]) if len(shape) == 1 else shape)
+        return allocate(*shape, **kwargs)
+
+    monkeypatch.setattr(torch, "empty", recording)
+    images, _, info = load(grey_clip(tmp_path / "clip.mkv", frames, rate), force_fps=force)
+    assert frame_indices(images) == expected
+    assert allocated == [(len(expected), 480, 832, 3)]
+    for position in range(1, len(expected)):
+        if expected[position] == expected[position - 1]:
+            assert torch.equal(images[position], images[position - 1])
+    assert info["loaded_fps"] == float(force) and info["loaded_frame_count"] == len(expected)
+    assert info["loaded_duration"] == pytest.approx(len(expected) / float(force))
+
+
+@pytest.mark.parametrize("rate, frames, force, expected, loaded", [
+    (30, 9, "30", list(range(9)), 30.0),
+    (30000 / 1001, 9, "30", list(range(9)), 30.0),  # 30, not the video's 29.97
+    # a hair below the video's rate: 29.97 exactly, its grid drops frame 1 (10 -> 9 frames)
+    (30000 / 1001, 10, "29.97", [0, 2, 3, 4, 5, 6, 7, 8, 9], 29.97),
+    (30000 / 1001, 9, "", list(range(9)), None),  # empty: the video's own rate, as it is
+])
+def test_a_typed_force_fps_is_the_loaded_rate_exactly(tmp_path, rate, frames, force, expected, loaded):
     from fractions import Fraction
 
-    path = grey_clip(tmp_path / "clip.mkv", 12, Fraction(rate).limit_denominator(1001))
-
-    def allocate(*args, **kwargs):
-        raise AssertionError("a batch was allocated before force_fps was checked")
-
-    monkeypatch.setattr(torch, "empty", allocate)
-    with pytest.raises(ValueError) as error:
-        load(path, force_fps=force)
-    assert str(error.value).startswith(message)
-
-
-@pytest.mark.parametrize("rate, force", [(30, "30"), (30000 / 1001, "29.97"), (30000 / 1001, "29.97003")])
-def test_force_fps_at_the_source_rate_keeps_every_frame(tmp_path, rate, force):
-    # 29.97 typed for a 30000/1001 video is its rate: its grid, a hair slower, would drop frame 1
-    from fractions import Fraction
-
-    images, _, info = load(grey_clip(tmp_path / "clip.mkv", 9, Fraction(rate).limit_denominator(1001)), force_fps=force)
-    assert frame_indices(images) == list(range(9)) and info["loaded_fps"] == rate
+    path = grey_clip(tmp_path / "clip.mkv", frames, Fraction(rate).limit_denominator(1001))
+    images, _, info = load(path, force_fps=force)
+    assert frame_indices(images) == expected
+    assert info["loaded_fps"] == (info["source_fps"] if loaded is None else loaded)
+    assert info["source_fps"] == pytest.approx(rate, abs=1e-9)
 
 
 def test_the_spec_range_example():
@@ -284,6 +296,37 @@ def test_audio_is_the_loaded_range(tmp_path):
     assert info["audio"] is audio and list(info)[0] == "audio"  # video_info's first field: the audio output itself
     assert audio["sample_rate"] == 48000
     assert np.array_equal(audio["waveform"][0].numpy(), (samples[:, 6400:6400 + 14400] / 32768).astype(np.float32))
+
+
+def test_the_4n_plus_1_cut_drops_the_last_frames_and_the_audio_ends_with_them(tmp_path):
+    samples, rate = ramp_audio(1.2)
+    path = grey_clip(tmp_path / "clip.mkv", 31, audio=(samples, rate))
+    images, audio, info = load(path)  # 31 -> 29: frames 30 and 31 (indices 29, 30) dropped
+    assert frame_indices(images) == list(range(29)) and info["loaded_duration"] == pytest.approx(29 / 30)
+    assert np.array_equal(audio["waveform"][0].numpy(), (samples[:, :46400] / 32768).astype(np.float32))  # 29 / 30 s
+    # raised to 60 fps (frame 0 once, then each frame twice), 59 frames of it -> 57, 57 / 60 s of sound
+    images, audio, info = load(path, force_fps="60", frame_count="59")
+    assert frame_indices(images) == [0] + [index for index in range(1, 29) for _ in range(2)]
+    assert np.array_equal(audio["waveform"][0].numpy(), (samples[:, :45600] / 32768).astype(np.float32))
+
+
+def test_the_log_names_the_cut_and_never_model_none(tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="BCVideoNodes")
+    sound = grey_clip(tmp_path / "sound.mkv", 31, audio=ramp_audio(1.2))
+    load(sound)
+    assert "[BCVideoNodes] 31 frames -> 29 for Wan's 4n+1: the last 2 dropped, audio cut to match" in caplog.messages
+    caplog.clear()
+    load(grey_clip(tmp_path / "mute.mkv", 31), model="SCAIL", resolution="512p", start_frame=3, frame_count="11")
+    assert "[BCVideoNodes] 11 frames -> 9 for SCAIL's 4n+1: the last 2 dropped" in caplog.messages
+    caplog.clear()
+    load(grey_clip(tmp_path / "even.mkv", 29))  # already 4n+1: nothing cut, no line
+    assert not any("4n+1" in message for message in caplog.messages)
+    caplog.clear()
+    load(sound, model="None", resolution="source")
+    assert caplog.messages[0] == "[BCVideoNodes] loading source landscape (64x32) from a 64x32 video ..."
+    assert not any("None" in message or "4n+1" in message for message in caplog.messages)
 
 
 def test_audio_with_force_fps_spans_the_kept_frames(tmp_path):

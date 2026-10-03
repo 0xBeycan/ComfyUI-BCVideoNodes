@@ -14,9 +14,6 @@ from ..libs import video_sizes as sizes
 from ..libs.video import FP16, FP32, precision_dtype, requantized
 from ..libs.video_info import VideoInfo
 
-# a force_fps this close to the video's rate (as a share of it) is that rate
-FORCE_FPS_TOLERANCE = 1e-4
-
 
 def parse_force_fps(value):
     """force_fps's text as a rate: None when empty (the source's), else a number above 0."""
@@ -67,39 +64,21 @@ def loaded_frames(kept, start_frame, frame_count, step, force_fps=None):
     return chosen[:(len(chosen) - 1) // step * step + 1]
 
 
-def kept_rate(rate, fps):
-    """The rate Load Video keeps frames at for a force_fps of `rate` (parse_force_fps's) on a video
-    of `fps`: None (every frame) when `rate` is None or within FORCE_FPS_TOLERANCE of `fps`, else
-    `rate`. Raises ValueError, saying what to set, for a rate above `fps`."""
-    if rate is not None and abs(rate - fps) <= fps * FORCE_FPS_TOLERANCE:
-        # the video's own rate, as typed (29.97 for 30000/1001): every frame, not a grid a hair
-        # slower that drops frame 1
-        return None
-    if rate is not None and rate > fps:
-        # the loader keeps or drops real frames, it never repeats one to raise the rate: a repeat
-        # fakes the frame rate, and a typo such as 300 would multiply the batch
-        raise ValueError(f"force_fps {rate:g} is above the video's frame rate {fps:.6g}: the loader only "
-                         f"lowers the frame rate (it keeps or drops real frames, never repeats them). Leave force_fps "
-                         f"empty or set it to {fps:.6g} or less.")
-    return rate
-
-
 def plan(path, model, resolution, orientation, force_fps, frame_count, precision=FP16, probe=None):
     """Load Video's widgets checked against the video at `path`, before a frame is loaded:
-    {"source": the probe (video_decode.probe's dict), "force_fps": the rate typed or None, "rate":
-    the rate frames are kept at (kept_rate's), "count": frame_count or None, "orientation": portrait
-    or landscape, "width", "height": the loaded size, "fit": how a frame gets there (resize.CROP, or
-    resize.CUT for source), "dtype": the batch's (libs/video.precision_dtype)}. Raises ValueError,
+    {"source": the probe (video_decode.probe's dict), "rate": force_fps's rate, the loaded rate
+    exactly as typed (None when empty: the source's), "count": frame_count or None, "orientation":
+    portrait or landscape, "width", "height": the loaded size, "fit": how a frame gets there
+    (resize.CROP, or resize.CUT for source), "dtype": the batch's (libs/video.precision_dtype)}. Raises ValueError,
     saying what to change, in the order load_video meets them: the widgets, then the file. `probe`
     reads the file (video_decode.probe when None)."""
     size = sizes.model_size(model, resolution)
-    typed = parse_force_fps(force_fps)
+    rate = parse_force_fps(force_fps)
     count = parse_frame_count(frame_count)
     if orientation not in sizes.ORIENTATIONS:
         raise ValueError(f"orientation {orientation!r} is not one of {', '.join(sizes.ORIENTATIONS)}.")
     dtype = precision_dtype(precision)
     source = (probe or video_decode.probe)(path)
-    rate = kept_rate(typed, source["fps"])
     own = sizes.orientation_of(source["width"], source["height"])
     turned = own if orientation == sizes.AUTO else orientation
     if size is not None:
@@ -116,17 +95,20 @@ def plan(path, model, resolution, orientation, force_fps, frame_count, precision
             raise ValueError(f"resolution source gives {width}x{height}, smaller than model {model}'s {grid}-pixel "
                              f"grid; pick model None or one of {model}'s sized resolutions.")
         width, height = width // grid * grid, height // grid * grid
-    return {"source": source, "force_fps": typed, "rate": rate, "count": count, "orientation": turned,
+    return {"source": source, "rate": rate, "count": count, "orientation": turned,
             "width": width, "height": height, "fit": resize.CROP if size is not None else resize.CUT, "dtype": dtype}
 
 
 def frame_indices(source, rate, start_frame, count, model):
-    """The source indices Load Video loads from a video probed as `source`: the frames kept at
-    `rate`, from `start_frame`, `count` of them (None: all the rest), cut to the model's frame rule
-    (4n+1 for Wan and SCAIL, none for None; loaded_frames, which raises for a range past the
-    frames)."""
+    """(the source indices Load Video loads from a video probed as `source`, how many frames the
+    range held before the cut): the frames of `rate`'s time grid (video_decode.select_frames: real
+    frames dropped below the video's rate, repeated above it), from `start_frame`, `count` of them
+    (None: all the rest), cut to the model's frame rule (4n+1 for Wan and SCAIL, none for None;
+    loaded_frames, which raises for a range past the frames). The cut drops the range's last
+    frames."""
     kept = video_decode.select_frames(source["fps"], source["frames"], rate)
-    return loaded_frames(kept, start_frame, count, sizes.MODELS[model]["frames"], rate)
+    indices = loaded_frames(kept, start_frame, count, sizes.MODELS[model]["frames"], rate)
+    return indices, len(kept) - start_frame + 1 if count is None else count
 
 
 def video_info(model, resolution, planned, frames):
@@ -151,11 +133,10 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
     the load runs once more with the decoder's count."""
     planned = plan(path, model, resolution, orientation, force_fps, frame_count, precision)
     source, rate, width, height = planned["source"], planned["rate"], planned["width"], planned["height"]
-    if planned["force_fps"] is not None and rate is None:
-        log.info(f"force_fps {planned['force_fps']:g} is the video's frame rate ({source['fps']:.6g}): every frame kept")
     result = {}
     stored = "" if precision == FP32 else f" as {precision}"
-    with log.step(f"loading {model} {resolution} {planned['orientation']} ({width}x{height}){stored} from a "
+    named = "" if model == sizes.NO_MODEL else f"{model} "
+    with log.step(f"loading {named}{resolution} {planned['orientation']} ({width}x{height}){stored} from a "
                   f"{source['width']}x{source['height']} video", result):
         try:
             loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model,
@@ -168,11 +149,16 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
         if loaded is None:  # outside the except block: its traceback would keep the first batch alive
             loaded = _decode(path, source, width, height, planned["fit"], rate, start_frame, planned["count"], model,
                              planned["dtype"])
-        images, indices = loaded
+        images, indices, ranged = loaded
         info = video_info(model, resolution, planned, len(indices))
         frame_time = 1 / info["loaded_fps"]
+        # the loaded frames' span on the loaded rate's grid: it ends where the frames end, after the
+        # cut to the frame rule too, and frames dropped or repeated by force_fps keep it in sync
         audio = video_decode.read_audio(path, (start_frame - 1) * frame_time, len(indices) * frame_time,
                                         origin=source["start"])
+        if ranged > len(indices):
+            log.info(f"{ranged} frames -> {len(indices)} for {model}'s {sizes.MODELS[model]['frames']}n+1: the last "
+                     f"{ranged - len(indices)} dropped" + (", audio cut to match" if audio is not None else ""))
         info = VideoInfo(audio=audio, **info)  # the audio output itself, first, for Get Video Info
         result["frames"] = len(indices)
         result["audio"] = "none" if audio is None else f"{audio['waveform'].shape[-1]} samples"
@@ -180,11 +166,12 @@ def load_video(path, model, resolution, orientation, force_fps, start_frame, fra
 
 
 def _decode(path, source, width, height, how, rate, start_frame, count, model, dtype):
-    """(the batch, its source indices): the kept frames decoded one at a time and fitted (resize.fit
-    `how`) into a batch of `dtype` allocated at its final size."""
+    """(the batch, its source indices, the frames of the range before the cut: frame_indices'):
+    each kept frame decoded once and fitted (resize.fit `how`) into a batch of `dtype` allocated at
+    its final size, a repeated frame copied there from its first position."""
     from comfy.utils import ProgressBar
 
-    indices = frame_indices(source, rate, start_frame, count, model)
+    indices, ranged = frame_indices(source, rate, start_frame, count, model)
     images = torch.empty((len(indices), height, width, 3), dtype=dtype)
     bar = ProgressBar(len(indices))
     for pixels, positions in video_decode.kept_frames(path, indices, source["frames"], to_end=count is None):
@@ -192,7 +179,7 @@ def _decode(path, source, width, height, how, rate, start_frame, count, model, d
         for position in positions[1:]:
             images[position].copy_(images[positions[0]])
         bar.update_absolute(positions[-1] + 1, len(indices))
-    return images, indices
+    return images, indices, ranged
 
 
 class LoadPreview(TypedDict):
@@ -219,7 +206,7 @@ def preview(path, model, resolution, orientation, force_fps, start_frame, frame_
     answer = LoadPreview(source=None, info=None, available=None, error=None)
     try:
         planned = plan(path, model, resolution, orientation, force_fps, frame_count, precision, probe)
-        indices = frame_indices(planned["source"], planned["rate"], start_frame, planned["count"], model)
+        indices, _ = frame_indices(planned["source"], planned["rate"], start_frame, planned["count"], model)
         answer["info"] = video_info(model, resolution, planned, len(indices))
     except (ValueError, FFmpegError) as error:
         answer["error"] = str(error)
@@ -228,8 +215,7 @@ def preview(path, model, resolution, orientation, force_fps, start_frame, frame_
     try:
         source = probe(path)
         answer["source"] = dict(source)
-        kept = video_decode.select_frames(source["fps"], source["frames"],
-                                          kept_rate(parse_force_fps(force_fps), source["fps"]))
+        kept = video_decode.select_frames(source["fps"], source["frames"], parse_force_fps(force_fps))
         if 1 <= start_frame <= len(kept):
             answer["available"] = len(kept) - start_frame + 1
     except (ValueError, FFmpegError):

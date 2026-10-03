@@ -21,7 +21,8 @@ the full-resolution clip never sits in memory.
 
 - in: `video` (a video file of ComfyUI's input folder; the node's `choose
   video to upload` button, or a video file dropped on the node, uploads one
-  there and selects it)
+  there and selects it; a video dragged from the queue or the media assets
+  panel is selected where it is, as `name [output]` or `name [temp]`)
 - widgets: `model` `Wan` (or `SCAIL`, `None`), `resolution` `720p`, `orientation` `auto`,
   `force_fps` (empty), `start_frame` 1, `frame_count` (empty), `precision`
   `fp16` (or `fp32`)
@@ -56,17 +57,26 @@ is loaded.
 
 Which frames are loaded:
 
-- `force_fps`: empty keeps the video's own frame rate. A number above 0, at
-  most the video's rate, keeps or drops real frames on that rate's time grid;
-  it never blends or repeats a frame, so it only lowers the frame rate: a
-  rate above the video's is an error, and one within 0.01% of it is the
-  video's rate (29.97 on a 30000/1001 clip keeps every frame).
+- `force_fps`: empty keeps the video's own frame rate as it is (a 29.97 fps
+  video loads at 29.97). A number above 0 is the loaded frame rate exactly as
+  typed (`30` loads at 30, also from a 29.97 fps video), and the frames are
+  the video's real frames on that rate's time grid: output frame m is the
+  first frame at or after m / `force_fps` seconds. Below the video's rate
+  frames are dropped (30 to 24 drops one frame in five), above it frames are
+  repeated (16 to 32: the first frame once, then every frame twice; 29.97 to
+  30: one frame in a thousand shows twice); a frame is never blended or
+  interpolated. A rate a hair below the video's drops a frame early: 29.97 on
+  a 30000/1001 clip skips the second frame, then keeps every frame for about
+  ten thousand. Leave `force_fps` empty to keep every frame at the video's
+  own rate.
 - `start_frame` (counted from 1) and `frame_count` (empty: every frame from
   `start_frame` on) count the frames `force_fps` kept. A `start_frame` past
   the last frame, or a `frame_count` that runs past it, is an error that says
   how many frames there are and what to set.
 - The count is then cut down to the model's 4n+1 (a 100-frame range loads 97;
-  with `None`, 100).
+  with `None`, 100): the range's last frames are dropped, the audio ends with
+  the loaded frames, and the console names the cut ("100 frames -> 97 for
+  Wan's 4n+1: the last 3 dropped, audio cut to match").
 - A `force_fps` or a `frame_count` that is not a number is an error.
 
 `precision`: `fp16`, the default, stores the frames as float16, half the RAM
@@ -94,13 +104,16 @@ as the file is tagged; an untagged stream is read as BT.601 limited range,
 FFmpeg's default. A video stored rotated is turned upright.
 
 Audio: the first audio stream, from `start_frame`'s time for the loaded
-frames' duration.
+frames' duration, both on the loaded rate's time grid: (`start_frame` - 1) /
+`loaded_fps` seconds on, for `loaded_frame_count` / `loaded_fps` seconds. The
+audio is the video's own, never stretched, so it stays in sync whether
+`force_fps` drops or repeats frames and after the 4n+1 cut.
 
 `video_info` holds `audio`, the `audio` output itself (not a copy), then the
 `model` (`None` for no model), the `resolution` and the resolved
 `orientation`, then the source's `source_fps`, `source_frame_count`,
 `source_duration`, `source_width` and `source_height` (as displayed), then
-the loaded batch's `loaded_fps` (`force_fps`, or the source's rate),
+the loaded batch's `loaded_fps` (`force_fps` as typed, or the source's rate),
 `loaded_frame_count`, `loaded_duration`, `loaded_width` and `loaded_height`.
 
 The preview plays the source file in the browser as the loader will take it:

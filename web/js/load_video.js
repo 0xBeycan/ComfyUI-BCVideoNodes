@@ -1,10 +1,17 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
-import { PlayerWidget, drawMessage, drawTag, fitRect, guard, installPlayer } from "./player.js";
+import { PlayerWidget, drawMessage, drawTag, fitRect, guard, installPlayer, viewUrl } from "./player.js";
 
-// Load Video: the resolution labels of the chosen model, the upload of a video into input/, the
-// preview of the source file as the loader will take it, and what an empty force_fps or
-// frame_count stands for.
+// Load Video: the resolution labels of the chosen model, the upload of a video into input/, a
+// video dragged from the queue or the media assets panel, the preview of the source file as the
+// loader will take it, and what an empty force_fps or frame_count stands for.
+//
+// A video dragged from the queue or the media assets panel is selected where it is, as the
+// frontend's Load Image selects an image dragged from there: the widget gets core's annotated
+// file path, "name [output]" for a file of output/, "name [temp]" for one of temp/ (a file of
+// input/ keeps its bare name), which the loader, its validation and PLAN_ROUTE resolve inside that
+// folder only. The node claims such a drag; without that the canvas takes the drop and opens the
+// workflow the video carries.
 //
 // resolution offers the labels of the chosen model; the labels come with the node definition (the
 // resolution input's "bcv_sizes": model -> label -> [width, height], portrait; null for source,
@@ -27,6 +34,11 @@ const NODE = "BCVLoadVideo";
 const PLAN_ROUTE = "/bcvideonodes/load_video/plan";
 // the widgets the route is asked with: Load Video's inputs, in order
 const PLAN_PARAMS = ["video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count", "precision"];
+// the drag data of an item of the queue or the media assets panel: JSON {filename, subfolder,
+// type, media_kind, ...}, as the frontend's own nodes read it
+const ASSET_INFO = "application/x-comfy-asset-info";
+// the folders a widget value may name (core's folder_paths.annotated_filepath)
+const FOLDERS = ["input", "output", "temp"];
 // ms without a widget change before the route is asked
 const ASK_DELAY = 120;
 
@@ -66,6 +78,15 @@ function notify(summary, detail) {
 	else alert(`${summary}\n${detail}`);
 }
 
+// Adds `value` to the video widget's choices when it is not one of them and selects it.
+function select(node, value) {
+	const video = widget(node, "video");
+	if (!video.options.values.includes(value)) video.options.values.push(value);
+	video.value = value;
+	video.callback?.(value);
+	node.setDirtyCanvas?.(true, false);
+}
+
 // Uploads `file` into input/ (the endpoint the frontend's own uploads use) and selects it.
 async function upload(node, file) {
 	const body = new FormData();
@@ -77,13 +98,25 @@ async function upload(node, file) {
 		return false;
 	}
 	const { name, subfolder } = await resp.json();
-	const value = subfolder ? `${subfolder}/${name}` : name;
-	const video = widget(node, "video");
-	if (!video.options.values.includes(value)) video.options.values.push(value);
-	video.value = value;
-	video.callback?.(value);
-	node.setDirtyCanvas?.(true, false);
+	select(node, subfolder ? `${subfolder}/${name}` : name);
 	return true;
+}
+
+// The asset info of a video dragged from the queue or the media assets panel, or null.
+function draggedVideo(event) {
+	try {
+		const asset = JSON.parse(event?.dataTransfer?.getData(ASSET_INFO) || "null");
+		return asset?.filename && asset.media_kind === "video" && FOLDERS.includes(asset.type || "input") ? asset : null;
+	} catch {
+		return null; // not JSON
+	}
+}
+
+// The widget value of an asset: its path in its folder, annotated outside input/ (as the
+// frontend writes it for Load Image).
+function assetValue({ filename, subfolder, type }) {
+	const path = subfolder ? `${subfolder}/${filename}` : filename;
+	return type && type !== "input" ? `${path} [${type}]` : path;
 }
 
 function chooseFile(node) {
@@ -127,11 +160,19 @@ function setPlaceholder(w, text) {
 
 // ---- preview -------------------------------------------------------------------------------
 
+// [the path inside its folder, the folder] of a widget value, read as core reads it
+// (folder_paths.annotated_filepath: a value ending in "[output]", "[input]" or "[temp]" loses that
+// and the character before it; input/ without one).
+function folderOf(value) {
+	const type = FOLDERS.find((folder) => value.endsWith(`[${folder}]`));
+	return type ? [value.slice(0, -(type.length + 3)), type] : [value, "input"];
+}
+
 function sourceUrl(value) {
 	if (!value) return null;
-	const cut = value.lastIndexOf("/");
-	const q = new URLSearchParams({ filename: value.slice(cut + 1), subfolder: cut < 0 ? "" : value.slice(0, cut), type: "input" });
-	return api.apiURL(`/view?${q}`);
+	const [path, type] = folderOf(value);
+	const cut = path.lastIndexOf("/");
+	return viewUrl({ filename: path.slice(cut + 1), subfolder: cut < 0 ? "" : path.slice(0, cut), type });
 }
 
 // The centred region of a width x height frame with the target's aspect; the cut side rounded,
@@ -339,16 +380,27 @@ app.registerExtension({
 			return r;
 		};
 
-		// A video file dropped on the node is uploaded and selected.
+		// A video file dropped on the node is uploaded and selected; a video dragged from the queue
+		// or the media assets panel is selected where it is. The drag's data can be read only on the
+		// drop: the node claims every file or asset drag, and a drop it does not take (not a
+		// video) goes on to the canvas.
 		const onDragOver = nodeType.prototype.onDragOver;
 		nodeType.prototype.onDragOver = function (e) {
-			if (this.bcvUpload && e?.dataTransfer?.types?.includes?.("Files")) return true;
+			const types = e?.dataTransfer?.types;
+			if (this.bcvUpload && (types?.includes?.("Files") || types?.includes?.(ASSET_INFO))) return true;
 			return onDragOver?.apply(this, arguments) ?? false;
 		};
 		const onDragDrop = nodeType.prototype.onDragDrop;
 		nodeType.prototype.onDragDrop = async function (e) {
-			const file = this.bcvUpload ? [...(e?.dataTransfer?.files ?? [])].find((f) => f.type.startsWith("video/")) : null;
-			if (file) return await upload(this, file);
+			if (this.bcvUpload) {
+				const file = [...(e?.dataTransfer?.files ?? [])].find((f) => f.type.startsWith("video/"));
+				if (file) return await upload(this, file);
+				const asset = draggedVideo(e);
+				if (asset) {
+					select(this, assetValue(asset));
+					return true;
+				}
+			}
 			return (await onDragDrop?.apply(this, arguments)) ?? false;
 		};
 	},

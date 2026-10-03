@@ -7,7 +7,9 @@ loader's own checks and frame selection, without loading a frame.
 - every error is the loader's message, word for word, and the source and the empty frame_count's
   count still come with an error they do not depend on;
 - the probe is read once per file version;
-- the route serves only files of ComfyUI's input folder (400 otherwise);
+- the route serves only files of ComfyUI's input folder, and of the output or temp folder a
+  value's annotation names ("clip.mkv [output]", what a video dragged from the queue gets),
+  each inside its folder (400 otherwise);
 - without a ComfyUI server there is no route.
 
 The handler is called with aiohttp's mocked request; ComfyUI's input folder is a test's tmp dir."""
@@ -87,6 +89,8 @@ def test_audio_longer_than_the_video_gives_the_loaders_count(folders):
     ({"start_frame": 5, "frame_count": "11"}, 9, 56),
     ({"force_fps": "24", "start_frame": 3}, 45, 46),  # 60 frames at 30 fps keep 48 at 24 fps
     ({"force_fps": "30"}, 57, 60),  # the video's own rate: every frame
+    ({"force_fps": "60"}, 117, 119),  # above it: real frames repeated on the 60 fps grid
+    ({"force_fps": "31", "start_frame": 3}, 57, 59),  # 61 frames on the 31 fps grid
     ({"model": "SCAIL", "resolution": "704p", "orientation": "portrait", "frame_count": "21"}, 21, 60),
     # model None: no 4n+1; resolution source: the video's own size, or its crop to the other orientation
     ({"model": "None", "resolution": "1080p"}, 60, 60),
@@ -110,7 +114,6 @@ def test_the_answer_is_the_loaders_video_info(folders, widgets, info_frames, ava
 @pytest.mark.parametrize("widgets, has_source, available", [
     ({"force_fps": "fast"}, True, None),
     ({"force_fps": "0"}, True, None),
-    ({"force_fps": "31"}, True, None),
     ({"frame_count": "0"}, True, 30),
     ({"frame_count": "2.5"}, True, 30),
     ({"start_frame": 31}, True, None),
@@ -139,11 +142,12 @@ def test_a_file_the_loader_cannot_read(folders):
     assert answer["error"] == loader_error(folders / "input" / "notes.mp4")
 
 
-def test_a_missing_file_gets_the_validation_message(folders):
-    status, answer = ask("gone.mp4")
+@pytest.mark.parametrize("name", ["gone.mp4", "gone.mp4 [output]", "gone.mp4 [temp]"])
+def test_a_missing_file_gets_the_validation_message(folders, name):
+    status, answer = ask(name)
     assert status == 200
-    assert answer == {"source": None, "info": None, "available": None, "error": "Invalid video file: gone.mp4"}
-    assert answer["error"] == video.BCVLoadVideo.VALIDATE_INPUTS(video="gone.mp4")
+    assert answer == {"source": None, "info": None, "available": None, "error": f"Invalid video file: {name}"}
+    assert answer["error"] == video.BCVLoadVideo.VALIDATE_INPUTS(video=name)
 
 
 def test_the_probe_is_read_once_per_file_version(folders, monkeypatch):
@@ -161,28 +165,36 @@ def test_the_probe_is_read_once_per_file_version(folders, monkeypatch):
     assert calls == [path, path] and answer["source"]["frames"] == 13
 
 
-# --- the input folder only -------------------------------------------------------------------------
+# --- the input, output and temp folders only ------------------------------------------------------
 
-def test_files_of_the_input_folder_and_its_subfolders(folders):
-    (folders / "input" / "sub").mkdir()
-    grey_clip(folders / "input" / "sub" / "clip.mkv", 5)
-    grey_clip(folders / "input" / "clip.mkv", 5)
-    for name in ("sub/clip.mkv", "clip.mkv [input]"):
-        status, answer = ask(name)
-        assert status == 200 and answer["info"]["loaded_frame_count"] == 5, name
+@pytest.mark.parametrize("name, frames", [
+    ("clip.mkv", 5), ("sub/clip.mkv", 5), ("clip.mkv [input]", 5),
+    ("clip.mkv [output]", 9), ("sub/clip.mkv [output]", 9), ("clip.mkv [temp]", 13), ("sub/clip.mkv [temp]", 13),
+])
+def test_files_of_the_three_folders_and_their_subfolders(folders, name, frames):
+    # a clip of another length in each folder: the answer comes from the folder the value names
+    for folder, count in (("input", 5), ("output", 9), ("temp", 13)):
+        (folders / folder / "sub").mkdir()
+        grey_clip(folders / folder / "clip.mkv", count)
+        grey_clip(folders / folder / "sub" / "clip.mkv", count)
+    status, answer = ask(name)
+    assert status == 200 and answer["error"] is None and answer["info"]["loaded_frame_count"] == frames
+    _, _, info = video.BCVLoadVideo().load(name, **WIDGETS)
+    assert answer["info"] == without_audio(info)
 
 
 @pytest.mark.parametrize("name", [
-    "../outside.mkv", "sub/../../outside.mkv", "clip.mkv [output]", "clip.mkv [temp]", "{root}/outside.mkv",
-    "/etc/hosts", "link.mkv", "",
+    "../outside.mkv", "sub/../../outside.mkv", "{root}/outside.mkv", "/etc/hosts", "link.mkv", "",
+    "../outside.mkv [output]", "../input/clip.mkv [output]", "sub/../../outside.mkv [temp]",
+    "{root}/outside.mkv [output]", "/etc/hosts [temp]", "link.mkv [output]", "link.mkv [temp]", " [output]",
 ])
-def test_anything_outside_the_input_folder_is_refused(folders, name):
+def test_anything_outside_the_three_folders_is_refused(folders, name):
     grey_clip(folders / "outside.mkv", 5)
-    grey_clip(folders / "output" / "clip.mkv", 5)
-    grey_clip(folders / "temp" / "clip.mkv", 5)
-    os.symlink(folders / "outside.mkv", folders / "input" / "link.mkv")
+    for folder in ("input", "output", "temp"):
+        grey_clip(folders / folder / "clip.mkv", 5)
+        os.symlink(folders / "outside.mkv", folders / folder / "link.mkv")
     status, text = ask(name.format(root=folders))
-    assert status == 400 and text == "video must be a file of ComfyUI's input folder"
+    assert status == 400 and text == "video must be a file of ComfyUI's input, output or temp folder"
 
 
 @pytest.mark.parametrize("query, text", [

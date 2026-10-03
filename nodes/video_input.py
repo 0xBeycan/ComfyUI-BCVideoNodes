@@ -25,7 +25,8 @@ def _input_files(kind):
 
 
 def _missing_file(name, kind):
-    """None when the input file `name` exists, else the message ComfyUI shows."""
+    """None when the file `name` exists (in the input folder, or the folder its annotation names:
+    "name [output]", "name [temp]"), else the message ComfyUI shows."""
     import folder_paths
 
     return None if folder_paths.exists_annotated_filepath(name) else f"Invalid {kind} file: {name}"
@@ -38,14 +39,14 @@ class BCVLoadVideo:
 
         return {
             "required": {
-                "video": (_input_files("video"), {"tooltip": "The video file, from ComfyUI's input folder."}),
+                "video": (_input_files("video"), {"tooltip": "The video file, from ComfyUI's input folder; a video dropped from the queue or the media assets panel is loaded from the output or temp folder it is in."}),
                 "model": (list(sizes.MODELS), {"default": "Wan", "tooltip": "The model the video is loaded for: its generation sizes and its frame rule. Wan and SCAIL: 4n+1 frames. None: no frame rule (every frame of the range), Conform Video's sizes."}),
                 "resolution": (sizes.RESOLUTIONS, {
                     "default": "720p",
                     "bcv_sizes": {name: model["sizes"] for name, model in sizes.MODELS.items()},
                     "tooltip": "The generation size by its short edge; the labels follow model. Wan: 480p (480x832), 720p (720x1280). SCAIL: 512p (512x896), 704p (704x1280). None: 480p (480x854), 720p (720x1280), 1080p (1080x1920). Portrait sizes; landscape swaps them. The video is centre-cropped to that aspect and resized with lanczos. source (every model): the video's own pixels, no resize; the other orientation is a centre crop that keeps the short side (1920x1080 as portrait: 608x1080); Wan and SCAIL then cut each side centred down to their grid (Wan 16, SCAIL 32: 1920x1080 is 1920x1072 for Wan, 1920x1056 for SCAIL)."}),
                 "orientation": (sizes.ORIENTATIONS, {"default": sizes.AUTO, "tooltip": "auto: portrait when the video is taller than wide, otherwise landscape (a square video is landscape). landscape / portrait: that orientation, reached by a centre crop, never by a rotation."}),
-                "force_fps": ("STRING", {"default": "", "tooltip": "Empty: the video's own frame rate. A number above 0, at most the video's own rate: real frames kept or dropped on that rate's time grid (never blended or repeated; a rate above the video's is an error, one within 0.01% of it is the video's rate)."}),
+                "force_fps": ("STRING", {"default": "", "tooltip": "Empty: the video's own frame rate, as it is (a 29.97 fps video loads at 29.97). A number above 0: the loaded frame rate, exactly as typed (30 loads at 30). The real frames on that rate's time grid are loaded: below the video's rate frames are dropped, above it frames are repeated; never blended or interpolated. The audio is the video's own over the loaded frames' span, so it stays in sync."}),
                 "start_frame": ("INT", {"default": 1, "min": 1, "max": 2 ** 31 - 1, "step": 1, "tooltip": "The first frame loaded, counted from 1, after force_fps."}),
                 "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1 (Wan, SCAIL; None keeps it)."}),
             },
@@ -110,9 +111,9 @@ def register_plan_route():
 
 
 async def plan_route(request):
-    """PLAN_ROUTE: the LoadPreview (pipelines/video_input.py) of the input file `video` with the
-    other widget values, as JSON. 400 for a missing parameter, a start_frame that is not a whole
-    number, or a `video` outside ComfyUI's input folder."""
+    """PLAN_ROUTE: the LoadPreview (pipelines/video_input.py) of the file `video` with the other
+    widget values, as JSON. 400 for a missing parameter, a start_frame that is not a whole number,
+    or a `video` outside ComfyUI's input, output and temp folders."""
     import asyncio
 
     from aiohttp import web
@@ -127,9 +128,9 @@ async def plan_route(request):
         start_frame = int(query["start_frame"])
     except ValueError:
         return web.Response(status=400, text="start_frame is not a whole number")
-    path = _input_path(query["video"])
+    path = _video_path(query["video"])
     if path is None:
-        return web.Response(status=400, text="video must be a file of ComfyUI's input folder")
+        return web.Response(status=400, text="video must be a file of ComfyUI's input, output or temp folder")
     if error := _missing_file(query["video"], "video"):
         return web.json_response(video_input.LoadPreview(source=None, info=None, available=None, error=error))
     # the probe reads the whole container: off the event loop
@@ -139,18 +140,17 @@ async def plan_route(request):
     return web.json_response(answer)
 
 
-def _input_path(name):
-    """The path Load Video loads `name` from, or None when `name` leaves ComfyUI's input folder:
-    another folder's annotation, an absolute path, a `..` (refused as core's /view refuses them),
-    or a path that resolves outside the folder."""
+def _video_path(name):
+    """The path Load Video loads `name` from: a file of ComfyUI's input folder, or of the output or
+    temp folder its annotation names ("name [output]", core's annotated file path, which Load Image
+    takes too); None when `name` leaves that folder: an absolute path, a `..` (refused as core's
+    /view refuses them), or a path that resolves outside the folder."""
     import os
 
     import folder_paths
 
-    bare, folder = folder_paths.annotated_filepath(name)
-    if not bare or folder not in (None, folder_paths.get_input_directory()):
-        return None
-    if bare[0] in "/\\" or os.path.isabs(bare) or ".." in bare:
+    bare, _ = folder_paths.annotated_filepath(name)
+    if not bare or bare[0] in "/\\" or os.path.isabs(bare) or ".." in bare:
         return None
     try:
         return folder_paths.get_annotated_filepath(name)  # refuses a path that resolves outside the folder

@@ -49,6 +49,31 @@ def test_a_rate_above_the_source_repeats_frames():
     assert video.select_frames(24, 12, 30) == [0, 1, 2, 3, 4, 5, 5, 6, 7, 8, 9, 9, 10, 11]
 
 
+def test_twice_the_rate_shows_frame_0_once_then_every_frame_twice():
+    # output m at m / 32 s = (m / 2) / 16 s: the first frame at or after it is ceil(m / 2); the grid
+    # ends after the last frame, which shows twice. 30 -> 60 the same.
+    assert video.select_frames(16, 6, 32) == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+    assert video.select_frames(30, 6, 60) == [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+
+
+def test_16_to_24_repeats_every_other_frame():
+    # output m at m / 24 s: frame ceil(2 m / 3)
+    assert video.select_frames(16, 8, 24) == [0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7]
+
+
+def test_29_97_to_30_repeats_frame_1000():
+    # output m: frame ceil(1000 m / 1001), which is m up to output 1000; output 1001 is at
+    # 1001 / 30 s, frame 1000's time exactly, so frame 1000 shows twice
+    kept = video.select_frames(30000 / 1001, 1200, 30)
+    assert kept[:1001] == list(range(1001)) and kept[1001] == 1000 and kept[1002:] == list(range(1001, 1200))
+
+
+def test_a_rate_a_hair_below_the_source_drops_frame_1():
+    # 29.97 on a 30000/1001 video: output 1 at 1 / 29.97 s falls 0.03 us after frame 1 (1001 / 30000 s),
+    # so it is frame 2; the next drop is ten thousand frames on
+    assert video.select_frames(30000 / 1001, 10, 29.97) == [0, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
 def test_a_one_frame_video():
     assert video.select_frames(30, 1, 24) == [0]
 

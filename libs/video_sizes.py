@@ -8,6 +8,9 @@ ORIENTATIONS = [AUTO, LANDSCAPE, PORTRAIT]
 # the platform ladder Conform Video fits to (9:16, landscape 16:9)
 CONFORM_SIZES = {"480p": [480, 854], "720p": [720, 1280], "1080p": [1080, 1920]}
 
+# the model entry that is no model: no frame rule, no grid
+NO_MODEL = "None"
+
 # the resolution of every model that keeps the video's own pixels: no resize, only cuts (the other
 # orientation's crop, then the model's grid); its size in the table is None
 SOURCE = "source"
@@ -22,7 +25,7 @@ SOURCE = "source"
 MODELS = {
     "Wan": {"frames": 4, "grid": 16, "sizes": {"480p": [480, 832], "720p": [720, 1280], SOURCE: None}},
     "SCAIL": {"frames": 4, "grid": 32, "sizes": {"512p": [512, 896], "704p": [704, 1280], SOURCE: None}},
-    "None": {"frames": 1, "grid": 1, "sizes": {**CONFORM_SIZES, SOURCE: None}},
+    NO_MODEL: {"frames": 1, "grid": 1, "sizes": {**CONFORM_SIZES, SOURCE: None}},
 }
 # every model's labels, each once, the sized ones in table order, then source: the resolution
 # widget's values
