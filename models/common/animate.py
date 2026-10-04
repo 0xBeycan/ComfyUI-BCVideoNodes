@@ -5,6 +5,14 @@ per core node lives in its model package and registers itself in the "animate" f
 ANIMATE_NODE.
 """
 
+import logging
+
+from .core_nodes import clip_vision_encode_official
+
+# how core's WanAnimateToVideo and WanAnimate2ToVideo resize the reference and the pose video for
+# the VAE (comfy_extras/nodes_wan.py: common_upscale, center crop)
+ANIMATE_RESIZE = "area"
+
 
 def check_pose_percents(start, end):
     """Raises when the pose conditioning would start after it ends."""
@@ -32,6 +40,16 @@ def mask_window(mask, first, length, height, width):
     frames = torch.ones((length, height, width), dtype=mask.dtype, device=mask.device)
     frames[:mask.shape[0]] = mask
     return frames
+
+
+def core_frame(image, width, height, upscale_method):
+    """The first frame of ``image`` [B, H, W, C] as a core conditioning node resizes it for the VAE:
+    center-cropped to the ``width`` x ``height`` aspect and resized with ``upscale_method``
+    (comfy/utils.py common_upscale), [1, height, width, C]. The official pipelines CLIP-encode the
+    frame the VAE gets, so the samplers' official CLIP encodes start from this."""
+    import comfy.utils
+
+    return comfy.utils.common_upscale(image[:1].movedim(-1, 1), width, height, upscale_method, "center").movedim(1, -1)
 
 
 class AnimateAdapter:
@@ -70,6 +88,20 @@ class AnimateAdapter:
         and trims back off what they decode to (the overlap).
         Inputs that are the node's own (not the core node's) are popped here."""
         raise NotImplementedError
+
+    def encode_reference_clip(self, clip_vision, animate_inputs, reference_image, width, height):
+        """With ``clip_vision`` connected, the reference's clip_vision_output as official Wan Animate
+        (Wan2.2 wan/animate.py) and Wan Animate 2 (pipelines/wan_animate_2_pipeline.py) encode it:
+        the reference the VAE gets, here as core crops and resizes it (core_frame), through
+        clip_vision_encode_official. It replaces a connected clip_vision_output, with a log line.
+        Without ``clip_vision`` the connected clip_vision_output passes through as it is."""
+        if clip_vision is None:
+            return
+        if animate_inputs.get("clip_vision_output") is not None:
+            logging.info("[%s] clip_vision and clip_vision_output are both connected: the reference is encoded from "
+                         "clip_vision as official does; clip_vision_output is ignored.", self.node_name)
+        image = core_frame(reference_image, width, height, ANIMATE_RESIZE)
+        animate_inputs["clip_vision_output"] = clip_vision_encode_official(clip_vision, image)
 
     def check_videos(self, pose_video, animate_inputs):
         """Checks between the pass-through videos, before any is held. Raises on a mismatch."""

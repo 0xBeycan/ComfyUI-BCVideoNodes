@@ -149,10 +149,12 @@ class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
             "continue_motion_max_frames": ("INT", {"default": 5, "min": 1, "max": max_res, "step": 4, "tooltip": "Frames of the previous chunk that seed the next one and are trimmed back off: the overlap between chunks. Snapped down to the 4k+1 grid; must be smaller than frames_per_chunk."}),
         }
         optional = {
-            "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image."}),
+            "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image (CLIP Vision Encode). Ignored when clip_vision is connected, which encodes it as official does."}),
             "face_video": ("IMAGE", {"tooltip": "Face crops of the driving video (512x512), read from the same offset as the pose video."}),
             "background_video": ("IMAGE", {"tooltip": "Background to place the character into (replacement mode), read from the same offset as the pose video. With character_mask connected the sampler blacks out the character's area (where the mask is above 0) of each chunk's window, so Load Video's frames can be wired here directly; an already painted background (WanAnimate Preprocess's bg_images) stays the same."}),
             "character_mask": ("MASK", {"tooltip": "Where the character goes in the background video (replacement mode). A single frame is repeated; a video is read from the same offset as the pose video."}),
+            # added after the node's other inputs: saved workflows keep the order of the earlier ones
+            "clip_vision": ("CLIP_VISION", {"tooltip": "CLIP vision model (clip_vision_h). When connected, the reference is encoded once per run as official Wan 2.2 Animate encodes it: the reference the VAE gets (center-cropped and resized to width x height as the core node does it), stretched to 224x224 with bicubic interpolation, without antialias or 8-bit rounding. clip_vision_output is then ignored; CLIP Vision Encode's antialiasing and 8-bit rounding are not official."}),
         }
         return required, optional
 
@@ -174,9 +176,9 @@ class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
         }
         optional = {
             "positive_pose": ("CONDITIONING", {"tooltip": "Prompt for the pose branch. Defaults to positive. The official pipeline never leaves it empty (default: 人物动作的参考视频)."}),
-            "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image."}),
-            "clip_vision_output_pose": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the pose video's first frame, used for every chunk. Defaults to clip_vision_output. Connect clip_vision instead to re-encode per chunk."}),
-            "clip_vision": ("CLIP_VISION", {"tooltip": "When connected, the pose CLIP embedding is re-encoded from the first frame of each chunk's pose window, as the official pipeline does; clip_vision_output_pose is then ignored."}),
+            "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image (CLIP Vision Encode). Ignored when clip_vision is connected, which encodes it as official does."}),
+            "clip_vision_output_pose": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the pose video's first frame, used for every chunk. Defaults to clip_vision_output. Ignored when clip_vision is connected, which re-encodes it per chunk as official does."}),
+            "clip_vision": ("CLIP_VISION", {"tooltip": "CLIP vision model (clip_vision_h). When connected, both CLIP embeddings are encoded as official Wan Animate 2 encodes them: the reference once per run, the reference the VAE gets (center-cropped and resized to width x height as the core node does it), stretched to 224x224 with bicubic interpolation, without antialias or 8-bit rounding; the pose per chunk, the first frame of the chunk's pose window, resized as the core node resizes the pose video and stretched the same way. clip_vision_output and clip_vision_output_pose are then ignored; CLIP Vision Encode's antialiasing and 8-bit rounding are not official."}),
         }
         return required, optional
 

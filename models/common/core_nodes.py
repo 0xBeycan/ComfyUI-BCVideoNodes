@@ -1,6 +1,5 @@
-"""Running a ComfyUI core node outside the graph: node_class, with_schema_defaults, call_node, and
-clip_vision_encode on top of it; clip_vision_encode_official, core's CLIP vision model on the
-official Wan preprocessing."""
+"""Running a ComfyUI core node outside the graph: node_class, with_schema_defaults, call_node; and
+clip_vision_encode_official, core's CLIP vision model on the official Wan preprocessing."""
 
 import inspect
 
@@ -50,15 +49,10 @@ def call_node(node_id, **kwargs):
     return tuple(result)
 
 
-def clip_vision_encode(clip_vision, image):
-    """Core CLIPVisionEncode of ``image`` with crop "none": the image is stretched to CLIP's square
-    instead of center-cropped, as Wan Animate 2 and SCAIL-2 were trained."""
-    return call_node("CLIPVisionEncode", clip_vision=clip_vision, image=image, crop="none")[0]
-
-
 def clip_vision_encode_official(clip_vision, image):
     """``image`` [B, H, W, C] in [0, 1] through core's CLIP vision model as the Wan team's
-    CLIPModel.visual preprocesses it (zai-org/SCAIL-2 wan/modules/clip.py, wan-scail2 branch):
+    CLIPModel.visual preprocesses it (zai-org/SCAIL-2 wan/modules/clip.py, wan-scail2 branch; the
+    same in Wan2.2 wan/modules/animate/clip.py and Wan-Animate-2 wanxiang/eval_i2v.py):
     stretched to CLIP's square with bicubic interpolation, align_corners False and no antialias,
     neither clamped nor rounded to 8 bit, then normalized with the model's mean and std. Core's
     CLIPVisionEncode antialiases, clamps and rounds to 8 bit (comfy/clip_model.py clip_preprocess).

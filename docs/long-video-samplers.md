@@ -125,10 +125,28 @@ official Wan 2.2 Animate template; the template samples 77-frame windows with
 | Input / widget                | Type                | Notes                                                              |
 |-------------------------------|---------------------|--------------------------------------------------------------------|
 | `continue_motion_max_frames`  | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off: the overlap. Snapped down to the 4k+1 grid (1, 5, 9, ...); must be smaller than `frames_per_chunk`. |
-| `clip_vision_output`          | CLIP_VISION_OUTPUT  | CLIP vision of the reference image.                                |
+| `clip_vision_output`          | CLIP_VISION_OUTPUT (optional) | CLIP vision of the reference image (`CLIP Vision Encode`). Ignored when `clip_vision` is connected. |
 | `face_video`                  | IMAGE (optional)    | Face crops of the driving video (512 x 512), read from the same offset as the pose video. |
 | `background_video`            | IMAGE (optional)    | Background to place the character into (replacement mode), same offset. With `character_mask` connected the character's area is blacked out here, so Load Video's frames can be wired directly. |
 | `character_mask`              | MASK (optional)     | Where the character goes in the background video (replacement mode). One frame is repeated; a video is read from the same offset. |
+| `clip_vision`                 | CLIP_VISION (optional) | `clip_vision_h`. When connected, the node encodes the reference itself, once per run, as the official code does (below); `clip_vision_output` is then ignored. |
+
+CLIP vision (both Wan Animate nodes): the official code (Wan2.2
+`wan/animate.py`, Wan-Animate-2 `pipelines/wan_animate_2_pipeline.py`)
+CLIP-encodes the frame the VAE gets, stretched to 224 x 224 with bicubic
+interpolation, no antialias and no rounding to 8 bit, normalized with CLIP's
+mean and std; the model reads the output of every transformer block but the
+last (`use_31_block`). With `clip_vision` (`clip_vision_h`) connected the node
+does the same: the reference center-cropped and resized to `width` x `height`
+as the core node does it for the VAE (`area`), stretched as official, then
+core's CLIP vision model and its penultimate hidden states. Core's `CLIP Vision
+Encode` antialiases and rounds to 8 bit, and with crop `center` cuts the
+reference to a square. To get it: connect the `Load CLIP Vision` model to
+`clip_vision` and remove the `CLIP Vision Encode` node (with both connected,
+`clip_vision` wins and the console says so once). Without `clip_vision`, a
+connected `clip_vision_output` reaches the core node as before. Official
+letterboxes a reference of another aspect with black bars before the VAE and
+CLIP see it; the core node, and so this one, center-crops it.
 
 The optional videos are handed to `WanAnimateToVideo` as they are (a chunk
 that reads past the end of a driving input gets its window of them, see Tail
@@ -182,12 +200,18 @@ neither: it looked better in testing. All are a click apart.
 | `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Sampling window for the pose branch. start > end is an error. |
 | `attn_log_scale`            | FLOAT, default -1.3 | The official `log_scale`: a logit bias on every generation self-attention's keys of latent frame 1, the seed frame. -1.3 is the distilled checkpoint's config (`infer/wan_animate_2_distillation.yaml`); set 0.0 for the base checkpoint. Core has no equivalent; 0.0 is core's behaviour. |
 | `positive_pose`             | CONDITIONING (optional) | Prompt for the pose branch (motion, not character). Defaults to `positive`. The official pipeline never sends it empty; its default is `人物动作的参考视频`. |
-| `clip_vision_output`        | CLIP_VISION_OUTPUT (optional) | CLIP vision of the reference image.                         |
-| `clip_vision_output_pose`   | CLIP_VISION_OUTPUT (optional) | CLIP vision of the pose video's first frame, used for every chunk. Defaults to `clip_vision_output`. |
-| `clip_vision`               | CLIP_VISION (optional) | When connected, the pose CLIP embedding is re-encoded from the first frame of each chunk's pose window (crop `none`), as the official pipeline does per clip; `clip_vision_output_pose` is then ignored. |
+| `clip_vision_output`        | CLIP_VISION_OUTPUT (optional) | CLIP vision of the reference image (`CLIP Vision Encode`). Ignored when `clip_vision` is connected. |
+| `clip_vision_output_pose`   | CLIP_VISION_OUTPUT (optional) | CLIP vision of the pose video's first frame, used for every chunk. Defaults to `clip_vision_output`. Ignored when `clip_vision` is connected. |
+| `clip_vision`               | CLIP_VISION (optional) | `clip_vision_h`. When connected, the node encodes both CLIP embeddings as the official pipeline does (see CLIP vision in the Wan Animate section): the reference once per run, and the pose per chunk from the first frame of the chunk's pose window, resized as the core node resizes the pose video for the VAE; `clip_vision_output` and `clip_vision_output_pose` are then ignored. |
 
 The overlap is the core node's `CONTINUE_MOTION_FRAMES` (1 in current core),
 read from the class at run time.
+
+The official pipeline encodes the pose CLIP embedding per clip, from the
+clip's first pose frame. Without `clip_vision` the core node gets one embedding
+for every chunk: `clip_vision_output_pose` when connected, else the reference's
+`clip_vision_output`. Connecting `clip_vision` is the official path: it
+replaces both `CLIP Vision Encode` nodes.
 
 `attn_log_scale` is applied as an attention override
 (`transformer_options["optimized_attention_override"]`): generation

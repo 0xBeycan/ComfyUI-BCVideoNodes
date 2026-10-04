@@ -31,7 +31,7 @@ import torch
 
 from ...libs.chunking import FULL, overlap_for_motion_frames, snap_down
 from ...libs.video import requantized
-from ..common.animate import AnimateAdapter, check_pose_percents, mask_window
+from ..common.animate import AnimateAdapter, check_pose_percents, core_frame, mask_window
 from ..common.core_nodes import clip_vision_encode_official
 from .rope import official_pose_rope
 
@@ -121,10 +121,7 @@ class SCAIL2Adapter(AnimateAdapter):
         # center-cropped and resized to the generation size, here as core crops and resizes the
         # VAE reference, and in replacement mode with the character on black (the authors,
         # zai-org/SCAIL-2 issue #30); then stretched to CLIP's square as official does.
-        import comfy.utils
-
-        image = requantized(reference_image[:1]).movedim(-1, 1)
-        image = comfy.utils.common_upscale(image, width, height, "bicubic", "center").movedim(1, -1)
+        image = core_frame(reference_image, width, height, "bicubic")
         if replacement:
             image = character_on_black(image, animate_inputs["reference_image_mask"][:1])
         animate_inputs["clip_vision_output"] = clip_vision_encode_official(animate_inputs.pop("clip_vision"), image)

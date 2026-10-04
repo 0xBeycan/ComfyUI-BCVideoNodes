@@ -72,8 +72,8 @@ def test_animate2_input_types(node_module):
 def test_animate1_input_types(node_module):
     spec = node_module.BCVWanAnimateLongVideoSampler.INPUT_TYPES()
     assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER[:-4] + ["continue_motion_max_frames", "last_chunk", "tail_padding"]
-    assert list(spec["optional"]) == ["clip_vision_output", "face_video", "background_video", "character_mask", "sigmas_override",
-                                      "color_anchor_strength"]
+    assert list(spec["optional"]) == ["clip_vision_output", "face_video", "background_video", "character_mask", "clip_vision",
+                                      "sigmas_override", "color_anchor_strength"]
     # core node + official template defaults
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["continue_motion_max_frames"][1] == {"default": 5, "min": 1, "max": 16384, "step": 4, "tooltip": spec["required"]["continue_motion_max_frames"][1]["tooltip"]}

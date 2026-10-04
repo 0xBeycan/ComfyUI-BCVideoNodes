@@ -11,8 +11,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import (ANIMATE1, ANIMATE2, LATENT_DOWN, Calls, FakeNodeOutput, FakeProgressBar,  # noqa: E402,F401
-                           FakeWanAnimate2ToVideo, core_concat_mask, node_module, reference_concat_mask, run)
+from sampler_fakes import (ANIMATE1, ANIMATE2, CLIP_MEAN, CLIP_STD, LATENT_DOWN, Calls, FakeCLIPVision,  # noqa: E402,F401
+                           FakeNodeOutput, FakeProgressBar, FakeWanAnimate2ToVideo, core_concat_mask, fake_common_upscale,
+                           node_module, official_clip_pixels, reference_concat_mask, run)
 
 
 # --- shared behaviour, both nodes ---
@@ -114,11 +115,57 @@ def test_animate2_pass_through_inputs_reach_core(node_module):
     assert Calls.animate[0]["positive_pose"] == [["motion", {}]]
 
 
-def test_animate2_pose_clip_reencoded_per_chunk_when_clip_vision_connected(node_module, caplog):
+def core_vae_frame(image, width=32, height=64):
+    """The first frame of ``image`` as core's WanAnimateToVideo and WanAnimate2ToVideo resize the
+    reference and the pose video for the VAE: center-cropped to the generation aspect and resized
+    area to run()'s 32 x 64 (comfy_extras/nodes_wan.py, comfy/utils.py common_upscale)."""
+    return fake_common_upscale(image[:1].movedim(-1, 1), width, height, "area", "center").movedim(1, -1)
+
+
+def other_aspect(frames, seed=0):
+    """``frames`` random frames of another aspect than run()'s 32 x 64."""
+    return torch.rand(frames, 96, 40, 3, generator=torch.Generator().manual_seed(seed))
+
+
+@pytest.mark.parametrize("node", [ANIMATE1, ANIMATE2])
+def test_clip_vision_encodes_the_vae_reference_as_official_once_per_run(node_module, caplog, node):
     caplog.set_level("INFO")
-    run(node_module, pose_frames=200, clip_vision_output_pose="static", clip_vision="cv")
-    # the first frame of each chunk's pose window: 0, then 80k (offset moved back by the 1 seed frame)
-    assert [c["clip_pose"] for c in Calls.animate] == [("clip", "cv", 0.0, "none"), ("clip", "cv", 80.0, "none"), ("clip", "cv", 160.0, "none")]
+    reference, clip_vision = other_aspect(1), FakeCLIPVision()
+    run(node_module, pose_frames=200, node=node, reference_image=reference, clip_vision=clip_vision, clip_vision_output="clip")
+    pixels, layer = clip_vision.calls[0]  # prepare encodes the reference before any chunk (Wan Animate 2: then the pose per chunk)
+    assert len(clip_vision.calls) == (1 if node == ANIMATE1 else 4)
+    assert layer == -2  # the penultimate block: official use_31_block of the 32-block ViT-H
+    assert pixels.shape == (1, 3, 224, 224) and pixels.dtype == torch.float32
+    assert torch.allclose(pixels, official_clip_pixels(core_vae_frame(reference)), atol=1e-5, rtol=0)
+    # core's CLIPVisionEncode antialiases and rounds to 8 bit: not what official feeds
+    core = torch.nn.functional.interpolate(core_vae_frame(reference).movedim(-1, 1), size=(224, 224), mode="bicubic", antialias=True)
+    core = (torch.clip(255.0 * core, 0, 255).round() / 255.0 - CLIP_MEAN) / CLIP_STD
+    assert not torch.allclose(pixels, core, atol=1e-3, rtol=0)
+    # every chunk gets the outputs of that one encode in place of the connected clip_vision_output
+    outputs = [c["clip"] for c in Calls.animate]
+    assert len(outputs) == 3 and all(o is outputs[0] for o in outputs)
+    assert outputs[0].penultimate_hidden_states is pixels
+    assert caplog.text.count("clip_vision_output is ignored") == 1
+
+
+@pytest.mark.parametrize("node", [ANIMATE1, ANIMATE2])
+def test_without_clip_vision_the_connected_clip_vision_output_reaches_core(node_module, node):
+    run(node_module, pose_frames=200, node=node, reference_image=other_aspect(1), clip_vision_output="clip")
+    assert [c["clip"] for c in Calls.animate] == ["clip"] * 3
+
+
+def test_animate2_pose_clip_reencoded_per_chunk_as_official_when_clip_vision_connected(node_module, caplog):
+    caplog.set_level("INFO")
+    pose, clip_vision = other_aspect(200, seed=1), FakeCLIPVision()
+    run(node_module, pose_frames=200, pose_video=pose, clip_vision_output_pose="static", clip_vision=clip_vision)
+    # the first frame of each chunk's pose window: 0, then 80k (offset moved back by the 1 seed frame),
+    # as the VAE gets it, preprocessed as official
+    pose_calls = clip_vision.calls[1:]
+    assert len(pose_calls) == 3
+    for (pixels, layer), first in zip(pose_calls, (0, 80, 160)):
+        assert layer == -2
+        assert torch.allclose(pixels, official_clip_pixels(core_vae_frame(pose[first:first + 1])), atol=1e-5, rtol=0)
+    assert [c["clip_pose"].penultimate_hidden_states for c in Calls.animate] == [pixels for pixels, _ in pose_calls]
     assert "re-encoded per chunk" in caplog.text
 
     Calls.animate, Calls.sampler = [], []

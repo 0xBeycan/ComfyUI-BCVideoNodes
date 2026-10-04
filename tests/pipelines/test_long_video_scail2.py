@@ -12,8 +12,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import (SCAIL2, Calls, FakeCLIPVision, FakeModel, IndexVAE, aligned,  # noqa: E402,F401
-                           fake_common_upscale, node_module, reference_mask, run)
+from sampler_fakes import (CLIP_MEAN, CLIP_STD, SCAIL2, Calls, FakeCLIPVision, FakeModel, IndexVAE, aligned,  # noqa: E402,F401
+                           fake_common_upscale, node_module, official_clip_pixels, reference_mask, run)
 
 
 def chunks_for(total):
@@ -214,20 +214,6 @@ def test_old_core_is_rejected(node_module, monkeypatch):
 
 
 # --- CLIP vision -------------------------------------------------------------------------------
-
-CLIP_MEAN = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)  # wan/modules/clip.py _clip
-CLIP_STD = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
-
-
-def official_clip_pixels(reference):
-    """Official SCAIL-2's CLIP input for the VAE reference ``reference`` [1, H, W, 3] in [0, 1],
-    written out: in [-1, 1] (generate.py load_image_to_tensor_chw_normalized), stretched to 224
-    with F.interpolate bicubic, align_corners False, mapped back to [0, 1] and normalized
-    (wan/modules/clip.py CLIPModel.visual)."""
-    image = reference.movedim(-1, 1) * 2.0 - 1.0
-    image = torch.nn.functional.interpolate(image, size=(224, 224), mode="bicubic", align_corners=False)
-    return (image.mul(0.5).add(0.5) - CLIP_MEAN) / CLIP_STD
-
 
 def core_vae_reference(reference, width=32, height=64):
     """The reference core's WanSCAILToVideo VAE-encodes: center-cropped to the generation aspect

@@ -217,7 +217,8 @@ class FakeWanAnimate2ToVideo:
                 raise ValueError("pose_video has {} frames but video_frame_offset is {}".format(pose_video.shape[0], video_frame_offset))
         Calls.animate.append({"length": length, "offset_in": video_frame_offset, "continue": None if continue_motion is None else continue_motion.shape[0],
                               "pose": None if pose_video is None else float(pose_video[video_frame_offset, 0, 0, 0]),
-                              "pose_strength": pose_strength, "positive_pose": positive_pose, "clip_pose": clip_vision_output_pose})
+                              "pose_strength": pose_strength, "positive_pose": positive_pose, "clip": clip_vision_output,
+                              "clip_pose": clip_vision_output_pose})
         latent = {"samples": torch.zeros(batch_size, 16, latent_length + trim_latent, height // LATENT_DOWN, width // LATENT_DOWN)}
         return FakeNodeOutput(positive, negative, latent, trim_latent, max(0, ref_motion_latent_length * 4 - 3), video_frame_offset + length)
 
@@ -293,16 +294,19 @@ class FakeWanSCAILToVideo:
         return FakeNodeOutput(positive, negative, out, video_frame_offset + length)
 
 
-class FakeCLIPVisionEncode:
-    FUNCTION = "EXECUTE_NORMALIZED"
+CLIP_MEAN = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)  # wan/modules/clip.py _clip
+CLIP_STD = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {"crop": (["center", "none"], {"default": "center"})}}
 
-    @classmethod
-    def EXECUTE_NORMALIZED(cls, clip_vision, image, crop):
-        return FakeNodeOutput(("clip", clip_vision, float(image[0, 0, 0, 0]), crop))
+def official_clip_pixels(image):
+    """The official CLIP input for the frame the VAE gets, ``image`` [1, H, W, 3] in [0, 1], written
+    out: in [-1, 1] (SCAIL-2 generate.py load_image_to_tensor_chw_normalized; Wan2.2 wan/animate.py
+    and Wan-Animate-2 pipelines/wan_animate_2_pipeline.py: / 127.5 - 1), stretched to 224 with
+    F.interpolate bicubic, align_corners False, mapped back to [0, 1] and normalized (CLIPModel.visual:
+    SCAIL-2 wan/modules/clip.py, Wan2.2 wan/modules/animate/clip.py, Wan-Animate-2 wanxiang/eval_i2v.py)."""
+    image = image.movedim(-1, 1) * 2.0 - 1.0
+    image = torch.nn.functional.interpolate(image, size=(224, 224), mode="bicubic", align_corners=False)
+    return (image.mul(0.5).add(0.5) - CLIP_MEAN) / CLIP_STD
 
 
 class FakeOutput:
@@ -475,7 +479,6 @@ def node_module(monkeypatch):
         "WanAnimate2ToVideo": FakeWanAnimate2ToVideo,
         "WanSCAILToVideo": FakeWanSCAILToVideo,
         "SamplerCustom": FakeSamplerCustom,
-        "CLIPVisionEncode": FakeCLIPVisionEncode,
         "KSamplerSelect": FakeKSamplerSelect,
         "BasicScheduler": FakeBasicScheduler,
         "TrimVideoLatent": FakeTrimVideoLatent,
