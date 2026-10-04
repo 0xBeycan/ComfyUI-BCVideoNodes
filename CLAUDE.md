@@ -48,7 +48,8 @@ nodes/               common (the PREPROCESS and VIDEO categories, _config, _Conf
                      ComfyUI-BCNodes' full clear calls, and its registration)
 pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Pose Detection with a Sapiens2 pose_model:
                      Sapiens2 body, feet and hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
-                     on black, face_crop's face close-up: the face box, the crop in the generation's aspect,
+                     on black, face_crop's face close-up: the face box, the window of the generation's size
+                     over face_crop_upscale (lowered so the box is never cut; black past the source's edges),
                      the extra reference's mask on black), guard/ (config, common, pose, mask, reference, report, timeline, combine,
                      scail2), sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry
                      the node calls), video_input (Load Video, Load Reference Image (fitted and at the source size),

@@ -46,7 +46,9 @@ class BCVSCAIL2ColoredMask:
 
 PROMPT_TOOLTIP = "What to segment: the person in the driving video (prompt and prompt_pose modes) and the character on the reference image (every mode, unless reference_mask is connected). The defaults were validated with this prompt."
 REFERENCE_SOURCE_TOOLTIP = "face_crop only: the reference image at its own resolution, not resized (Load Reference Image's source_image), which the face close-up is cut from. Needed when face_crop is on; not used when it is off."
-FACE_CROP_TOOLTIP = "Off: the primary reference alone. On: a face close-up as a second reference (SCAIL-2 multi-reference). Needs reference_source (Load Reference Image's source_image). Pose Detection with pose_model finds the face on it, in every mode; the crop has the generation's aspect (reference_image's width x height), the face box filling its width (its height when the generation is too wide for the box), centred, the head in the upper part, cut from reference_source and resized to reference_image's size; SAM 3.1 Multiplex finds the character on it with the prompt, and its colored mask is the character in blue on black, in both modes. reference_images and reference_image_mask then have two frames, the primary first: link the sampler's reference_image from reference_images."
+FACE_CROP_TOOLTIP = "Off: the primary reference alone. On: a face close-up as a second reference (SCAIL-2 multi-reference). Needs reference_source (Load Reference Image's source_image). Pose Detection with pose_model finds the face on it, in every mode; the close-up is a window of reference_source in the generation's aspect, its size set by face_crop_upscale, the face box centred, the head in the upper part, resized to reference_image's size; SAM 3.1 Multiplex finds the character on it with the prompt, and its colored mask is the character in blue on black, in both modes. reference_images and reference_image_mask then have two frames, the primary first: link the sampler's reference_image from reference_images."
+FACE_CROP_UPSCALE = 2
+FACE_CROP_UPSCALE_TOOLTIP = "face_crop only: how much the face close-up enlarges the face. The window cut from reference_source is the generation's size (reference_image's width x height) divided by this factor, at reference_source's resolution, then resized by lanczos by the factor to the generation's size, so the face is the face box's width times the factor. Example, a 1280x1920 source with a ~180 px face box, a 704x1280 generation: 1 -> a 704x1280 window, no resize, the face ~180 px; 2 -> 352x640, the face ~360 px; 3 -> 235x427, the face ~540 px; 4 and 5 -> capped at ~3.9, the face box filling the width (a factor that would cut the face box is lowered to the largest that keeps it, with a log line). A window larger than reference_source is padded with black, in the image and its mask. Ignored with face_crop off."
 POSE_CONFIG_TOOLTIP = "[box_keypoint, prompt_pose] Overrides from Pose Config for the Pose Detection the node runs on the driving frames in these modes; the measured defaults without it. Ignored in prompt mode, which runs no pose."
 
 
@@ -68,6 +70,8 @@ class BCVSCAIL2Preprocess:
                 "prompt": (prompt_kind, {**prompt_options, "tooltip": PROMPT_TOOLTIP}),
                 "black_background": ("BOOLEAN", {"default": False, "tooltip": "Animation mode only. On: pose_video is the driving video with every pixel outside the person's mask black, as SCAIL-2's training pose videos were (zai-org/SCAIL-2 issue #17; SCAIL-Pose's --crop_e2e_mask), so the driving video's background and camera do not reach the result. Off: the driving video unchanged. On with replacement_mode is an error: replacement mode keeps the driving video's background."}),
                 "face_crop": ("BOOLEAN", {"default": False, "tooltip": FACE_CROP_TOOLTIP}),
+                "face_crop_upscale": ("INT", {"default": FACE_CROP_UPSCALE, "min": 1, "max": 5, "step": 1,
+                                              "tooltip": FACE_CROP_UPSCALE_TOOLTIP}),
             },
             "optional": {
                 # the first optional input: its socket sits right below reference_image's
@@ -92,13 +96,15 @@ class BCVSCAIL2Preprocess:
     DESCRIPTION = "The SCAIL-2 preprocess in one node, one person: SAM 3.1 Multiplex Video Track in the chosen mode on the whole driving video once, so the mask keeps its shape and colour across the sampler's chunks; box_keypoint and prompt_pose read the pose, so in those modes the node first runs Pose Detection on the driving frames (its default widgets, pose_config when connected, and pose_model) and hands its pose_data to the track, while prompt mode runs no pose. The reference image is tracked in prompt mode in every mode, unless reference_mask is connected: the pose modes are video modes, and the reference is one image. Then SCAIL-2 Colored Mask. SCAIL-2 draws no pose; the pose only shapes the mask. pose_video is the driving video, SCAIL-2's end-to-end pose input in animation and replacement mode alike: unchanged, or in animation mode with black_background on, with everything outside the person's mask black. face_crop adds a face close-up as a second reference (SCAIL-2 multi-reference), cut from reference_source around the face Pose Detection finds there, its colored mask the character in blue on black; reference_images is the reference_image the sampler takes (the primary alone with face_crop off, the primary and the close-up with it on), paired frame by frame with reference_image_mask."
 
     def process(self, images, reference_image, replacement_mode, mode, prompt, black_background=False, reference_source=None,
-                reference_mask=None, pose_config=None, sam3_config=None, pose_model=VITPOSE, face_crop=False, prompt_graph=None,
+                reference_mask=None, pose_config=None, sam3_config=None, pose_model=VITPOSE, face_crop=False,
+                face_crop_upscale=FACE_CROP_UPSCALE, prompt_graph=None,
                 unique_id=None):
         from ..pipelines import scail2
         from ..pipelines.sam3_1_multiplex import track as sam3
 
         scail2.check_black_background(black_background, replacement_mode)
-        scail2.check_face_crop(face_crop, reference_source, reference_image, reference_mask)
+        scail2.check_face_crop(face_crop, reference_source, reference_image, reference_mask,
+                               face_crop_upscale != FACE_CROP_UPSCALE)
         wanted = heavy_wanted(type(self), prompt_graph, unique_id)
         pose_data = None
         if mode != sam3.MODE_PROMPT:
@@ -117,7 +123,7 @@ class BCVSCAIL2Preprocess:
         reference_images = reference_image
         if face_crop:
             reference_images, reference_image_mask = _with_face_reference(reference_image, reference_image_mask, reference_source,
-                                                                          prompt, sam3_config, pose_model)
+                                                                          face_crop_upscale, prompt, sam3_config, pose_model)
         pose_video = scail2.driving_on_black(images, mask) if black_background and wants(wanted, "pose_video") else images
         return drop_unwanted(type(self), (pose_video, pose_video_mask, reference_image_mask, reference_images, mask, reference_mask,
                                           bool(replacement_mode)), wanted)
@@ -132,18 +138,20 @@ def _pose_data(images, pose_config, pose_model):
     return BCVPoseDetection().detect(images, **widgets, pose_config=pose_config, pose_model=pose_model, wanted=set())[1]
 
 
-def _with_face_reference(reference_image, reference_image_mask, reference_source, prompt, sam3_config, pose_model):
+def _with_face_reference(reference_image, reference_image_mask, reference_source, face_crop_upscale, prompt, sam3_config,
+                         pose_model):
     """(reference_images, reference_image_mask) with the face close-up appended as the second
     reference: Pose Detection (its defaults and pose_model) finds the face on reference_source, the
-    close-up is cut in the generation's aspect (reference_image's size), SAM 3.1 Multiplex finds the
-    character on it with the prompt, and its colored mask is the character on black."""
+    close-up is the generation's size (reference_image's) over face_crop_upscale cut from it and
+    resized to that size, SAM 3.1 Multiplex finds the character on it with the prompt, and its
+    colored mask is the character on black, black on any padding past reference_source's edges."""
     from ..pipelines import scail2
 
     height, width = reference_image.shape[1:3]
     source_height, source_width = reference_source.shape[1:3]
     box = scail2.face_box(_pose_data(reference_source, None, pose_model), source_width, source_height)
-    face = scail2.face_reference(reference_source, box, width, height)
-    face_mask = scail2.extra_reference_mask(track_reference(face, prompt, sam3_config))
+    face, covered = scail2.face_reference(reference_source, box, width, height, face_crop_upscale)
+    face_mask = scail2.extra_reference_mask(track_reference(face, prompt, sam3_config), covered)
     return scail2.with_extra_reference(reference_image, reference_image_mask, face, face_mask)
 
 

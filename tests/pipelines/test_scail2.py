@@ -206,38 +206,93 @@ def test_the_sam_track_runs_on_a_one_frame_reference(monkeypatch, caplog, dtype)
 
 # --- the face close-up: SCAIL-2 Preprocess's extra reference (face_crop) --------------------------
 
-@pytest.mark.parametrize("box, image, generation, expected", [
-    # the worked example: a 180 x 200 face box in a 1280 x 1920 source, a 704 x 1280 generation. The
-    # box fills the width (180), the height follows the aspect (180 / 0.55 = 327); of the 127 px
-    # free height half (63.5 < 0.4 * 200) goes above the box: y = 300 - 63.5 = 236.5, rounded to 236
-    ((550, 300, 730, 500), (1280, 1920), (704, 1280), (550, 236, 180, 327)),
-    # a tall crop: 200 px free, but no more than 0.4 box heights (40) above the box; the rest below
-    ((500, 500, 600, 600), (2000, 2000), (512, 1536), (500, 460, 100, 300)),
-    # a box at the top-left corner: shifted inside the image (y -30 -> 0)
-    ((0, 10, 100, 110), (1000, 1000), (704, 1280), (0, 0, 100, 182)),
-    # a box at the right edge, too tall for the aspect at its width (50 * 1.818 < 100): the crop is
-    # 55 wide so the box's height fits; x 948 shifted to 1000 - 55
-    ((950, 500, 1000, 600), (1000, 1000), (704, 1280), (945, 500, 55, 100)),
-    # the image is too small for 120 x 218: the largest crop of the aspect it holds, 110 x 200,
-    # centred on the box and shifted inside (y 20 - 40 -> 0)
-    ((40, 20, 160, 140), (200, 200), (704, 1280), (45, 0, 110, 200)),
-    # a landscape generation: the box's height (200) fills the crop, 364 wide, nothing of the box cut
-    ((550, 300, 730, 500), (1920, 1280), (1280, 704), (458, 300, 364, 200)),
+# the worked example: a 180 x 200 face box at (550, 300) in a 1280 x 1920 source, a 704 x 1280 generation
+EXAMPLE = ((550, 300, 730, 500), (1280, 1920), (704, 1280))
+
+
+@pytest.mark.parametrize("factor, expected", [
+    # the generation's size over the factor; centred on the box (x = 640 - w / 2); of the free height
+    # half, but no more than 0.4 * 200 = 80, above the box: y = 300 - 80 = 220. The face is 180 * factor px
+    (1, (288, 220, 704, 1280, 1)),
+    (2, (464, 220, 352, 640, 2)),
+    # 704 / 3 = 234.67 -> 235, 1280 / 3 = 426.67 -> 427; x = 640 - 117.5 = 522.5, rounded to even 522
+    (3, (522, 220, 235, 427, 3)),
+    # 4 and 5 would make the window narrower than the box: lowered to 704 / 180 = 3.91, the box filling
+    # the width (180), 1280 / 3.91 = 327 high; 127 px free, half (63.5 < 80) above: y = 236.5 -> 236
+    (4, (550, 236, 180, 327, 704 / 180)),
+    (5, (550, 236, 180, 327, 704 / 180)),
 ])
-def test_the_face_crop_box(box, image, generation, expected):
-    assert scail2.face_crop_box(box, *image, *generation) == expected
+def test_the_face_crop_window_of_the_example(factor, expected):
+    box, image, generation = EXAMPLE
+    *window, used = scail2.face_crop_box(box, *image, *generation, factor)
+    assert tuple(window) == expected[:4] and used == pytest.approx(expected[4])
     assert scail2.FACE_HEADROOM == 0.4
 
 
-def test_the_face_close_up_is_the_crop_resized_by_lanczos():
+@pytest.mark.parametrize("box, image, generation, factor, expected", [
+    # a box at the top-left corner: x 50 - 176 = -126 and y 10 - 40 = -30 shifted inside to 0
+    ((0, 10, 100, 110), (1000, 1000), (704, 1280), 2, (0, 0, 352, 640, 2)),
+    # a box at the bottom-right corner: x 950 - 176 = 774 and y 850 - 40 = 810 shifted to 1000 - 352
+    # and 1000 - 640
+    ((900, 850, 1000, 950), (1000, 1000), (704, 1280), 2, (648, 360, 352, 640, 2)),
+    # a landscape generation: 4 lowered to 704 / 200 = 3.52, the box's height filling the window,
+    # 1280 / 3.52 = 364 wide, centred: x = 640 - 182; no free height, so y = 300
+    ((550, 300, 730, 500), (1920, 1280), (1280, 704), 4, (458, 300, 364, 200, 3.52)),
+    # a source smaller than the 352 x 640 window: it stays around the box, past the source's edges
+    # (x 100 - 176 = -76; y 20 - min(260, 48) = -28), the part face_reference pads with black
+    ((40, 20, 160, 140), (200, 200), (704, 1280), 2, (-76, -28, 352, 640, 2)),
+])
+def test_the_face_crop_window_at_the_edges(box, image, generation, factor, expected):
+    *window, used = scail2.face_crop_box(box, *image, *generation, factor)
+    assert tuple(window) == expected[:4] and used == pytest.approx(expected[4])
+
+
+def test_the_face_close_up_at_factor_1_is_the_window_itself(caplog):
+    caplog.set_level(logging.INFO)
     source = torch.randint(0, 256, (1, 400, 300, 3), generator=torch.Generator().manual_seed(0)) / 255.0
-    face = scail2.face_reference(source, (100, 80, 160, 140), 32, 64)
-    # the box fills 60 px of width, 60 / 0.5 = 120 high; 60 px free, half of it capped at 0.4 * 60 = 24
-    # above: y = 56
-    assert scail2.face_crop_box((100, 80, 160, 140), 300, 400, 32, 64) == (100, 56, 60, 120)
+    # a 10 x 10 box: a 32 x 64 window at (145 - 16, 100 - min(27, 4)), not resized
+    face, covered = scail2.face_reference(source, (140, 100, 150, 110), 32, 64, 1)
+    assert face.shape == (1, 64, 32, 3) and face.dtype == torch.float32
+    assert torch.equal(face[0], source[0, 96:160, 129:161]) and bool(covered.all())
+    assert "would cut the face box" not in caplog.text
+
+
+def test_the_face_close_up_is_the_window_resized_by_lanczos_and_a_cut_factor_is_logged(caplog):
+    caplog.set_level(logging.INFO)
+    source = torch.randint(0, 256, (1, 400, 300, 3), generator=torch.Generator().manual_seed(0)) / 255.0
+    face, covered = scail2.face_reference(source, (100, 80, 160, 140), 32, 64, 2)
+    # a 16 x 32 window would cut the 60 x 60 box: lowered to 32 / 60, the box filling 60 px of width,
+    # 120 high; 60 px free, half of it capped at 0.4 * 60 = 24 above: y = 56
+    *window, used = scail2.face_crop_box((100, 80, 160, 140), 300, 400, 32, 64, 2)
+    assert tuple(window) == (100, 56, 60, 120) and used == pytest.approx(32 / 60)
     expected = torch.empty(64, 32, 3)
     scail2.fit(source[0, 56:176, 100:160], expected)
-    assert face.shape == (1, 64, 32, 3) and face.dtype == torch.float32 and torch.equal(face[0], expected)
+    assert torch.equal(face[0], expected) and bool(covered.all())
+    assert "face_crop: face_crop_upscale 2 would cut the face box (100, 80, 160, 140); used 0.53" in caplog.text
+
+
+def test_a_source_smaller_than_the_window_is_padded_black_in_the_image_and_the_mask():
+    source = torch.rand(1, 20, 10, 3, generator=torch.Generator().manual_seed(1))
+    source = torch.round(source * 255) / 255
+    # a 6 x 6 box, factor 2: a 16 x 32 window; x 5 - 8 = -3 (the source is 10 wide: 3 px black left,
+    # 3 right), y 4 - 2.4 = 1.6 -> 2, shifted to 0 (the source is 20 high: 12 px black below)
+    assert scail2.face_crop_box((2, 4, 8, 10), 10, 20, 32, 64, 2)[:4] == (-3, 0, 16, 32)
+    face, covered = scail2.face_reference(source, (2, 4, 8, 10), 32, 64, 2)
+    window = torch.zeros(32, 16, 3)
+    window[:20, 3:13] = source[0]
+    expected = torch.empty(64, 32, 3)
+    scail2.fit(window, expected)
+    assert torch.equal(face[0], expected)
+    # the source covers rows 0..40 and columns 6..26 of the 32 x 64 close-up (twice the window's)
+    inside = torch.zeros(1, 64, 32, dtype=torch.bool)
+    inside[0, :40, 6:26] = True
+    assert torch.equal(covered, inside)
+    # black past the lanczos kernel's reach (3 window px, 6 close-up px) from the source's edge
+    assert torch.equal(face[0][46:], torch.zeros(18, 32, 3))
+    # a character mask over the whole close-up: blue only where the source is, black on the padding
+    colored = scail2.extra_reference_mask(torch.ones(1, 64, 32), covered)
+    blue = torch.tensor(scail2.PALETTE[0])
+    assert (colored[inside] == blue).all() and (colored[~inside] == torch.tensor(scail2.BLACK)).all()
 
 
 def face_pose_data(score=0.9, conf=0.9):
@@ -297,6 +352,12 @@ def test_face_crop_off_leaves_a_connected_source_unused(caplog):
     assert "reference_source not used" not in caplog.text
     scail2.check_face_crop(False, torch.zeros(1, 20, 10, 3), torch.zeros(1, 8, 4, 3))
     assert "face_crop is off; reference_source not used" in caplog.text
+    caplog.clear()
+    scail2.check_face_crop(False, None, torch.zeros(1, 8, 4, 3), upscale_changed=True)
+    assert "face_crop is off; face_crop_upscale not used" in caplog.text
+    caplog.clear()
+    scail2.check_face_crop(False, torch.zeros(1, 20, 10, 3), torch.zeros(1, 8, 4, 3), upscale_changed=True)
+    assert "face_crop is off; reference_source and face_crop_upscale not used" in caplog.text
 
 
 @pytest.mark.parametrize("source, mask, message", [

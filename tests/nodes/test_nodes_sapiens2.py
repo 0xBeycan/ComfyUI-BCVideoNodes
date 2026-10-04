@@ -148,7 +148,7 @@ def test_scail2_face_crop_finds_the_face_with_pose_model_in_prompt_mode(fake_sap
                                               reference_source=source, pose_model="Sapiens2 0.4b bf16", face_crop=True)
     # the face box of Pose Detection with that pose_model on the source, though prompt mode runs no pose
     pose_data = nodes.BCVPoseDetection().detect(source, **WIDGETS, pose_model="Sapiens2 0.4b bf16")[1]
-    face = scail2.face_reference(source, scail2.face_box(pose_data, W, H), W, H)
+    face, _ = scail2.face_reference(source, scail2.face_box(pose_data, W, H), W, H, 2)
     assert same(out[3][1:], face)
     assert list(fake_sapiens2) == ["Sapiens2 0.4b bf16"]
     assert "pose_model not used" not in caplog.text

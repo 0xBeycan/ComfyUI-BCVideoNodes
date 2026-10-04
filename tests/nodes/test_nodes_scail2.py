@@ -140,11 +140,11 @@ def test_black_background_in_replacement_mode_raises_before_any_tracking(fake_mo
     assert fake_models.calls == []
 
 
-def test_the_preprocess_widgets_mode_before_prompt_then_black_background_and_face_crop():
+def test_the_preprocess_widgets_mode_before_prompt_then_black_background_face_crop_and_its_upscale():
     spec = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()
     required, optional = spec["required"], spec["optional"]
     assert list(required) == ["images", "reference_image", "replacement_mode", "mode", "prompt", "black_background",
-                              "face_crop"]
+                              "face_crop", "face_crop_upscale"]
     # reference_source first, its socket right below reference_image's; pose_model the last widget
     assert list(optional) == ["reference_source", "reference_mask", "pose_config", "sam3_config", "pose_model"]
     # mode is SAM 3.1 Multiplex Video Track's widget, as on WanAnimate Preprocess
@@ -172,12 +172,14 @@ def source_image(seed=2):
 
 @pytest.mark.parametrize("mode", ["prompt", "box_keypoint"])
 @pytest.mark.parametrize("replacement_mode", [False, True])
-def test_face_crop_off_is_today_s_output_with_a_source_connected(fake_models, replacement_mode, mode):
+def test_face_crop_off_is_today_s_output_with_a_source_connected(fake_models, replacement_mode, mode, caplog):
+    caplog.set_level("INFO")
     images, reference = clip_frames(), clip_frames(1, seed=1)
     plain = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person")
     calls = len(fake_models.calls)
     off = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person",
-                                              reference_source=source_image(), face_crop=False)
+                                              reference_source=source_image(), face_crop=False, face_crop_upscale=4)
+    assert "face_crop is off; reference_source and face_crop_upscale not used" in caplog.text
     for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES, off, plain):
         assert same(a, b), name
     assert off[3] is reference and off[2].shape[0] == 1
@@ -193,17 +195,18 @@ def test_face_crop_appends_the_face_close_up_and_its_mask_on_black(fake_models, 
     out = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person",
                                               reference_source=source, face_crop=True)
 
-    # the face box of Pose Detection on the source (its default widgets), cut in reference_image's
-    # 32 x 64 aspect from the source and resized to it; the character found on it in prompt mode
+    # the face box of Pose Detection on the source (its default widgets), a window of reference_image's
+    # 32 x 64 over face_crop_upscale's default 2 cut from the source and resized to it; the character
+    # found on it in prompt mode, never on padding past the source's edges
     pose_data = nodes.BCVPoseDetection().detect(source, -1, -1, True, 0.5)[1]
-    face = scail2.face_reference(source, scail2.face_box(pose_data, 150, 200), 32, 64)
+    face, covered = scail2.face_reference(source, scail2.face_box(pose_data, 150, 200), 32, 64, 2)
     (face_mask,) = nodes.BCVSAM3VideoTrack().track(face, "prompt", "person", 1, -1)
     assert out[3].shape == (2, 64, 32, 3) and out[2].shape == (2, 64, 32, 3)
     assert same(out[3][:1], reference) and same(out[3][1:], face)
     # the primary mask as without face_crop (the mode's background), the face mask blue on black
     assert same(out[2][:1], plain[2])
     blue, black = torch.tensor(scail2.PALETTE[0]), torch.tensor(scail2.BLACK)
-    on = face_mask[0] > 0.5
+    on = (face_mask[0] > 0.5) & covered[0]
     assert on.any() and not on.all()
     assert (out[2][1][on] == blue).all() and (out[2][1][~on] == black).all()
     # everything else as without face_crop
@@ -212,6 +215,16 @@ def test_face_crop_appends_the_face_close_up_and_its_mask_on_black(fake_models, 
     # the driving clip, the reference, then the face close-up, each tracked once
     assert [c["mode"] for c in fake_models.calls[:3]] == [mode, "prompt", "prompt"]
     assert fake_models.calls[2]["pose_data"] is False
+
+
+@pytest.mark.parametrize("factor", [1, 3, 5])
+def test_face_crop_upscale_sets_the_close_up_s_window(fake_models, factor):
+    source = source_image()
+    out = nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), False, "prompt", "person",
+                                              reference_source=source, face_crop=True, face_crop_upscale=factor)
+    pose_data = nodes.BCVPoseDetection().detect(source, -1, -1, True, 0.5)[1]
+    face, _ = scail2.face_reference(source, scail2.face_box(pose_data, 150, 200), 32, 64, factor)
+    assert same(out[3][1:], face)
 
 
 def test_face_crop_runs_pose_detection_with_pose_model_in_prompt_mode(fake_models, monkeypatch, caplog):
@@ -258,6 +271,12 @@ def test_the_face_crop_inputs_and_outputs():
     tooltip = spec["face_crop"][1]["tooltip"]
     assert "Needs reference_source (Load Reference Image's source_image)" in tooltip
     assert "link the sampler's reference_image from reference_images" in tooltip
+    upscale = spec["face_crop_upscale"]
+    assert upscale[0] == "INT" and {k: upscale[1][k] for k in ("default", "min", "max", "step")} == {
+        "default": 2, "min": 1, "max": 5, "step": 1}
+    for example in ("1 -> a 704x1280 window, no resize, the face ~180 px", "2 -> 352x640, the face ~360 px",
+                    "3 -> 235x427, the face ~540 px", "4 and 5 -> capped at ~3.9", "lanczos"):
+        assert example in upscale[1]["tooltip"]
     assert "With face_crop on it also finds the face on reference_source, in every mode" in spec["pose_model"][1]["tooltip"]
     cls = nodes.BCVSCAIL2Preprocess
     assert cls.RETURN_NAMES == ("pose_video", "pose_video_mask", "reference_image_mask", "reference_images", "mask",

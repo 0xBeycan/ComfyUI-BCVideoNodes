@@ -35,7 +35,8 @@ is a later phase).
   Image's `resized_image`), optional `reference_source` (Load Reference
   Image's `source_image`, for `face_crop`), `reference_mask`, `pose_config`,
   `sam3_config`. Widgets: `replacement_mode`, `mode`, `prompt`,
-  `black_background` (default off), `face_crop` (default off), `pose_model`
+  `black_background` (default off), `face_crop` (default off),
+  `face_crop_upscale` (default 2, read with `face_crop` on), `pose_model`
   (last; `ViTPose-H` default, or `Sapiens2 <model>`; read in the pose modes, and
   with `face_crop` on in every mode). Outputs: `pose_video` (the driving
   video, which SCAIL-2's end-to-end mode reads as its pose input in animation
@@ -54,22 +55,32 @@ is a later phase).
   face on that one image; the face box is the one Face Crop cuts (the face
   keypoints grown to 1.3 times their area, Wan Animate's face and hair
   framing). No person on the image is an error; a head seen from behind still
-  has its box. The crop has the generation's aspect (`reference_image`'s
-  width x height): the face box fills its width and is centred in it (when
-  the generation is so wide that the box's height would not fit, the box
-  fills the height instead); of the crop's free height half goes above the
-  box, but never more than 0.4 box heights, so the hair stays in and the rest
-  goes below (neck, shoulders). The crop is shifted inside the image; an
-  image too small for it gives the largest crop of that aspect it holds,
-  placed the same way. It is cut from `reference_source` and resized to
-  `reference_image`'s size with lanczos (Load Reference Image's resize). SAM
+  has its box. The close-up is a window of `reference_source` the size of
+  the generation (`reference_image`'s width x height) divided by
+  `face_crop_upscale` (default 2, 1 to 5), at the source's resolution, so it
+  keeps the generation's aspect, resized by that factor to `reference_image`'s
+  size with lanczos (Load Reference Image's resize): the face in the close-up
+  is the face box's width times the factor. The face box is centred in the
+  window; of the window's free height half goes above the box, but never more
+  than 0.4 box heights, so the hair stays in and the rest goes below (neck,
+  shoulders). A factor at which the window would be narrower than the box, or
+  shorter than it, would cut the face: it is lowered to the largest factor
+  that keeps the whole box (the box filling the window's width, or its height
+  for a generation too wide for the box), with a log line naming both
+  factors. The window is shifted inside the source; where the source is still
+  smaller than the window, the part past its edges is black in the close-up
+  and black (no character) in its colored mask. SAM
   3.1 Multiplex finds the character on it with `prompt` (prompt mode), and
   its colored mask is the character in blue on black in both modes, as the
   official multi-reference example renders extra references. Then
   `reference_images` = [primary, face] and `reference_image_mask` = [the
   primary's mask on the mode's background, the face's on black]. Example:
   a 1280 x 1920 source with a 180 x 200 face box at (550, 300) and a
-  704 x 1280 generation give a 180 x 327 crop at (550, 236), resized to
+  704 x 1280 generation: factor 1, a 704 x 1280 window at (288, 220), not
+  resized, the face 180 px wide; 2, 352 x 640 at (464, 220), the face 360 px;
+  3, 235 x 427 at (522, 220), the face 540 px; 4 and 5 would cut the box and
+  are lowered to 704 / 180 = 3.91: a 180 x 327 window at (550, 236), the box
+  filling the width, resized to
   704 x 1280. With `reference_mask` connected it must be `reference_image`'s
   size, since each batch holds one size.
 - `black_background` (animation mode only): `pose_video` becomes the driving
