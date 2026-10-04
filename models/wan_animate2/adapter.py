@@ -1,7 +1,7 @@
 """WanAnimate2ToVideo (Wan Animate 2) in the long-video loop: the overlap is the node's
 CONTINUE_MOTION_FRAMES, attn_log_scale installs the seed-frame attention bias (attention.py), and
-a connected clip_vision encodes the reference's CLIP vision once per run and the pose CLIP vision
-per chunk, both as official does (clip_vision_encode_official on the frame the VAE gets)."""
+clip_vision encodes the reference's CLIP vision once per run and the pose CLIP vision per chunk,
+both as official does (clip_vision_encode_official on the frame the VAE gets)."""
 
 import logging
 
@@ -22,12 +22,8 @@ class WanAnimate2Adapter(AnimateAdapter):
         check_pose_percents(animate_inputs["pose_start_percent"], animate_inputs["pose_end_percent"])
         self._log_scale = float(animate_inputs.pop("attn_log_scale", -1.3))
         self._attention = None  # the installed override, whose count after_chunk logs
-        self._clip_vision = animate_inputs.pop("clip_vision", None)
+        self._clip_vision = animate_inputs.pop("clip_vision")
         self._width, self._height = width, height  # the size core resizes the pose frame to, which chunk_inputs encodes
-        if self._clip_vision is not None:
-            animate_inputs.pop("clip_vision_output_pose", None)
-            logging.info("[%s] clip_vision connected: the pose CLIP vision is re-encoded per chunk as official does; "
-                         "clip_vision_output_pose is ignored.", self.node_name)
         self.encode_reference_clip(self._clip_vision, animate_inputs, reference_image, width, height)
         # The node keeps the last CONTINUE_MOTION_FRAMES frames of continue_motion.
         # Read from the class so a core change is picked up.
@@ -56,8 +52,6 @@ class WanAnimate2Adapter(AnimateAdapter):
                             "set attn_log_scale to 0 to run without the bias.", self.node_name, self._log_scale, index + 1)
 
     def chunk_inputs(self, index, offset, anchor, pose_video, animate_inputs):
-        if self._clip_vision is None:
-            return {}
         # the core node moves the offset back by the seed frame before it reads the pose video; official
         # CLIP-encodes that same first frame as the VAE gets it (pipelines/wan_animate_2_pipeline.py:
         # conditioning_pixel_values[0, :, 0]), here as core crops and resizes it

@@ -11,9 +11,9 @@ from sampler_fakes import ANIMATE1, ANIMATE2, SCAIL2, node_module  # noqa: E402,
 
 
 # widget order the released 0.1.0 node had: saved workflows store widget
-# values positionally, so this must never change
+# values positionally, so this must never change (clip_vision is a link: it stores no value)
 ANIMATE2_REQUIRED_ORDER = [
-    "model", "positive", "negative", "vae", "reference_image", "pose_video",
+    "model", "positive", "negative", "vae", "clip_vision", "reference_image", "pose_video",
     "width", "height", "frames_per_chunk", "total_frames",
     "shift", "sampler_name", "scheduler", "steps", "denoise", "cfg", "seed", "seed_mode",
     "reference_image_strength", "pose_strength", "pose_start_percent", "pose_end_percent",
@@ -51,8 +51,7 @@ def test_input_types_shared_widgets(node_module, node):
 def test_animate2_input_types(node_module):
     spec = node_module.BCVWanAnimate2LongVideoSampler.INPUT_TYPES()
     assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER + ["attn_log_scale", "last_chunk", "tail_padding"]
-    assert list(spec["optional"]) == ["positive_pose", "clip_vision_output", "clip_vision_output_pose", "clip_vision", "sigmas_override",
-                                      "color_anchor_strength"]
+    assert list(spec["optional"]) == ["positive_pose", "sigmas_override", "color_anchor_strength"]
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["shift"][1]["default"] == 5.0
     assert spec["required"]["sampler_name"][1]["default"] == "euler"
@@ -72,8 +71,8 @@ def test_animate2_input_types(node_module):
 def test_animate1_input_types(node_module):
     spec = node_module.BCVWanAnimateLongVideoSampler.INPUT_TYPES()
     assert list(spec["required"]) == ANIMATE2_REQUIRED_ORDER[:-4] + ["continue_motion_max_frames", "last_chunk", "tail_padding"]
-    assert list(spec["optional"]) == ["clip_vision_output", "face_video", "background_video", "character_mask", "clip_vision",
-                                      "sigmas_override", "color_anchor_strength"]
+    assert list(spec["optional"]) == ["face_video", "background_video", "character_mask", "sigmas_override",
+                                      "color_anchor_strength"]
     # core node + official template defaults
     assert spec["required"]["frames_per_chunk"][1]["default"] == 81
     assert spec["required"]["continue_motion_max_frames"][1] == {"default": 5, "min": 1, "max": 16384, "step": 4, "tooltip": spec["required"]["continue_motion_max_frames"][1]["tooltip"]}

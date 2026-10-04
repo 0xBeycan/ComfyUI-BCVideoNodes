@@ -128,10 +128,9 @@ def other_aspect(frames, seed=0):
 
 
 @pytest.mark.parametrize("node", [ANIMATE1, ANIMATE2])
-def test_clip_vision_encodes_the_vae_reference_as_official_once_per_run(node_module, caplog, node):
-    caplog.set_level("INFO")
+def test_clip_vision_encodes_the_vae_reference_as_official_once_per_run(node_module, node):
     reference, clip_vision = other_aspect(1), FakeCLIPVision()
-    run(node_module, pose_frames=200, node=node, reference_image=reference, clip_vision=clip_vision, clip_vision_output="clip")
+    run(node_module, pose_frames=200, node=node, reference_image=reference, clip_vision=clip_vision)
     pixels, layer = clip_vision.calls[0]  # prepare encodes the reference before any chunk (Wan Animate 2: then the pose per chunk)
     assert len(clip_vision.calls) == (1 if node == ANIMATE1 else 4)
     assert layer == -2  # the penultimate block: official use_31_block of the 32-block ViT-H
@@ -141,23 +140,15 @@ def test_clip_vision_encodes_the_vae_reference_as_official_once_per_run(node_mod
     core = torch.nn.functional.interpolate(core_vae_frame(reference).movedim(-1, 1), size=(224, 224), mode="bicubic", antialias=True)
     core = (torch.clip(255.0 * core, 0, 255).round() / 255.0 - CLIP_MEAN) / CLIP_STD
     assert not torch.allclose(pixels, core, atol=1e-3, rtol=0)
-    # every chunk gets the outputs of that one encode in place of the connected clip_vision_output
+    # every chunk gets the outputs of that one encode
     outputs = [c["clip"] for c in Calls.animate]
     assert len(outputs) == 3 and all(o is outputs[0] for o in outputs)
     assert outputs[0].penultimate_hidden_states is pixels
-    assert caplog.text.count("clip_vision_output is ignored") == 1
 
 
-@pytest.mark.parametrize("node", [ANIMATE1, ANIMATE2])
-def test_without_clip_vision_the_connected_clip_vision_output_reaches_core(node_module, node):
-    run(node_module, pose_frames=200, node=node, reference_image=other_aspect(1), clip_vision_output="clip")
-    assert [c["clip"] for c in Calls.animate] == ["clip"] * 3
-
-
-def test_animate2_pose_clip_reencoded_per_chunk_as_official_when_clip_vision_connected(node_module, caplog):
-    caplog.set_level("INFO")
+def test_animate2_pose_clip_encoded_per_chunk_as_official(node_module):
     pose, clip_vision = other_aspect(200, seed=1), FakeCLIPVision()
-    run(node_module, pose_frames=200, pose_video=pose, clip_vision_output_pose="static", clip_vision=clip_vision)
+    run(node_module, pose_frames=200, pose_video=pose, clip_vision=clip_vision)
     # the first frame of each chunk's pose window: 0, then 80k (offset moved back by the 1 seed frame),
     # as the VAE gets it, preprocessed as official
     pose_calls = clip_vision.calls[1:]
@@ -166,11 +157,6 @@ def test_animate2_pose_clip_reencoded_per_chunk_as_official_when_clip_vision_con
         assert layer == -2
         assert torch.allclose(pixels, official_clip_pixels(core_vae_frame(pose[first:first + 1])), atol=1e-5, rtol=0)
     assert [c["clip_pose"].penultimate_hidden_states for c in Calls.animate] == [pixels for pixels, _ in pose_calls]
-    assert "re-encoded per chunk" in caplog.text
-
-    Calls.animate, Calls.sampler = [], []
-    run(node_module, pose_frames=200, clip_vision_output_pose="static")
-    assert [c["clip_pose"] for c in Calls.animate] == ["static", "static", "static"]
 
 
 def test_animate2_attn_log_scale_installs_the_attention_override(node_module, caplog):
@@ -323,11 +309,10 @@ def test_animate1_optional_videos_reach_core(node_module):
     background = torch.rand(81, 64, 32, 3)
     mask = torch.zeros(1, 64, 32)  # a still: core repeats it; nothing of the background is painted
     run(node_module, pose_frames=81, node=ANIMATE1, frames_per_chunk=77,
-        clip_vision_output="clip", face_video=face, background_video=background, character_mask=mask)
+        face_video=face, background_video=background, character_mask=mask)
     assert len(Calls.animate) == 2
     for call in Calls.animate:
         first = int(call["pose"])  # the driving frame the chunk reads from
-        assert call["clip"] == "clip"
         assert torch.equal(_reads(call, "face"), face[first:first + call["length"]])
         assert torch.equal(_reads(call, "background"), background[first:first + call["length"]])
         assert call["mask"] is mask

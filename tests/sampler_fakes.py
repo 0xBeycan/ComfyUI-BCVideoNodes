@@ -658,6 +658,7 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
         cfg=1.0,
         seed=seed,
         seed_mode=seed_mode,
+        clip_vision=FakeCLIPVision(),
     )
     kwargs.update(NODE_DEFAULTS[node])
     kwargs["last_chunk"] = getattr(module, node).DEFAULT_LAST_CHUNK  # the widget default, as the graph executor fills it
@@ -668,6 +669,5 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
         replacement_mode = overrides.get("replacement_mode", False)
         kwargs["pose_video_mask"] = kwargs["pose_video"].clone() + (1.0 if replacement_mode else 0.0)
         kwargs["reference_image_mask"] = reference_mask(replacement_mode)
-        kwargs["clip_vision"] = FakeCLIPVision()
     kwargs.update(overrides)
     return getattr(module, node)().generate(**kwargs)

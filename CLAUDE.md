@@ -202,11 +202,11 @@ pack adds after that still turns the saving off for that prompt, with a console 
   - `prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)`:
     validate, rename or pop the node's own inputs, encode what is encoded once per run (the
     reference's CLIP vision as official encodes it, `core_nodes.clip_vision_encode_official` on the
-    VAE reference as core crops and resizes it, `animate.core_frame`: SCAIL-2 always, its
-    `clip_vision` is required; both Wan Animate samplers when their optional `clip_vision` is
-    connected, `AnimateAdapter.encode_reference_clip`, which then replaces a connected
-    `clip_vision_output`; Wan Animate 2 also re-encodes the pose CLIP vision per chunk the same way,
-    in `chunk_inputs`); returns
+    VAE reference as core crops and resizes it, `animate.core_frame`, from the samplers' required
+    `clip_vision`, which the base node lists after `vae` and hands over in `animate_inputs`; no
+    sampler takes an encoded CLIP_VISION_OUTPUT. Both Wan Animate samplers through
+    `AnimateAdapter.encode_reference_clip`; Wan Animate 2 also encodes the pose CLIP vision per
+    chunk the same way, in `chunk_inputs`); returns
     how many frames of the anchor the core node keeps, its last ones (Wan Animate's
     `continue_motion_max_frames`, Wan Animate 2's `CONTINUE_MOTION_FRAMES`, SCAIL-2's
     `previous_frame_count`): the loop seeds every chained chunk with just those output frames, so

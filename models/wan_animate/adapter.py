@@ -1,7 +1,7 @@
 """WanAnimateToVideo (Wan 2.2 Animate) in the long-video loop: the overlap is its
 continue_motion_max_frames widget, and its concat mask rows are realigned when a character mask
-is connected (mask_repair.py). A connected clip_vision encodes the reference's CLIP vision as
-official does (AnimateAdapter.encode_reference_clip)."""
+is connected (mask_repair.py). clip_vision encodes the reference's CLIP vision as official does
+(AnimateAdapter.encode_reference_clip)."""
 
 import logging
 
@@ -32,7 +32,7 @@ class WanAnimateAdapter(AnimateAdapter):
             animate_inputs["continue_motion_max_frames"] = motion_frames
         if animate_inputs.get("character_mask") is not None:
             logging.info("[%s] character_mask connected: realigning the core node's mask rows (see _fix_replacement_mask).", self.node_name)
-        self.encode_reference_clip(animate_inputs.pop("clip_vision", None), animate_inputs, reference_image, width, height)
+        self.encode_reference_clip(animate_inputs.pop("clip_vision"), animate_inputs, reference_image, width, height)
         return motion_frames
 
     def check_videos(self, pose_video, animate_inputs):

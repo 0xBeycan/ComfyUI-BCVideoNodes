@@ -5,8 +5,6 @@ per core node lives in its model package and registers itself in the "animate" f
 ANIMATE_NODE.
 """
 
-import logging
-
 from .core_nodes import clip_vision_encode_official
 
 # how core's WanAnimateToVideo and WanAnimate2ToVideo resize the reference and the pose video for
@@ -90,16 +88,9 @@ class AnimateAdapter:
         raise NotImplementedError
 
     def encode_reference_clip(self, clip_vision, animate_inputs, reference_image, width, height):
-        """With ``clip_vision`` connected, the reference's clip_vision_output as official Wan Animate
-        (Wan2.2 wan/animate.py) and Wan Animate 2 (pipelines/wan_animate_2_pipeline.py) encode it:
-        the reference the VAE gets, here as core crops and resizes it (core_frame), through
-        clip_vision_encode_official. It replaces a connected clip_vision_output, with a log line.
-        Without ``clip_vision`` the connected clip_vision_output passes through as it is."""
-        if clip_vision is None:
-            return
-        if animate_inputs.get("clip_vision_output") is not None:
-            logging.info("[%s] clip_vision and clip_vision_output are both connected: the reference is encoded from "
-                         "clip_vision as official does; clip_vision_output is ignored.", self.node_name)
+        """The reference's clip_vision_output as official Wan Animate (Wan2.2 wan/animate.py) and
+        Wan Animate 2 (pipelines/wan_animate_2_pipeline.py) encode it: the reference the VAE gets,
+        here as core crops and resizes it (core_frame), through clip_vision_encode_official."""
         image = core_frame(reference_image, width, height, ANIMATE_RESIZE)
         animate_inputs["clip_vision_output"] = clip_vision_encode_official(clip_vision, image)
 

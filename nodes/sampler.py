@@ -28,11 +28,12 @@ class _LongVideoSampler:
     chained chunk is the ``prepare`` of its adapter
     (models/wan_*/adapter.py). Everything else - widgets, sampling
     stack, loop, output - is identical; the class attributes below set a
-    subclass's widget defaults.
+    subclass's widget defaults and tooltips.
     """
 
     ANIMATE_NODE = ""
     MODEL_TOOLTIP = ""
+    CLIP_VISION_TOOLTIP = ""
     DEFAULT_CHUNK = 81
     DEFAULT_SHIFT = 5.0
     DEFAULT_SAMPLER = "euler"
@@ -73,6 +74,8 @@ class _LongVideoSampler:
                 "positive": ("CONDITIONING",),
                 "negative": ("CONDITIONING",),
                 "vae": ("VAE",),
+                # a link, no widget value: its place does not move the stored widget values
+                "clip_vision": ("CLIP_VISION", {"tooltip": cls.CLIP_VISION_TOOLTIP}),
                 "reference_image": ("IMAGE", {"tooltip": "The character to animate."}),
                 "pose_video": ("IMAGE", {"tooltip": "Driving video. With total_frames = 0 its frame count is the output length."}),
                 "width": ("INT", {"default": cls.DEFAULT_WIDTH, "min": cls.SIZE_MIN, "max": max_res, "step": cls.SIZE_STEP, "tooltip": cls.SIZE_TOOLTIP}),
@@ -127,7 +130,7 @@ class _LongVideoSampler:
         color_anchor_strength=0.0,
         prompt_graph=None,
         unique_id=None,
-        **animate_inputs,
+        **animate_inputs,  # the subclass's inputs, and clip_vision, which its adapter's prepare encodes and pops
     ):
         from ..pipelines import long_video
 
@@ -140,6 +143,9 @@ class _LongVideoSampler:
 class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimateToVideo"
     MODEL_TOOLTIP = "Wan 2.2 Animate model. LoRA and model patches pass through unchanged; shift is applied here."
+    CLIP_VISION_TOOLTIP = ("CLIP vision model (clip_vision_h). The reference is encoded once per run as official Wan 2.2 "
+                           "Animate encodes it: the reference the VAE gets (center-cropped and resized to width x height as the "
+                           "core node does it), stretched to 224x224 with bicubic interpolation, without antialias or 8-bit rounding.")
     DEFAULT_SHIFT = 8.0
     DESCRIPTION = "Generates an arbitrarily long Wan 2.2 Animate video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 
@@ -149,12 +155,9 @@ class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
             "continue_motion_max_frames": ("INT", {"default": 5, "min": 1, "max": max_res, "step": 4, "tooltip": "Frames of the previous chunk that seed the next one and are trimmed back off: the overlap between chunks. Snapped down to the 4k+1 grid; must be smaller than frames_per_chunk."}),
         }
         optional = {
-            "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image (CLIP Vision Encode). Ignored when clip_vision is connected, which encodes it as official does."}),
             "face_video": ("IMAGE", {"tooltip": "Face crops of the driving video (512x512), read from the same offset as the pose video."}),
             "background_video": ("IMAGE", {"tooltip": "Background to place the character into (replacement mode), read from the same offset as the pose video. With character_mask connected the sampler blacks out the character's area (where the mask is above 0) of each chunk's window, so Load Video's frames can be wired here directly; an already painted background (WanAnimate Preprocess's bg_images) stays the same."}),
             "character_mask": ("MASK", {"tooltip": "Where the character goes in the background video (replacement mode). A single frame is repeated; a video is read from the same offset as the pose video."}),
-            # added after the node's other inputs: saved workflows keep the order of the earlier ones
-            "clip_vision": ("CLIP_VISION", {"tooltip": "CLIP vision model (clip_vision_h). When connected, the reference is encoded once per run as official Wan 2.2 Animate encodes it: the reference the VAE gets (center-cropped and resized to width x height as the core node does it), stretched to 224x224 with bicubic interpolation, without antialias or 8-bit rounding. clip_vision_output is then ignored; CLIP Vision Encode's antialiasing and 8-bit rounding are not official."}),
         }
         return required, optional
 
@@ -162,6 +165,11 @@ class BCVWanAnimateLongVideoSampler(_LongVideoSampler):
 class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanAnimate2ToVideo"
     MODEL_TOOLTIP = "Wan Animate 2 model. LoRA, WanAnimate2Cache and context-window patches pass through unchanged; shift is applied here."
+    CLIP_VISION_TOOLTIP = ("CLIP vision model (clip_vision_h). Both CLIP embeddings are encoded as official Wan Animate 2 "
+                           "encodes them: the reference once per run, the reference the VAE gets (center-cropped and resized to "
+                           "width x height as the core node does it), stretched to 224x224 with bicubic interpolation, without "
+                           "antialias or 8-bit rounding; the pose per chunk, the first frame of the chunk's pose window, resized as "
+                           "the core node resizes the pose video and stretched the same way.")
     DEFAULT_STEPS = 10
     DESCRIPTION = "Generates an arbitrarily long Wan Animate 2 video by chaining fixed-size chunks internally. Output length equals total_frames (or the pose video length) exactly."
 
@@ -176,9 +184,6 @@ class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
         }
         optional = {
             "positive_pose": ("CONDITIONING", {"tooltip": "Prompt for the pose branch. Defaults to positive. The official pipeline never leaves it empty (default: 人物动作的参考视频)."}),
-            "clip_vision_output": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the reference image (CLIP Vision Encode). Ignored when clip_vision is connected, which encodes it as official does."}),
-            "clip_vision_output_pose": ("CLIP_VISION_OUTPUT", {"tooltip": "CLIP vision of the pose video's first frame, used for every chunk. Defaults to clip_vision_output. Ignored when clip_vision is connected, which re-encodes it per chunk as official does."}),
-            "clip_vision": ("CLIP_VISION", {"tooltip": "CLIP vision model (clip_vision_h). When connected, both CLIP embeddings are encoded as official Wan Animate 2 encodes them: the reference once per run, the reference the VAE gets (center-cropped and resized to width x height as the core node does it), stretched to 224x224 with bicubic interpolation, without antialias or 8-bit rounding; the pose per chunk, the first frame of the chunk's pose window, resized as the core node resizes the pose video and stretched the same way. clip_vision_output and clip_vision_output_pose are then ignored; CLIP Vision Encode's antialiasing and 8-bit rounding are not official."}),
         }
         return required, optional
 
@@ -186,6 +191,10 @@ class BCVWanAnimate2LongVideoSampler(_LongVideoSampler):
 class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     ANIMATE_NODE = "WanSCAILToVideo"
     MODEL_TOOLTIP = "SCAIL-2 model. LoRA (lightx2v distill, SCAIL-2 DPO / relight) and model patches pass through unchanged; shift is applied here."
+    CLIP_VISION_TOOLTIP = ("CLIP vision model (clip_vision_h). The reference is encoded once per run as official SCAIL-2 "
+                           "encodes it: the reference the VAE gets (center-cropped and resized to width x height; in replacement "
+                           "mode with the character on black, as the authors require), stretched to 224x224 with bicubic "
+                           "interpolation, without antialias or 8-bit rounding.")
     DEFAULT_SHIFT = 8.0
     DEFAULT_SCHEDULER = "simple"
     DEFAULT_LAST_CHUNK = FULL
@@ -210,7 +219,6 @@ class BCVSCAIL2LongVideoSampler(_LongVideoSampler):
     @classmethod
     def _animate_inputs(cls, max_res):
         required = {
-            "clip_vision": ("CLIP_VISION", {"tooltip": "CLIP vision model (clip_vision_h). The reference is encoded once per run as official SCAIL-2 encodes it: the reference the VAE gets (center-cropped and resized to width x height; in replacement mode with the character on black, as the authors require), stretched to 224x224 with bicubic interpolation, without antialias or 8-bit rounding."}),
             "pose_video_mask": ("IMAGE", {"tooltip": "Colored driving mask from SCAIL-2 Colored Mask / SCAIL-2 Preprocess, as long as pose_video: the character in its identity colour, on black (animation) or white (replacement)."}),
             "reference_image_mask": ("IMAGE", {"tooltip": "Colored reference mask from SCAIL-2 Colored Mask / SCAIL-2 Preprocess: the character in its identity colour, on white (animation) or black (replacement)."}),
             "replacement_mode": ("BOOLEAN", {"default": False, "tooltip": "False: animation mode, the reference character is animated by the driving video. True: replacement mode, the character replaces the person in the driving video. Must match the mode the masks were rendered for; a mismatch is an error."}),

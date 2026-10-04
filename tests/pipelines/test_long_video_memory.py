@@ -17,7 +17,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from sampler_fakes import (ANIMATE1, ANIMATE2, SCAIL2, Calls, FakeNodeOutput, FakeSamplerCustom, FakeVAEDecode,  # noqa: E402,F401
-                           FakeCLIPVision, IndexVAE, aligned, animate_aligned, node_module, run)
+                           IndexVAE, aligned, animate_aligned, node_module, run)
 
 NODES = [ANIMATE1, ANIMATE2, SCAIL2]
 CORE_NODE = {ANIMATE1: "WanAnimateToVideo", ANIMATE2: "WanAnimate2ToVideo", SCAIL2: "WanSCAILToVideo"}
@@ -105,7 +105,7 @@ def alive(node_module, monkeypatch):
 @pytest.mark.parametrize("node", NODES)
 def test_a_chunk_s_conditioning_latent_and_decode_are_gone_before_the_next_core_call(alive, node):
     module, checked = alive
-    run(module, pose_frames=FOUR_CHUNKS[node], node=node, last_chunk="full", **(dict(clip_vision=FakeCLIPVision()) if node == ANIMATE2 else {}))
+    run(module, pose_frames=FOUR_CHUNKS[node], node=node, last_chunk="full")
     assert len(checked) == 4 and checked == [[]] * 4
 
 
@@ -136,8 +136,7 @@ def test_what_the_core_call_leaves_in_a_reference_cycle_is_collected_before_samp
     enabled = gc.isenabled()
     gc.disable()
     try:
-        run(node_module, pose_frames=FOUR_CHUNKS[node], node=node, last_chunk="full",
-            **(dict(clip_vision=FakeCLIPVision()) if node == ANIMATE2 else {}))
+        run(node_module, pose_frames=FOUR_CHUNKS[node], node=node, last_chunk="full")
     finally:
         if enabled:
             gc.enable()

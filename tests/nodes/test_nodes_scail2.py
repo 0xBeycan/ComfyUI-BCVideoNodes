@@ -208,14 +208,15 @@ def test_the_colored_mask_node_is_the_pipeline():
 
 # --- the sampler node --------------------------------------------------------------------------
 
-SHARED = ["model", "positive", "negative", "vae", "reference_image", "pose_video", "width", "height", "frames_per_chunk",
-          "total_frames", "shift", "sampler_name", "scheduler", "steps", "denoise", "cfg", "seed", "seed_mode"]
+SHARED = ["model", "positive", "negative", "vae", "clip_vision", "reference_image", "pose_video", "width", "height",
+          "frames_per_chunk", "total_frames", "shift", "sampler_name", "scheduler", "steps", "denoise", "cfg", "seed",
+          "seed_mode"]
 
 
 def test_the_sampler_widgets_and_defaults(node_module):
     spec = getattr(node_module, SCAIL2).INPUT_TYPES()
     required = spec["required"]
-    assert list(required) == SHARED + ["clip_vision", "pose_video_mask", "reference_image_mask", "replacement_mode",
+    assert list(required) == SHARED + ["pose_video_mask", "reference_image_mask", "replacement_mode",
                                        "pose_strength", "pose_start_percent", "pose_end_percent", "previous_frame_count",
                                        "last_chunk", "tail_padding"]
     assert list(spec["optional"]) == ["sigmas_override", "color_anchor_strength"]

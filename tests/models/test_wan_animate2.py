@@ -11,7 +11,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import ANIMATE2, FakeModel, node_module  # noqa: E402,F401
+from sampler_fakes import ANIMATE2, FakeCLIPVision, FakeModel, node_module  # noqa: E402,F401
 
 FRAMES, GH, GW = 4, 3, 2
 HW, TOKENS = GH * GW, FRAMES * GH * GW
@@ -58,8 +58,8 @@ def recording(result):
 def prepared(node_module, log_scale):
     """The Wan Animate 2 adapter after prepare, with attn_log_scale `log_scale`."""
     adapter = node_module.WanAnimate2Adapter(ANIMATE2, "fit")
-    inputs = dict(pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=log_scale)
-    adapter.prepare(type("Core", (), {}), inputs, None, 64, 64, 81)
+    inputs = dict(pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=log_scale, clip_vision=FakeCLIPVision())
+    adapter.prepare(type("Core", (), {}), inputs, torch.zeros(1, 64, 64, 3), 64, 64, 81)
     return adapter
 
 
