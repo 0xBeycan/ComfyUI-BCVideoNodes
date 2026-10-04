@@ -48,9 +48,11 @@ nodes/               common (the PREPROCESS and VIDEO categories, _config, _Conf
                      ComfyUI-BCNodes' full clear calls, and its registration)
 pipelines/           long_video (the chunk loop), pose, sapiens2_pose (Pose Detection with a Sapiens2 pose_model:
                      Sapiens2 body, feet and hands, ViTPose-H face), face, scail2 (the colored masks, the driving video
-                     on black), guard/ (config, common, pose, mask, reference, report, timeline, combine,
+                     on black, face_crop's face close-up: the face box, the crop in the generation's aspect,
+                     the extra reference's mask on black), guard/ (config, common, pose, mask, reference, report, timeline, combine,
                      scail2), sam3_1_multiplex/ (config, prompt, pose, prompt_pose, refine, track: the entry
-                     the node calls), video_input (Load Video, Load Reference Image, Conform Video)
+                     the node calls), video_input (Load Video, Load Reference Image (fitted and at the source size),
+                     Conform Video)
 models/              __init__ (imports the model packages in registration order),
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, yolo/, sapiens2/ (net, wrapper, decode, keypoints),
@@ -82,7 +84,7 @@ docs/                the user documentation, one page per category, linked from 
   is allowed (`nodes/common.py`, the WanAnimate and SCAIL-2 wrappers composing the other nodes,
   and the Mask Guard and the WanAnimate Preprocess Guard calling
   `nodes/sam3_1_multiplex.track_reference` for their reference check, as SCAIL-2 Preprocess does
-  for its reference mask).
+  for its reference mask and its face close-up).
 - A model package imports only itself, `models/common/` and `libs/`. Model packages never import
   each other, and `models/common/` never imports a model package. Inside `models/`, only
   `models/__init__.py` imports the model packages: that is the registration list.
@@ -143,8 +145,8 @@ pack adds after that still turns the saving off for that prompt, with a console 
   Video `images`, the samplers' `images`), it is dropped once nothing reads it any more: at return,
   or as soon as its readers are done (WanAnimate Preprocess `mask`, emptied (`emptied`) right after
   the final mask is made, before the face crops and `bg_images`).
-- A pass-through (the input tensor itself, the guards' masks), a one-frame output (a reference
-  mask, a timeline) and the output of a single-output node that is not an output node (it runs
+- A pass-through (the input tensor itself, the guards' masks), a one- or two-frame output (the
+  references and reference masks, Load Reference Image's source image, a timeline) and the output of a single-output node that is not an output node (it runs
   only when that output is linked) are not heavy.
 - A wrapper passes its own `wanted` to the nodes it calls, as the keyword-only `wanted=` of their
   methods (its outputs carry their names); ComfyUI never passes it. A wrapper also asks for none of
@@ -399,7 +401,9 @@ pack adds after that still turns the saving off for that prompt, with a console 
   `reference_image` connected, the mask record and the combined record also carry `"reference"`,
   before `"frames"` (area, cropped, iou_first_frame, scale_first_frame, flags), and
   `min_reference_iou` in their thresholds: the Mask Guard's default 0.4 on the raw mask, the
-  WanAnimate Preprocess Guard's 0.5 on the final mask; added keys, nothing renamed); the log
+  WanAnimate Preprocess Guard's 0.5 on the final mask; the SCAIL-2 record's `"reference"` is the
+  primary reference, and with extra references (a reference mask of more than one frame) it also
+  carries `"extra_references"` after it (index, area, fragments, flags); added keys, nothing renamed); the log
   format the owner's A/B test scripts parse (the `BCVideoNodes` logger, its `[BCVideoNodes]`
   prefix and the " done in " / " failed after " step lines in `libs/log.py`); the model file format
   (`models/common/checkpoint.py`); and `LOGITS_SINK` in `pipelines/sam3_1_multiplex/track.py`,

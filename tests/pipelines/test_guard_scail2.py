@@ -83,7 +83,7 @@ def test_an_empty_reference_mask_fails():
     passed, flags, reference, report, _ = guard_run(driving, reference_only(torch.zeros(1, H, W), False))
     assert not passed and flags == {} and reference["flags"] == ["reference_empty"], report
     assert reference["mode"] == scail2.ANIMATION and reference["iou_first_frame"] is None
-    assert "- reference_empty (fail): the reference mask has no character" in report
+    assert "- reference_empty (fail): reference 0: the reference mask has no character" in report
 
 
 def test_a_split_reference_mask_is_reference_fragmented():
@@ -372,3 +372,67 @@ def test_the_crop_geometry_is_common_upscale_s(size, target):
     ours = torch.nn.functional.interpolate(image[..., y:height - y, x:width - x], size=(new_height, new_width),
                                            mode="nearest-exact")
     assert torch.equal(ours, comfy.utils.common_upscale(image, new_width, new_height, "nearest-exact", "center"))
+
+
+# --- extra references (SCAIL-2 multi-reference, SCAIL-2 Preprocess's face close-up) ---------------
+
+def face_mask(box=(40, 200, 60, 180)):
+    """An extra reference's colored mask [1, H, W, 3]: a blue head-sized block (rows y1:y2, columns
+    x1:x2) on black, as SCAIL-2 Preprocess renders it in both modes; None box: all black."""
+    mask = torch.zeros(1, H, W)
+    if box is not None:
+        y1, y2, x1, x2 = box
+        mask[0, y1:y2, x1:x2] = 1.0
+    return scail2.extra_reference_mask(mask)
+
+
+def with_extras(replacement_mode, *extras):
+    driving, reference = rendered(replacement_mode)
+    return driving, torch.cat([reference, *extras])
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_an_extra_reference_on_black_passes_and_leaves_the_mode_to_the_primary(replacement_mode):
+    # three extras on black: in animation mode they outnumber the primary's white border, yet the
+    # mode is read from the primary alone
+    driving, references = with_extras(replacement_mode, face_mask(), face_mask(), face_mask())
+    passed, flags, reference, report, record = guard_run(driving, references)
+    assert passed and flags == {} and reference["flags"] == [], report
+    assert reference["mode"] == (scail2.REPLACEMENT if replacement_mode else scail2.ANIMATION)
+    # each extra: its index, the character's share of the frame (160 x 120 px of 320 x 240), no fragment, no flag
+    area = 0.25
+    assert record["extra_references"] == [{"index": i, "area": pytest.approx(area), "fragments": [], "flags": []}
+                                          for i in (1, 2, 3)]
+    assert list(record) == ["guard", "thresholds", "enabled", "flags", "reference", "extra_references", "frames"]
+    assert all(tuple(extra) == scail2.SCAIL2_EXTRA_REFERENCE for extra in record["extra_references"])
+    assert f"reference 1 mask (extra, on black): area {area:.3f}" in report and "reference 3 mask" in report
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_an_empty_extra_reference_fails_by_its_index(replacement_mode):
+    driving, references = with_extras(replacement_mode, face_mask(), face_mask(None))
+    passed, flags, reference, report, record = guard_run(driving, references)
+    assert not passed and flags == {} and reference["flags"] == [], report
+    assert [extra["flags"] for extra in record["extra_references"]] == [[], ["reference_empty"]]
+    assert "- reference_empty (fail): reference 2: the extra reference's mask has no character" in report
+    with pytest.raises(scail2.GuardFailed, match="reference 2"):
+        scail2.check_scail2(driving, references)
+    # switched off it is reported and never stops
+    assert scail2.check_scail2(driving, references, enabled=False)[2].startswith("SCAIL-2 guard: passed")
+
+
+def test_a_split_extra_reference_is_a_warning_by_its_index():
+    split = face_mask()
+    split[0, 260:300, 0:48] = torch.tensor([0.0, 0.0, 1.0])  # 1920 px apart from the 19200 px head
+    passed, _, _, report, record = guard_run(*with_extras(False, split))
+    assert passed, report
+    [extra] = record["extra_references"]
+    assert extra["flags"] == ["reference_fragmented"] and extra["fragments"] == [pytest.approx(0.1)]
+    assert "- reference_fragmented (warning): reference 1: a detached region of 0.100" in report
+
+
+def test_an_extra_reference_is_never_misaligned():
+    # replacement mode: the primary placed like the first driving frame, the face close-up anywhere
+    passed, _, reference, report, record = guard_run(*with_extras(True, face_mask((0, 20, 0, 40))))
+    assert passed and reference["flags"] == [] and record["extra_references"][0]["flags"] == [], report
+    assert "reference_misaligned" not in report

@@ -281,3 +281,44 @@ def test_official_pose_rope_is_an_object_patch_on_the_clone(node_module):
     rope_encode = patched.object_patches["diffusion_model.rope_encode"]
     assert rope_encode(3, 8, 4, device="cpu", dtype=torch.bfloat16) == ("core rope_encode", (3, 8, 4), {"device": "cpu", "dtype": torch.bfloat16})
     assert model.object_patches == {}  # the model the node was handed keeps core's rope_encode
+
+
+# --- multi-reference: the primary and an extra reference (SCAIL-2 Preprocess's face close-up) ----
+
+def two_references(replacement_mode):
+    """(reference_image [2, 96, 40, 3], reference_image_mask [2, 64, 32, 3]): the primary's mask
+    on the mode's background, the extra's blue on black in both modes."""
+    reference = torch.rand(2, 96, 40, 3, generator=torch.Generator().manual_seed(1))
+    mask = reference_mask(replacement_mode, frames=2)
+    mask[1] = 0.0
+    mask[1, 8:40, 4:28] = torch.tensor([0.0, 0.0, 1.0])
+    return reference, mask
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_two_references_reach_core_whole_and_clip_reads_the_primary(node_module, replacement_mode):
+    reference, mask = two_references(replacement_mode)
+    clip_vision = FakeCLIPVision()
+    run(node_module, pose_frames=240, node=SCAIL2, reference_image=reference, reference_image_mask=mask,
+        clip_vision=clip_vision, replacement_mode=replacement_mode)
+    # every chunk's core call gets both references and both masks, as linked
+    assert len(Calls.animate) == 4
+    assert all(c["reference"] is reference and c["reference_mask"] is mask for c in Calls.animate)
+    # CLIP is encoded once, from the primary alone (in replacement mode cut by the primary's mask)
+    primary = core_vae_reference(reference[:1])
+    if replacement_mode:
+        cut = torch.zeros_like(primary)
+        cut[:, 16:48, 8:24] = primary[:, 16:48, 8:24]
+        primary = cut
+    [(pixels, _)] = clip_vision.calls
+    assert pixels.shape == (1, 3, 224, 224)
+    assert torch.allclose(pixels, official_clip_pixels(primary), atol=1e-5, rtol=0)
+
+
+@pytest.mark.parametrize("images, masks", [(2, 1), (1, 2)])
+def test_references_and_masks_of_another_count_are_an_error(node_module, images, masks):
+    with pytest.raises(ValueError, match=r"reference_image has {} frame\(s\) but reference_image_mask {}: .* Link the "
+                                         r"sampler's reference_image from SCAIL-2 Preprocess's reference_images".format(images, masks)):
+        run(node_module, pose_frames=81, node=SCAIL2, reference_image=torch.zeros(images, 64, 32, 3),
+            reference_image_mask=reference_mask(frames=masks))
+    assert Calls.animate == []

@@ -246,8 +246,24 @@ SCAIL-2 in either of its two modes, from the same node:
 
 SCAIL-2 Preprocess makes all three inputs. A reference or driving mask
 rendered for the other mode is an error (the mode is read from each mask's
-border: the reference mask is white in animation mode and black in
-replacement mode, the driving mask the opposite).
+border, the reference mask's first frame: the reference mask is white in
+animation mode and black in replacement mode, the driving mask the opposite).
+
+Multi-reference (zai-org/SCAIL-2 README, Experimental Functions:
+Multi-Reference): `reference_image` may hold more than one image, the first
+the primary reference, the others extra views of the character, with
+`reference_image_mask` holding one colored mask per image, paired by
+position (an extra reference's mask is the character in its identity colour
+on black, in both modes). The node hands both batches to `WanSCAILToVideo`
+whole, which VAE-encodes each reference as its own latent frame and binds
+each to its identity through its mask; in replacement mode it cuts each
+reference out by its own mask. All images share one size (core resizes them
+to `width` x `height`). CLIP vision reads the primary alone, and so does the
+mode check. A `reference_image` and `reference_image_mask` of different
+frame counts are an error. SCAIL-2 Preprocess's `face_crop` makes a face
+close-up as the second reference: link the sampler's `reference_image` from
+the preprocess's `reference_images` (with `face_crop` off that is the
+primary alone).
 
 Defaults: `frames_per_chunk` 81, `width` x `height` 704 x 1280, `shift` 8,
 `euler` / `simple`, 6 steps, cfg 1 (for a distill LoRA), `previous_frame_count`
@@ -262,7 +278,7 @@ scheduler. The other references are in the table below.
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|
 | `pose_video_mask`           | IMAGE               | Colored driving mask, as long as `pose_video` (a mismatch is an error). Extended past its end like the pose (`tail_padding`). |
-| `reference_image_mask`      | IMAGE               | Colored reference mask.                                               |
+| `reference_image_mask`      | IMAGE               | Colored reference mask, one frame per `reference_image` frame (multi-reference: as many frames, a mismatch is an error). |
 | `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for: link SCAIL-2 Preprocess's `replacement_mode` output. |
 | `pose_strength`             | FLOAT, default 1.0  | Passed to `WanSCAILToVideo`.                                          |
 | `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Passed as `pose_start` / `pose_end`. start > end is an error. Outside the range the model samples without the pose tokens and so without the colored driving mask too (core adds the mask to the pose tokens). Official SCAIL-2 has no such window: pose and driving mask condition every step, which the defaults 0 / 1 give. |

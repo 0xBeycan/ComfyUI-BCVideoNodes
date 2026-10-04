@@ -277,6 +277,7 @@ class FakeWanSCAILToVideo:
             "mask_frames": None if pose_video_mask is None else pose_video_mask.shape[0],
             "replacement_mode": replacement_mode, "pose_strength": pose_strength, "pose_start": pose_start, "pose_end": pose_end,
             "previous_frame_count": previous_frame_count, "clip": clip_vision_output, "reference_mask": reference_image_mask,
+            "reference": reference_image,
         })
         values = {"ref_mask_flag": not replacement_mode}
         if pose_video is not None:

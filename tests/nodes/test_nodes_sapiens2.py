@@ -16,9 +16,10 @@ cli_args.args.disable_xformers = True
 pytest.importorskip("folder_paths")
 
 from names import nodes, spec  # noqa: E402
-from pose_fakes import FakeDetector, FakePose, frames, loader, pose  # noqa: E402
+from pose_fakes import H, W, FakeDetector, FakePose, frames, loader, pose  # noqa: E402
 from sam3_1_multiplex_fakes import sam3  # noqa: E402
 from sapiens2_fakes import FakeSapiens2, sapiens2  # noqa: E402
+from scail2_fakes import scail2  # noqa: E402
 from test_nodes_wiring import fake_models, same  # noqa: E402,F401
 
 MODELS = ["5b int8 convrot", "5b bf16", "1b int8 convrot", "1b bf16", "0.8b int8 convrot", "0.8b bf16",
@@ -136,8 +137,21 @@ def test_the_scail2_wrapper_with_sapiens2_tracks_on_its_pose(fake_sapiens2, mode
     wrapped = nodes.BCVSCAIL2Preprocess().process(images, reference, False, mode, "person", pose_model="Sapiens2 0.4b bf16")
     pose_data = nodes.BCVPoseDetection().detect(images, **WIDGETS, pose_model="Sapiens2 0.4b bf16")[1]
     (mask,) = nodes.BCVSAM3VideoTrack().track(images, mode, "person", 1, -1, pose_data=pose_data)
-    assert same(wrapped[3], mask)
+    assert same(wrapped[4], mask)
     assert list(fake_sapiens2) == ["Sapiens2 0.4b bf16"]
+
+
+def test_scail2_face_crop_finds_the_face_with_pose_model_in_prompt_mode(fake_sapiens2, caplog):
+    caplog.set_level("INFO")
+    source = frames()[:1]
+    out = nodes.BCVSCAIL2Preprocess().process(frames()[:4], frames()[:1], False, "prompt", "person",
+                                              reference_source=source, pose_model="Sapiens2 0.4b bf16", face_crop=True)
+    # the face box of Pose Detection with that pose_model on the source, though prompt mode runs no pose
+    pose_data = nodes.BCVPoseDetection().detect(source, **WIDGETS, pose_model="Sapiens2 0.4b bf16")[1]
+    face = scail2.face_reference(source, scail2.face_box(pose_data, W, H), W, H)
+    assert same(out[3][1:], face)
+    assert list(fake_sapiens2) == ["Sapiens2 0.4b bf16"]
+    assert "pose_model not used" not in caplog.text
 
 
 def test_scail2_prompt_mode_names_an_unused_pose_model(fake_sapiens2, caplog):

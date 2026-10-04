@@ -1,5 +1,6 @@
-"""SCAIL-2's colored masks against core's own reading of them, and the SAM 3.1 Multiplex track on
-the one-frame reference SCAIL-2 Preprocess hands it. Core's comfy_extras/nodes_scail.py is
+"""SCAIL-2's colored masks against core's own reading of them, the SAM 3.1 Multiplex track on
+the one-frame reference SCAIL-2 Preprocess hands it, and the face close-up of its face_crop (the
+crop's geometry on synthetic boxes, its resize, its mask). Core's comfy_extras/nodes_scail.py is
 imported, so this runs where ComfyUI is importable (with the ComfyUI root on PYTHONPATH):
 
     PYTHONPATH=/path/to/ComfyUI python -m pytest tests/pipelines/test_scail2.py
@@ -8,6 +9,7 @@ import logging
 
 import pytest
 
+np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 pytest.importorskip("cv2")
 cli_args = pytest.importorskip("comfy.cli_args")
@@ -200,3 +202,110 @@ def test_the_sam_track_runs_on_a_one_frame_reference(monkeypatch, caplog, dtype)
     assert "frames without a mask 0" in closing and mask.dtype == dtype
     covered = float((mask > 0).float().mean() * 100)
     assert f"mask coverage {covered:.1f}-{covered:.1f}%" in closing
+
+
+# --- the face close-up: SCAIL-2 Preprocess's extra reference (face_crop) --------------------------
+
+@pytest.mark.parametrize("box, image, generation, expected", [
+    # the worked example: a 180 x 200 face box in a 1280 x 1920 source, a 704 x 1280 generation. The
+    # box fills the width (180), the height follows the aspect (180 / 0.55 = 327); of the 127 px
+    # free height half (63.5 < 0.4 * 200) goes above the box: y = 300 - 63.5 = 236.5, rounded to 236
+    ((550, 300, 730, 500), (1280, 1920), (704, 1280), (550, 236, 180, 327)),
+    # a tall crop: 200 px free, but no more than 0.4 box heights (40) above the box; the rest below
+    ((500, 500, 600, 600), (2000, 2000), (512, 1536), (500, 460, 100, 300)),
+    # a box at the top-left corner: shifted inside the image (y -30 -> 0)
+    ((0, 10, 100, 110), (1000, 1000), (704, 1280), (0, 0, 100, 182)),
+    # a box at the right edge, too tall for the aspect at its width (50 * 1.818 < 100): the crop is
+    # 55 wide so the box's height fits; x 948 shifted to 1000 - 55
+    ((950, 500, 1000, 600), (1000, 1000), (704, 1280), (945, 500, 55, 100)),
+    # the image is too small for 120 x 218: the largest crop of the aspect it holds, 110 x 200,
+    # centred on the box and shifted inside (y 20 - 40 -> 0)
+    ((40, 20, 160, 140), (200, 200), (704, 1280), (45, 0, 110, 200)),
+    # a landscape generation: the box's height (200) fills the crop, 364 wide, nothing of the box cut
+    ((550, 300, 730, 500), (1920, 1280), (1280, 704), (458, 300, 364, 200)),
+])
+def test_the_face_crop_box(box, image, generation, expected):
+    assert scail2.face_crop_box(box, *image, *generation) == expected
+    assert scail2.FACE_HEADROOM == 0.4
+
+
+def test_the_face_close_up_is_the_crop_resized_by_lanczos():
+    source = torch.randint(0, 256, (1, 400, 300, 3), generator=torch.Generator().manual_seed(0)) / 255.0
+    face = scail2.face_reference(source, (100, 80, 160, 140), 32, 64)
+    # the box fills 60 px of width, 60 / 0.5 = 120 high; 60 px free, half of it capped at 0.4 * 60 = 24
+    # above: y = 56
+    assert scail2.face_crop_box((100, 80, 160, 140), 300, 400, 32, 64) == (100, 56, 60, 120)
+    expected = torch.empty(64, 32, 3)
+    scail2.fit(source[0, 56:176, 100:160], expected)
+    assert face.shape == (1, 64, 32, 3) and face.dtype == torch.float32 and torch.equal(face[0], expected)
+
+
+def face_pose_data(score=0.9, conf=0.9):
+    """The pose_data of one 1000 x 1000 image: 68 face keypoints spanning x 0.2..0.3, y 0.3..0.4;
+    row 0 (the right heel, not a face point) far off."""
+    face = np.zeros((69, 3), dtype=np.float32)
+    face[0] = (0.9, 0.9, conf)
+    face[1:, 0], face[1:, 1], face[1:, 2] = np.linspace(0.2, 0.3, 68), np.linspace(0.3, 0.4, 68), conf
+    return {"pose_metas_original": [{"width": 1000, "height": 1000, "keypoints_face": face}],
+            "detections": [{"bbox": [100.0, 100.0, 600.0, 900.0], "score": score, "persons": 1}]}
+
+
+@pytest.mark.parametrize("conf", [0.9, 0.0])
+def test_the_face_box_is_the_face_crops(conf):
+    # the 100 x 100 keypoint box grown to 1.3 times its area: sqrt(13000) = 114.02 a side, the width
+    # 7.01 each side, the height 3.50 below and 10.51 above (Wan Animate's hair framing), then int.
+    # A face seen from behind (confidence 0) still has its box.
+    assert scail2.FACE_CROP_SCALE == 1.3
+    assert scail2.face_box(face_pose_data(conf=conf), 1000, 1000) == (192, 289, 307, 403)
+
+
+def test_no_person_on_the_source_is_an_error():
+    with pytest.raises(ValueError, match="face_crop: Pose Detection found no person on reference_source"):
+        scail2.face_box(face_pose_data(score=-1.0), 1000, 1000)
+
+
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_an_extra_reference_mask_is_blue_on_black_in_both_modes(replacement_mode, caplog):
+    mask = person(1)
+    colored = scail2.extra_reference_mask(mask)
+    # the mode does not enter: the official multi-reference example keeps the extra references on
+    # black in animation mode too
+    expected = torch.zeros(1, 64, 32, 3)
+    expected[0, 16:48, 8:20] = torch.tensor([0.0, 0.0, 1.0])
+    assert torch.equal(colored, expected)
+    _, primary = scail2.colored_masks(person(), replacement_mode, mask)
+    assert torch.equal(primary[0, 0, 0], torch.tensor(scail2.BLACK if replacement_mode else scail2.WHITE))
+    assert "marks no pixel" not in caplog.text
+
+
+def test_an_empty_extra_reference_mask_is_logged(caplog):
+    caplog.set_level(logging.WARNING)
+    assert torch.equal(scail2.extra_reference_mask(torch.zeros(1, 8, 4)), torch.zeros(1, 8, 4, 3))
+    assert "the extra reference's mask marks no pixel" in caplog.text
+
+
+def test_the_extra_reference_is_appended_after_the_primary():
+    references, masks = torch.rand(1, 8, 4, 3), torch.rand(1, 8, 4, 3)
+    image, image_mask = torch.rand(1, 8, 4, 3), torch.rand(1, 8, 4, 3)
+    out_images, out_masks = scail2.with_extra_reference(references, masks, image, image_mask)
+    assert torch.equal(out_images, torch.cat([references, image])) and torch.equal(out_masks, torch.cat([masks, image_mask]))
+
+
+def test_face_crop_off_leaves_a_connected_source_unused(caplog):
+    caplog.set_level(logging.INFO)
+    scail2.check_face_crop(False, None, torch.zeros(1, 8, 4, 3))
+    assert "reference_source not used" not in caplog.text
+    scail2.check_face_crop(False, torch.zeros(1, 20, 10, 3), torch.zeros(1, 8, 4, 3))
+    assert "face_crop is off; reference_source not used" in caplog.text
+
+
+@pytest.mark.parametrize("source, mask, message", [
+    (None, None, "face_crop is on but reference_source is not connected: connect Load Reference Image's source_image"),
+    (torch.zeros(2, 20, 10, 3), None, "reference_source holds 2 images"),
+    (torch.zeros(1, 20, 10, 3), torch.zeros(1, 16, 16), "reference_mask is 16x16 but reference_image 4x8"),
+])
+def test_face_crop_on_checks_its_inputs(source, mask, message):
+    with pytest.raises(ValueError, match=message):
+        scail2.check_face_crop(True, source, torch.zeros(1, 8, 4, 3), mask)
+    # a reference_mask of reference_image's size passes
+    scail2.check_face_crop(True, torch.zeros(1, 20, 10, 3), torch.zeros(1, 8, 4, 3), torch.zeros(1, 8, 4))

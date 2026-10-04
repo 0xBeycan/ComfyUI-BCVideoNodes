@@ -158,10 +158,15 @@ lanczos resize Load Video applies to the frames, so the reference matches the
 video's model, resolution and orientation. The mask is fitted the same way.
 The node shows the fitted image. With the sampler at the same size, core's
 placement of the reference (a centre crop to the generation's aspect ratio,
-then a resize) changes nothing.
+then a resize) changes nothing. The same image is also output at its own
+resolution, not resized (EXIF orientation applied, alpha as the mask the
+same way), for a crop that keeps the full detail: SCAIL-2 Preprocess's
+`face_crop` cuts its face close-up from it.
 
 - in: `image` (an image of the input folder, with core's upload), `video_info`
-- out: `image` (IMAGE), `mask` (MASK)
+- out: `resized_image` (IMAGE), `resized_mask` (MASK), fitted to the video;
+  `source_image` (IMAGE), `source_mask` (MASK), at the image's own
+  resolution (link `source_image` to SCAIL-2 Preprocess's `reference_source`)
 
 ## Conform Video
 

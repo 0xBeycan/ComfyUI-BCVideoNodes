@@ -1,6 +1,6 @@
 """The flows of the video input nodes: Load Video (a file decoded frame by frame, cropped and
 resized to the model's generation size, or kept at the source size, straight into one preallocated
-IMAGE batch in the dtype of its precision, with its audio and its video_info), Load Reference Image (an image fitted to the video's loaded size) and Conform
+IMAGE batch in the dtype of its precision, with its audio and its video_info), Load Reference Image (an image fitted to the video's loaded size, and as loaded) and Conform
 Video (a clip fitted to the nearest platform size).
 
 The full-resolution clip never exists: one source frame is decoded at a time, and the batch is
@@ -224,23 +224,30 @@ def preview(path, model, resolution, orientation, force_fps, start_frame, frame_
 
 
 def load_reference_image(path, width, height):
-    """(IMAGE [1, height, width, 3], MASK) of the image file at `path`, loaded as core's Load
-    Image does (EXIF orientation applied, alpha -> MASK as 1 - alpha; its first frame) and fitted
-    to `width` x `height` by a centre crop and lanczos. The MASK is fitted the same way, or core's
-    64x64 zeros when the image has no alpha."""
+    """(IMAGE [1, height, width, 3], MASK, source IMAGE [1, H, W, 3], source MASK) of the image file
+    at `path`, loaded as core's Load Image does (EXIF orientation applied, alpha -> MASK as
+    1 - alpha; its first frame). The first two are fitted to `width` x `height` by a centre crop and
+    lanczos, the MASK fitted the same way; the source two are the image at its own resolution, not
+    resized. Without alpha both MASKs are core's 64x64 zeros."""
     import numpy as np
     import node_helpers
     from PIL import Image, ImageOps
 
     source = node_helpers.pillow(Image.open, path)
     source = node_helpers.pillow(ImageOps.exif_transpose, source)
+    rgb = np.array(source.convert("RGB"))
     image = torch.empty((1, height, width, 3), dtype=torch.float32)
-    resize.fit(np.array(source.convert("RGB")), image[0])
+    resize.fit(rgb, image[0])
+    source_image = torch.empty((1, *rgb.shape), dtype=torch.float32)
+    resize.store(rgb, source_image[0])
     if "A" not in source.getbands():
-        return image, torch.zeros((1, 64, 64), dtype=torch.float32)
+        return image, torch.zeros((1, 64, 64), dtype=torch.float32), source_image, torch.zeros((1, 64, 64), dtype=torch.float32)
+    alpha = np.array(source.getchannel("A"))
     mask = torch.empty((1, height, width), dtype=torch.float32)
-    resize.fit(np.array(source.getchannel("A")), mask[0])
-    return image, mask.neg_().add_(1)
+    resize.fit(alpha, mask[0])
+    source_mask = torch.empty((1, *alpha.shape), dtype=torch.float32)
+    resize.store(alpha, source_mask[0])
+    return image, mask.neg_().add_(1), source_image, source_mask.neg_().add_(1)
 
 
 def conform_video(images, how, method):

@@ -31,14 +31,47 @@ is a later phase).
   when connected, and passes its `pose_data` to the track; `prompt` runs no
   pose. The reference image is tracked in prompt mode whatever the mode: the
   pose modes are video modes, and the reference is one image, so `prompt` is
-  read in every mode. Widgets: `replacement_mode`, `mode`, `prompt`,
-  `black_background` (default off), `pose_model` (last; `ViTPose-H` default, or
-  `Sapiens2 <model>`, read only in the pose modes); optional `reference_mask`, `pose_config`,
-  `sam3_config`. Outputs: `pose_video` (the driving video, which SCAIL-2's
-  end-to-end mode reads as its pose input in animation and replacement mode
-  alike), `pose_video_mask`, `reference_image_mask`, `mask`,
-  `reference_mask`, `replacement_mode` (the widget's value, to link to the
-  SCAIL-2 Long Video Sampler's `replacement_mode`, so the two always match).
+  read in every mode. Inputs: `images`, `reference_image` (Load Reference
+  Image's `resized_image`), optional `reference_source` (Load Reference
+  Image's `source_image`, for `face_crop`), `reference_mask`, `pose_config`,
+  `sam3_config`. Widgets: `replacement_mode`, `mode`, `prompt`,
+  `black_background` (default off), `face_crop` (default off), `pose_model`
+  (last; `ViTPose-H` default, or `Sapiens2 <model>`; read in the pose modes, and
+  with `face_crop` on in every mode). Outputs: `pose_video` (the driving
+  video, which SCAIL-2's end-to-end mode reads as its pose input in animation
+  and replacement mode alike), `pose_video_mask`, `reference_image_mask`,
+  `reference_images`, `mask`, `reference_mask`, `replacement_mode` (the
+  widget's value, to link to the SCAIL-2 Long Video Sampler's
+  `replacement_mode`, so the two always match). Link the sampler's
+  `reference_image` from `reference_images` and its `reference_image_mask`
+  from `reference_image_mask`: with `face_crop` off `reference_images` is
+  `reference_image` itself, with it on the two batches hold both references.
+- `face_crop` (default off): a face close-up as a second reference, SCAIL-2's
+  multi-reference (zai-org/SCAIL-2 README, Experimental Functions:
+  Multi-Reference). It needs `reference_source`, the reference at its own
+  resolution (an error says what to connect when it is missing). Pose
+  Detection (its default widgets and `pose_model`, in every mode) finds the
+  face on that one image; the face box is the one Face Crop cuts (the face
+  keypoints grown to 1.3 times their area, Wan Animate's face and hair
+  framing). No person on the image is an error; a head seen from behind still
+  has its box. The crop has the generation's aspect (`reference_image`'s
+  width x height): the face box fills its width and is centred in it (when
+  the generation is so wide that the box's height would not fit, the box
+  fills the height instead); of the crop's free height half goes above the
+  box, but never more than 0.4 box heights, so the hair stays in and the rest
+  goes below (neck, shoulders). The crop is shifted inside the image; an
+  image too small for it gives the largest crop of that aspect it holds,
+  placed the same way. It is cut from `reference_source` and resized to
+  `reference_image`'s size with lanczos (Load Reference Image's resize). SAM
+  3.1 Multiplex finds the character on it with `prompt` (prompt mode), and
+  its colored mask is the character in blue on black in both modes, as the
+  official multi-reference example renders extra references. Then
+  `reference_images` = [primary, face] and `reference_image_mask` = [the
+  primary's mask on the mode's background, the face's on black]. Example:
+  a 1280 x 1920 source with a 180 x 200 face box at (550, 300) and a
+  704 x 1280 generation give a 180 x 327 crop at (550, 236), resized to
+  704 x 1280. With `reference_mask` connected it must be `reference_image`'s
+  size, since each batch holds one size.
 - `black_background` (animation mode only): `pose_video` becomes the driving
   video with every pixel outside the person's mask black, as SCAIL-2's
   training pose videos were (zai-org/SCAIL-2 issue #17; SCAIL-Pose's
@@ -56,9 +89,14 @@ so `pose_data` is optional: connected (Pose Detection on the driving frames
 at the generation size), the driving mask also gets the Mask Guard's
 pose-based checks with their levels, and a detached piece holding the
 person's keypoints is her (without it, only a piece that runs off a side of
-the frame she runs off is). The mode is read from the reference mask's
-border, as the sampler reads it; the driving mask is taken to be at the
-generation size. With `scail2_guard` on these stop the workflow: no driving
+the frame she runs off is). The mode is read from the border of the primary
+reference mask (the first frame), as the sampler reads it; the driving mask
+is taken to be at the generation size. Every further frame of
+`reference_image_mask` is an extra reference (`face_crop`'s close-up), on
+black in both modes, so it never enters the mode read: each is checked on
+its own for `reference_empty` (a fail) and `reference_fragmented` (a
+warning), and the report names each reference by its index (0 the
+primary); `reference_misaligned` judges the primary alone. With `scail2_guard` on these stop the workflow: no driving
 frame has the person (`no_driving_person`), a detached region at least 5% of
 the largest one on a driving frame (`driving_fragmented`), the reference
 mask has no character (`reference_empty`), and with `pose_data` the Mask
@@ -93,5 +131,6 @@ scale against the first driving frame.
   (`SCAIL2GuardConfig`) and the Mask Guard's thresholds (`MaskGuardConfig`,
   in `pipelines/guard/config.py`)
 - out: `pose_video_mask`, `reference_image_mask` (unchanged), `report`,
-  `metrics` (JSON: `"guard": "scail2"`, the driving frames, the reference
-  record), `timeline` (IMAGE)
+  `metrics` (JSON: `"guard": "scail2"`, the driving frames, the primary
+  reference's record, and with extra references `"extra_references"`, one
+  record each: `index`, `area`, `fragments`, `flags`), `timeline` (IMAGE)

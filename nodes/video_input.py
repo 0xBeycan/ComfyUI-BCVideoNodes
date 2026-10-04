@@ -198,11 +198,11 @@ class BCVLoadReferenceImage:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK")
-    RETURN_NAMES = ("image", "mask")
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE", "MASK")
+    RETURN_NAMES = ("resized_image", "resized_mask", "source_image", "source_mask")
     FUNCTION = "load"
     CATEGORY = VIDEO
-    DESCRIPTION = "Loads an image as core's Load Image does (EXIF orientation, alpha as the mask) and fits it to the video's loaded size by a centre crop and lanczos, the resize Load Video applies to the frames."
+    DESCRIPTION = "Loads an image as core's Load Image does (EXIF orientation, alpha as the mask, 1 - alpha; core's 64x64 zeros without alpha). resized_image and resized_mask: fitted to the video's loaded size by a centre crop and lanczos, the resize Load Video applies to the frames (the reference_image of the sampler and the preprocess). source_image and source_mask: the same image at its own resolution, not resized (SCAIL-2 Preprocess's reference_source, which its face_crop cuts the face close-up from)."
 
     def load(self, image, video_info):
         import folder_paths
@@ -211,8 +211,8 @@ class BCVLoadReferenceImage:
         from ..pipelines import video_input
 
         path = folder_paths.get_annotated_filepath(image)
-        fitted, mask = video_input.load_reference_image(path, video_info["loaded_width"], video_info["loaded_height"])
-        return {"ui": ui.PreviewImage(fitted).as_dict(), "result": (fitted, mask)}
+        loaded = video_input.load_reference_image(path, video_info["loaded_width"], video_info["loaded_height"])
+        return {"ui": ui.PreviewImage(loaded[0]).as_dict(), "result": loaded}
 
     @classmethod
     def IS_CHANGED(cls, image, **kwargs):

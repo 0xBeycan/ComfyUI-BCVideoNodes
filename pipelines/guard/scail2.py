@@ -16,14 +16,14 @@ The checks that stop the workflow:
                         (without a pose only a piece the frame edge cut from her - one that runs
                         off a side of the frame she runs off - is told from another object; with
                         one, a piece holding her own drawn keypoints is her)
-  reference_empty       the reference mask has no character
+  reference_empty       the reference mask has no character (the primary, or an extra reference)
 
 and with pose_data the Mask Guard's fails on the driving mask: mask_empty, mask_head_out,
 mask_limb_out and mask_loss, judged by what the latent grid reads of her (below). The warnings:
 
   driving_empty         without pose_data, a driving frame without the person: normal where the
                         person leaves the shot, and only a pose tells (with it, mask_empty)
-  reference_fragmented  a detached region of the reference mask
+  reference_fragmented  a detached region of a reference mask (the primary, or an extra reference)
   reference_misaligned  replacement mode only: the character on the reference, cropped and
                         resized as core does, overlaps the person on the first driving frame by
                         an IoU below `min_reference_iou` (the authors expect the reference posed
@@ -37,6 +37,12 @@ it to half size and cuts it at 225/255, then area-pools that to the latent grid,
 (mask_loss; `latent_reading`), and a drawn keypoint in a cell the grid reads as her is inside the
 mask (mask_head_out, mask_limb_out). mask_loss needs pose_data: on that grid a limb in motion
 empties whole cells of a correct mask, which only the pose tells from a part of her dropped.
+
+The reference mask's first frame is the primary reference; its other frames are extra references
+(SCAIL-2 multi-reference, SCAIL-2 Preprocess's face close-up), the character in blue on black in
+both modes, each checked for reference_empty and reference_fragmented and named by its index in the
+report. The mode is read from the primary's border alone, and reference_misaligned judges the
+primary alone: an extra reference is another view, not placed like the first driving frame.
 
 Measured as data, never judged: the mask area, the share of the mask the half-size cut keeps
 (`latent_kept`: core reads the driving mask at half size, area-resized, cut at 225/255, so a
@@ -54,7 +60,7 @@ from ...libs import log
 from ...libs.video import requantized
 from ...models.scail2.adapter import ON, REPLACEMENT, mask_convention
 from .common import (FRAGMENT_FRACTION, LATENT_READ, SCAIL2_CHECKS, SCAIL2_DRIVING_CHECKS, SCAIL2_POSE_FREE_CHECKS,
-                     SCAIL2_ROW, WARNINGS, Scail2Reference, Scail2Row, _flag, _thresholds)
+                     SCAIL2_ROW, WARNINGS, Scail2ExtraReference, Scail2Reference, Scail2Row, _flag, _thresholds)
 from .config import MaskGuardConfig, SCAIL2GuardConfig, _config
 from .mask import mask_flags, mask_frame_metrics, mask_regions, pose_of
 from .reference import reference_fit
@@ -179,58 +185,95 @@ def reference_record(reference_image_mask, width, height, first_frame, t) -> Sca
     booleans, None without driving frames), placed as core places it (reference.reference_fit).
     `t` has the thresholds."""
     mode = mask_convention(reference_image_mask)
-    person = _person(requantized(reference_image_mask[0, ..., :3].cpu()).float()).numpy()
+    person = _reference_person(reference_image_mask, 0)
     fit = reference_fit(person, width, height, first_frame)
     fragments = mask_regions(person, None)[1] if fit["area"] else []
     record = {"mode": mode, "area": fit["area"], "fragments": fragments, "cropped": fit["cropped"],
               "iou_first_frame": fit["iou_first_frame"], "scale_first_frame": fit["scale_first_frame"]}
-    flags = []
-    if not fit["area"]:
-        flags.append("reference_empty")
-    if any(f >= FRAGMENT_FRACTION for f in fragments):
-        flags.append("reference_fragmented")
+    flags = _character_flags(fit["area"], fragments)
     if mode == REPLACEMENT and record["iou_first_frame"] is not None and record["iou_first_frame"] < t["min_reference_iou"]:
         flags.append("reference_misaligned")
     record["flags"] = flags
     return record
 
 
+def _reference_person(reference_image_mask, index):
+    """The character (blue) on frame `index` of the colored reference mask, [H', W'] booleans."""
+    return _person(requantized(reference_image_mask[index, ..., :3].cpu()).float()).numpy()
+
+
+def _character_flags(area, fragments):
+    """The checks every reference mask gets: reference_empty without a character pixel,
+    reference_fragmented with a detached region of FRAGMENT_FRACTION of the largest or more."""
+    flags = ["reference_empty"] if not area else []
+    if any(f >= FRAGMENT_FRACTION for f in fragments):
+        flags.append("reference_fragmented")
+    return flags
+
+
+def extra_reference_records(reference_image_mask) -> list[Scail2ExtraReference]:
+    """One record per extra reference, the reference mask's frames after the first (SCAIL-2
+    multi-reference): its index in the batch, the character's share of the frame, its detached
+    regions and its checks (reference_empty, reference_fragmented)."""
+    records = []
+    for index in range(1, reference_image_mask.shape[0]):
+        person = _reference_person(reference_image_mask, index)
+        area = int(person.sum())
+        fragments = mask_regions(person, None)[1] if area else []
+        records.append({"index": index, "area": area / person.size, "fragments": fragments,
+                        "flags": _character_flags(area, fragments)})
+    return records
+
+
 # What each reference check's report line says, from the reference record.
 REFERENCE_LINES = {
     "reference_empty": "the reference mask has no character (blue) pixel; connect a MASK of the character on the "
                        "reference image (SCAIL-2 Preprocess: a prompt that finds it, or reference_mask)",
+    "extra_reference_empty": "the extra reference's mask has no character (blue) pixel, so it binds to no identity; "
+                             "SCAIL-2 Preprocess's prompt found no character on its face close-up: check the prompt, "
+                             "or turn face_crop off",
     "reference_fragmented": "a detached region of {largest:.3f} of the character's largest one",
     "reference_misaligned": "IoU {iou} with the person on the first driving frame; replacement mode expects the "
                             "reference posed and placed like the first driving frame",
 }
 
 
-def scail2_report(rows: list[Scail2Row], flags, reference: Scail2Reference, enabled, posed):
+def scail2_report(rows: list[Scail2Row], flags, reference: Scail2Reference, enabled, posed,
+                  extras: list[Scail2ExtraReference] = ()):
     """The report text and whether the enabled checks all passed: the driving-frame checks as
-    the other guards report them, then the reference measurements and checks."""
+    the other guards report them, then the reference measurements and checks, the primary's
+    (reference 0) and each extra reference's, by its index."""
     driving, driving_passed = write_report("driving mask", rows, flags, enabled)
     if not posed:
         driving += "\n- without pose_data, not checked: " + ", ".join(
             name for name in SCAIL2_DRIVING_CHECKS if name not in SCAIL2_POSE_FREE_CHECKS)
-    failed = [name for name in reference["flags"] if name in enabled and name not in WARNINGS]
+    failed = [name for record in (reference, *extras) for name in record["flags"] if name in enabled and name not in WARNINGS]
     passed = driving_passed and not failed
     mode = reference["mode"] or "unclear"
-    lines = [f"SCAIL-2 guard: {'passed' if passed else 'FAILED'} - {mode} mode (the reference mask's border)", driving,
-             f"reference mask: area {_value(reference['area'])}, fragments {reference['fragments']}, "
+    lines = [f"SCAIL-2 guard: {'passed' if passed else 'FAILED'} - {mode} mode (the primary reference mask's border)", driving,
+             f"reference 0 mask (primary): area {_value(reference['area'])}, fragments {reference['fragments']}, "
              f"cropped {_value(reference['cropped'])}, IoU with driving frame 0 {_value(reference['iou_first_frame'])}, "
              f"scale vs driving frame 0 {_value(reference['scale_first_frame'])}"]
     values = {"largest": max(reference["fragments"], default=0.0), "iou": _value(reference["iou_first_frame"])}
     for name in reference["flags"]:
-        lines.append(f"- {name} ({_kind(name, enabled)}): " + REFERENCE_LINES[name].format(**values))
+        lines.append(f"- {name} ({_kind(name, enabled)}): reference 0: " + REFERENCE_LINES[name].format(**values))
+    for extra in extras:
+        lines.append(f"reference {extra['index']} mask (extra, on black): area {_value(extra['area'])}, "
+                     f"fragments {extra['fragments']}")
+        largest = {"largest": max(extra["fragments"], default=0.0)}
+        for name in extra["flags"]:
+            line = REFERENCE_LINES["extra_" + name if name == "reference_empty" else name]
+            lines.append(f"- {name} ({_kind(name, enabled)}): reference {extra['index']}: " + line.format(**largest))
     return "\n".join(lines), passed
 
 
 def check_scail2(pose_video_mask, reference_image_mask, config=None, enabled=True, stop_on_fail=True, pose_data=None,
                  mask_config=None):
     """The SCAIL-2 checks on the colored driving mask [frames, H, W, 3] (at the generation size)
-    and the colored reference mask [N, H', W', 3], as SCAIL-2 Preprocess or SCAIL-2 Colored Mask
-    render them, and with `pose_data` (Pose Detection on the same driving frames at the same
-    size) the Mask Guard's pose-based checks on the driving mask.
+    and the colored reference mask [N, H', W', 3] (the primary first, then any extra references),
+    as SCAIL-2 Preprocess or SCAIL-2 Colored Mask render them, and with `pose_data` (Pose
+    Detection on the same driving frames at the same size) the Mask Guard's pose-based checks on
+    the driving mask.
 
     `config` is a SCAIL2GuardConfig and `mask_config` a MaskGuardConfig (None = defaults).
     `enabled` False still measures and reports every check but marks them off, so none can fail.
@@ -238,8 +281,9 @@ def check_scail2(pose_video_mask, reference_image_mask, config=None, enabled=Tru
 
     Returns (pose_video_mask unchanged, reference_image_mask unchanged, report, metrics JSON,
     timeline IMAGE). The metrics are {"guard": "scail2", "thresholds", "enabled", "flags" (the
-    driving-frame checks, name -> frames), "reference" (the reference record, its checks in its
-    "flags"), "frames"}."""
+    driving-frame checks, name -> frames), "reference" (the primary reference's record, its checks
+    in its "flags"), with extra references "extra_references" (one record each: index, area,
+    fragments, flags), "frames"}."""
     config = _config(config, SCAIL2GuardConfig)
     mask_config = _config(mask_config, MaskGuardConfig)
     _colored("pose_video_mask", pose_video_mask)
@@ -257,9 +301,12 @@ def check_scail2(pose_video_mask, reference_image_mask, config=None, enabled=Tru
         rows = scail2_frame_metrics(masks, kept, cells, pose_metas, detections, thresholds["draw_threshold"])
         flags = scail2_flags(rows, thresholds, pose_data is not None)
         reference = reference_record(reference_image_mask, W, H, masks[0] if T else None, thresholds)
-    report, passed = scail2_report(rows, flags, reference, checks, pose_data is not None)
-    metrics = json.dumps({"guard": "scail2", "thresholds": thresholds, "enabled": sorted(checks), "flags": flags,
-                          "reference": reference, "frames": rows})
+        extras = extra_reference_records(reference_image_mask)
+    report, passed = scail2_report(rows, flags, reference, checks, pose_data is not None, extras)
+    record = {"guard": "scail2", "thresholds": thresholds, "enabled": sorted(checks), "flags": flags, "reference": reference}
+    if extras:
+        record["extra_references"] = extras
+    metrics = json.dumps({**record, "frames": rows})
     timeline = timeline_image(rows, flags, SCAIL2_PANELS)
     _stop(report, passed, stop_on_fail)
     return pose_video_mask, reference_image_mask, report, metrics, timeline

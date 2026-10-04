@@ -387,7 +387,7 @@ def rgba_image(path, width, height, seed=0):
 
 def test_reference_image_is_fitted_and_its_alpha_is_the_mask(tmp_path):
     pixels = rgba_image(tmp_path / "ref.png", 90, 120)
-    image, mask = video.load_reference_image(str(tmp_path / "ref.png"), 48, 64)
+    image, mask, _, _ = video.load_reference_image(str(tmp_path / "ref.png"), 48, 64)
     expected, alpha = torch.empty((64, 48, 3)), torch.empty((64, 48))
     video.fit(pixels[..., :3], expected)
     video.fit(pixels[..., 3], alpha)
@@ -395,12 +395,25 @@ def test_reference_image_is_fitted_and_its_alpha_is_the_mask(tmp_path):
     assert mask.shape == (1, 64, 48) and torch.equal(mask[0], 1.0 - alpha)
 
 
+def test_the_source_outputs_are_the_image_as_loaded_at_its_own_resolution(tmp_path):
+    pixels = rgba_image(tmp_path / "ref.png", 90, 120)
+    _, _, source_image, source_mask = video.load_reference_image(str(tmp_path / "ref.png"), 48, 64)
+    # every pixel as stored, / 255, not resized; the mask 1 - alpha / 255
+    assert source_image.shape == (1, 120, 90, 3) and source_image.dtype == torch.float32
+    assert torch.equal(source_image[0], torch.from_numpy(pixels[..., :3]).float() / 255)
+    assert source_mask.shape == (1, 120, 90)
+    assert torch.equal(source_mask[0], 1.0 - torch.from_numpy(pixels[..., 3]).float() / 255)
+
+
 def test_reference_image_without_alpha_gets_cores_empty_mask(tmp_path):
     from PIL import Image
 
-    Image.new("RGB", (20, 10), (255, 0, 0)).save(tmp_path / "ref.jpg")
-    image, mask = video.load_reference_image(str(tmp_path / "ref.jpg"), 16, 8)
+    Image.new("RGB", (20, 10), (255, 0, 0)).save(tmp_path / "ref.png")
+    image, mask, source_image, source_mask = video.load_reference_image(str(tmp_path / "ref.png"), 16, 8)
     assert image.shape == (1, 8, 16, 3) and torch.equal(mask, torch.zeros((1, 64, 64)))
+    red = torch.zeros((1, 10, 20, 3))
+    red[..., 0] = 1.0
+    assert torch.equal(source_image, red) and torch.equal(source_mask, torch.zeros((1, 64, 64)))
 
 
 def test_reference_image_follows_its_exif_orientation(tmp_path):
@@ -411,8 +424,11 @@ def test_reference_image_follows_its_exif_orientation(tmp_path):
     exif = Image.Exif()
     exif[0x0112] = 6  # shown turned 90 degrees clockwise: 20 wide, 40 tall, white top-right
     stored.save(tmp_path / "ref.png", exif=exif)
-    image, _ = video.load_reference_image(str(tmp_path / "ref.png"), 20, 40)
+    image, _, source_image, _ = video.load_reference_image(str(tmp_path / "ref.png"), 20, 40)
     assert image[0, 3, 16].min() > 0.9 and image[0, 3, 3].max() < 0.1
+    # the source too: shown 20 wide and 40 tall, the white square in its top-right corner
+    assert source_image.shape == (1, 40, 20, 3)
+    assert source_image[0, :10, 10:].min() == 1.0 and source_image[0, :, :10].max() == 0.0
 
 
 # --- Conform Video --------------------------------------------------------------------------------

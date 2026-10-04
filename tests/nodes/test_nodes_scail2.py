@@ -11,6 +11,7 @@ import inspect
 
 import pytest
 
+np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 pytest.importorskip("cv2")
 cli_args = pytest.importorskip("comfy.cli_args")
@@ -18,7 +19,7 @@ cli_args.args.disable_xformers = True
 pytest.importorskip("folder_paths")
 
 from names import nodes  # noqa: E402
-from pose_fakes import pose  # noqa: E402
+from pose_fakes import FakePose, loader, pose  # noqa: E402
 from sam3_1_multiplex_fakes import sam3  # noqa: E402
 from sampler_fakes import SCAIL2, node_module  # noqa: E402,F401
 from scail2_fakes import scail2  # noqa: E402
@@ -62,13 +63,15 @@ def test_the_preprocess_wrapper_is_the_nodes_chained(fake_models, replacement_mo
     (reference_mask,) = nodes.BCVSAM3VideoTrack().track(reference, "prompt", "person", 1, -1)
     pose_video_mask, reference_image_mask = nodes.BCVSCAIL2ColoredMask().render(mask, replacement_mode, reference_mask)
     # replacement_mode: the widget's value, for the sampler's replacement_mode
-    chained = (images, pose_video_mask, reference_image_mask, mask, reference_mask, replacement_mode)
+    # reference_images: face_crop off, the primary reference alone, the input itself
+    chained = (images, pose_video_mask, reference_image_mask, reference, mask, reference_mask, replacement_mode)
 
     assert len(wrapped) == len(nodes.BCVSCAIL2Preprocess.RETURN_NAMES)
     for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES, wrapped, chained):
         assert same(a, b), name
     assert wrapped[0] is images  # the driving video is the pose input, unchanged
-    assert wrapped[5] is replacement_mode
+    assert wrapped[3] is reference
+    assert wrapped[6] is replacement_mode
     # the whole driving clip once in the mode, with the pose where the mode reads it; then the
     # reference from the prompt alone in every mode
     calls = fake_models.calls[:2]
@@ -117,15 +120,15 @@ def test_a_connected_reference_mask_is_not_tracked(fake_models):
     out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person", reference_mask=reference_mask,
                                               sam3_config=config)
     assert len(fake_models.calls) == 1 and fake_models.calls[0]["config"] is config
-    assert out[4] is reference_mask
-    assert same(out[2], nodes.BCVSCAIL2ColoredMask().render(out[3], False, reference_mask)[1])
+    assert out[5] is reference_mask
+    assert same(out[2], nodes.BCVSCAIL2ColoredMask().render(out[4], False, reference_mask)[1])
 
 
 def test_black_background_blacks_out_the_driving_video_around_the_tracked_person(fake_models):
     images, reference = clip_frames(), clip_frames(1, seed=1)
     out = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person", black_background=True)
     plain = nodes.BCVSCAIL2Preprocess().process(images, reference, False, "prompt", "person")
-    assert same(out[0], scail2.driving_on_black(images, out[3]))
+    assert same(out[0], scail2.driving_on_black(images, out[4]))
     assert not same(out[0], images)
     for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES[1:], out[1:], plain[1:]):
         assert same(a, b), name  # the masks do not change
@@ -137,12 +140,13 @@ def test_black_background_in_replacement_mode_raises_before_any_tracking(fake_mo
     assert fake_models.calls == []
 
 
-def test_the_preprocess_widgets_mode_before_prompt_and_black_background_last():
+def test_the_preprocess_widgets_mode_before_prompt_then_black_background_and_face_crop():
     spec = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()
     required, optional = spec["required"], spec["optional"]
-    assert list(required) == ["images", "reference_image", "replacement_mode", "mode", "prompt", "black_background"]
-    # pose_model after them: the node's last widget (tests/nodes/test_nodes_sapiens2.py)
-    assert list(optional) == ["reference_mask", "pose_config", "sam3_config", "pose_model"]
+    assert list(required) == ["images", "reference_image", "replacement_mode", "mode", "prompt", "black_background",
+                              "face_crop"]
+    # reference_source first, its socket right below reference_image's; pose_model the last widget
+    assert list(optional) == ["reference_source", "reference_mask", "pose_config", "sam3_config", "pose_model"]
     # mode is SAM 3.1 Multiplex Video Track's widget, as on WanAnimate Preprocess
     track = nodes.BCVSAM3VideoTrack.INPUT_TYPES()["required"]
     assert required["mode"] == track["mode"]
@@ -157,6 +161,108 @@ def test_the_preprocess_widgets_mode_before_prompt_and_black_background_last():
     assert "The reference image is tracked in prompt mode in every mode" in nodes.BCVSCAIL2Preprocess.DESCRIPTION
     assert required["black_background"] == ("BOOLEAN", required["black_background"][1])
     assert required["black_background"][1]["default"] is False
+
+
+# --- face_crop: the face close-up as a second reference ------------------------------------------
+
+def source_image(seed=2):
+    """A reference_source larger than the fake detector's person box (30..90 x 20..140)."""
+    return torch.rand(1, 200, 150, 3, generator=torch.Generator().manual_seed(seed))
+
+
+@pytest.mark.parametrize("mode", ["prompt", "box_keypoint"])
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_face_crop_off_is_today_s_output_with_a_source_connected(fake_models, replacement_mode, mode):
+    images, reference = clip_frames(), clip_frames(1, seed=1)
+    plain = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person")
+    calls = len(fake_models.calls)
+    off = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person",
+                                              reference_source=source_image(), face_crop=False)
+    for name, a, b in zip(nodes.BCVSCAIL2Preprocess.RETURN_NAMES, off, plain):
+        assert same(a, b), name
+    assert off[3] is reference and off[2].shape[0] == 1
+    assert len(fake_models.calls) == 2 * calls  # no third track: the source is not read
+
+
+@pytest.mark.parametrize("mode", ["prompt", "prompt_pose"])
+@pytest.mark.parametrize("replacement_mode", [False, True])
+def test_face_crop_appends_the_face_close_up_and_its_mask_on_black(fake_models, replacement_mode, mode):
+    images, reference, source = clip_frames(), clip_frames(1, seed=1), source_image()
+    plain = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person")
+    fake_models.calls.clear()
+    out = nodes.BCVSCAIL2Preprocess().process(images, reference, replacement_mode, mode, "person",
+                                              reference_source=source, face_crop=True)
+
+    # the face box of Pose Detection on the source (its default widgets), cut in reference_image's
+    # 32 x 64 aspect from the source and resized to it; the character found on it in prompt mode
+    pose_data = nodes.BCVPoseDetection().detect(source, -1, -1, True, 0.5)[1]
+    face = scail2.face_reference(source, scail2.face_box(pose_data, 150, 200), 32, 64)
+    (face_mask,) = nodes.BCVSAM3VideoTrack().track(face, "prompt", "person", 1, -1)
+    assert out[3].shape == (2, 64, 32, 3) and out[2].shape == (2, 64, 32, 3)
+    assert same(out[3][:1], reference) and same(out[3][1:], face)
+    # the primary mask as without face_crop (the mode's background), the face mask blue on black
+    assert same(out[2][:1], plain[2])
+    blue, black = torch.tensor(scail2.PALETTE[0]), torch.tensor(scail2.BLACK)
+    on = face_mask[0] > 0.5
+    assert on.any() and not on.all()
+    assert (out[2][1][on] == blue).all() and (out[2][1][~on] == black).all()
+    # everything else as without face_crop
+    for index in (0, 1, 4, 5, 6):
+        assert same(out[index], plain[index]), nodes.BCVSCAIL2Preprocess.RETURN_NAMES[index]
+    # the driving clip, the reference, then the face close-up, each tracked once
+    assert [c["mode"] for c in fake_models.calls[:3]] == [mode, "prompt", "prompt"]
+    assert fake_models.calls[2]["pose_data"] is False
+
+
+def test_face_crop_runs_pose_detection_with_pose_model_in_prompt_mode(fake_models, monkeypatch, caplog):
+    detections = spy(monkeypatch, nodes.BCVPoseDetection, "detect")
+    caplog.set_level("INFO")
+    source = source_image()
+    nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), False, "prompt", "person",
+                                        reference_source=source, face_crop=True, pose_model="ViTPose-H",
+                                        pose_config=pose.PoseConfig(detection_threshold=0.3))
+    # the source only: prompt mode runs no pose on the driving frames; pose_config is the driving frames'
+    [(detected, _)] = detections
+    assert detected["images"] is source and detected["pose_model"] == "ViTPose-H" and detected["pose_config"] is None
+    assert "prompt mode runs no pose; pose_config not used" in caplog.text and "pose_model not used" not in caplog.text
+
+
+def test_face_crop_without_reference_source_raises_before_any_model(fake_models, monkeypatch):
+    detections = spy(monkeypatch, nodes.BCVPoseDetection, "detect")
+    with pytest.raises(ValueError, match="face_crop is on but reference_source is not connected: connect Load Reference "
+                                         "Image's source_image"):
+        nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), False, "box_keypoint", "person",
+                                            face_crop=True)
+    assert fake_models.calls == [] and detections == []
+
+
+def test_face_crop_with_no_person_on_the_source_raises(fake_models, monkeypatch):
+    class NoPerson:
+        threshold_conf = 0.05
+
+        def __call__(self, img, shape):
+            return [[{"bbox": np.array([0.0, 0.0, 0.0, 0.0, 0.0]), "track_id": -1, "person_count": 0}]]
+
+    monkeypatch.setattr(loader, "load_pose_models", lambda detector=True: (NoPerson() if detector else None, FakePose()))
+    with pytest.raises(ValueError, match="face_crop: Pose Detection found no person on reference_source"):
+        nodes.BCVSCAIL2Preprocess().process(clip_frames(), clip_frames(1, seed=1), False, "prompt", "person",
+                                            reference_source=source_image(), face_crop=True)
+
+
+def test_the_face_crop_inputs_and_outputs():
+    types = nodes.BCVSCAIL2Preprocess.INPUT_TYPES()
+    spec = {**types["required"], **types["optional"]}
+    assert spec["reference_source"][0] == "IMAGE"
+    assert "Load Reference Image's source_image" in spec["reference_source"][1]["tooltip"]
+    assert spec["face_crop"] == ("BOOLEAN", spec["face_crop"][1]) and spec["face_crop"][1]["default"] is False
+    tooltip = spec["face_crop"][1]["tooltip"]
+    assert "Needs reference_source (Load Reference Image's source_image)" in tooltip
+    assert "link the sampler's reference_image from reference_images" in tooltip
+    assert "With face_crop on it also finds the face on reference_source, in every mode" in spec["pose_model"][1]["tooltip"]
+    cls = nodes.BCVSCAIL2Preprocess
+    assert cls.RETURN_NAMES == ("pose_video", "pose_video_mask", "reference_image_mask", "reference_images", "mask",
+                                "reference_mask", "replacement_mode")
+    assert cls.RETURN_TYPES == ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "MASK", "MASK", "BOOLEAN")
 
 
 def widget_defaults(config_cls):

@@ -131,6 +131,9 @@ SCAIL2_ROW = ("frame", "mask_area", "fragments", "latent_kept", "mask_loss", "ma
 # and its one record of the reference mask; `cropped` is data: core center-crops the reference
 # to the generation's aspect ratio whatever the guard says
 SCAIL2_REFERENCE = ("mode", "area", "fragments", "cropped", "iou_first_frame", "scale_first_frame", "flags")
+# Each extra reference of the SCAIL-2 guard (scail2.extra_reference_records): the reference mask's
+# frames after the first, "extra_references" in its metrics
+SCAIL2_EXTRA_REFERENCE = ("index", "area", "fragments", "flags")
 # The Mask Guard's record of the character on a connected reference image (reference.mask_reference),
 # the "reference" of its metrics and of the WanAnimate Preprocess Guard's
 MASK_REFERENCE = ("area", "cropped", "iou_first_frame", "scale_first_frame", "flags")
@@ -209,6 +212,14 @@ class Scail2Reference(TypedDict):
     cropped: float
     iou_first_frame: Optional[float]
     scale_first_frame: Optional[float]
+    flags: list[str]
+
+
+class Scail2ExtraReference(TypedDict):
+    """The SCAIL-2 guard's measurements of one extra reference mask (one record per extra frame)."""
+    index: int
+    area: float
+    fragments: list[float]
     flags: list[str]
 
 

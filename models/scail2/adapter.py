@@ -82,6 +82,18 @@ def mask_convention(mask, background=BACKGROUND):
     return None
 
 
+def check_reference_count(reference_image, reference_image_mask):
+    """Raises unless the references and their colored masks are as many frames: core's
+    WanSCAILToVideo pairs them by position (SCAIL-2 multi-reference, the first the primary), and
+    repeats the last mask for a reference without one."""
+    images, masks = int(reference_image.shape[0]), int(reference_image_mask.shape[0])
+    if images != masks:
+        raise ValueError("reference_image has {} frame(s) but reference_image_mask {}: each reference needs its colored "
+                         "mask, paired by position. Link the sampler's reference_image from SCAIL-2 Preprocess's "
+                         "reference_images (the primary, and the face close-up with face_crop on) and reference_image_mask "
+                         "from its reference_image_mask.".format(images, masks))
+
+
 class SCAIL2Adapter(AnimateAdapter):
     ANIMATE_NODE = "WanSCAILToVideo"
     OUTPUTS = 4  # positive, negative, latent, video_frame_offset
@@ -105,6 +117,7 @@ class SCAIL2Adapter(AnimateAdapter):
         animate_inputs["pose_start"] = animate_inputs.pop("pose_start_percent")
         animate_inputs["pose_end"] = animate_inputs.pop("pose_end_percent")
         replacement = bool(animate_inputs["replacement_mode"])
+        check_reference_count(reference_image, animate_inputs["reference_image_mask"])
         self._check_mode(replacement, "reference_image_mask", animate_inputs["reference_image_mask"], BACKGROUND)
         self._check_mode(replacement, "pose_video_mask", animate_inputs["pose_video_mask"], DRIVING_BACKGROUND)
 

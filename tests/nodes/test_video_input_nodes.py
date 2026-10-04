@@ -146,9 +146,13 @@ def test_load_reference_image_fits_and_previews(folders):
     assert list(required) == ["image", "video_info"] and required["image"][1]["image_upload"] is True
     assert required["image"][0] == ["ref.png"]
     out = video.BCVLoadReferenceImage().load("ref.png", {"loaded_width": 12, "loaded_height": 16})
-    image, mask = out["result"]
+    image, mask, source_image, source_mask = out["result"]
     assert image.shape == (1, 16, 12, 3) and mask.shape == (1, 16, 12)
     assert torch.allclose(mask, torch.full((1, 16, 12), 1 - 128 / 255))
+    # the source outputs at the file's own 30x40, not fitted to the video
+    assert torch.equal(source_image, torch.tensor([1.0, 0.0, 0.0]).expand(1, 40, 30, 3))
+    assert torch.allclose(source_mask, torch.full((1, 40, 30), 1 - 128 / 255))
+    assert video.BCVLoadReferenceImage.RETURN_NAMES == ("resized_image", "resized_mask", "source_image", "source_mask")
     (preview,) = out["ui"]["images"]
     assert preview["type"] == "temp" and (folders / "temp" / preview["subfolder"] / preview["filename"]).is_file()
     assert video.BCVLoadReferenceImage.VALIDATE_INPUTS(image="gone.png") == "Invalid image file: gone.png"
