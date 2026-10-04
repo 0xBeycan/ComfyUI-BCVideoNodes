@@ -19,7 +19,7 @@ class BCVSCAIL2ColoredMask:
         return {
             "required": {
                 "driving_mask": ("MASK", {"tooltip": "The person in the driving video, one mask per frame (SAM 3.1 Multiplex Video Track). On above 0.5."}),
-                "replacement_mode": ("BOOLEAN", {"default": False, "tooltip": "False: animation mode (driving mask on black, reference mask on white). True: replacement mode (driving mask on white, reference mask on black). Set the sampler's replacement_mode the same way."}),
+                "replacement_mode": ("BOOLEAN", {"default": False, "tooltip": "False: animation mode (driving mask on black, reference mask on white). True: replacement mode (driving mask on white, reference mask on black). Set the sampler's replacement_mode the same way. Replacement mode lets the driving person's face leak into the character: the model reads the raw driving video, so the identity drifts toward the driving person chunk by chunk (zai-org/SCAIL-2 issues #21, #27). Animation mode kept the identity better on every clip measured: use it when the identity matters, above all when the face covers few pixels in the reference image."}),
             },
             "optional": {
                 "reference_mask": ("MASK", {"tooltip": "The character on the reference image. Without it the reference mask is the background alone: animation mode can then collapse into replacement behaviour, and replacement mode raises."}),

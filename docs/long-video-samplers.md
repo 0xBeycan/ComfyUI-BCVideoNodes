@@ -242,7 +242,16 @@ SCAIL-2 in either of its two modes, from the same node:
   person in the driving video, which keeps its background. Needs the colored
   masks rendered for replacement mode (driving mask on white, reference mask
   on black). The authors expect the reference posed like the first driving
-  frame (issue #25).
+  frame (issue #25). The driving person's face leaks into the character: the
+  model reads the raw driving video (official replacement preprocessing feeds
+  it as the pose input), so the identity drifts toward the driving person
+  chunk by chunk (issues #21, #27). Animation mode kept the identity better
+  on every clip measured: use it when the identity matters, above all when
+  the face covers few pixels in the reference image. Observed on
+  one clip at one seed (ArcFace against the reference): the SCAIL-2 DPO LoRA
+  makes the leak stronger, and the lightx2v I2V LoRA keeps the identity
+  better than the T2V one; no setting kept it from dropping after the first
+  chunk.
 
 SCAIL-2 Preprocess makes all three inputs. A reference or driving mask
 rendered for the other mode is an error (the mode is read from each mask's
