@@ -111,11 +111,17 @@ def frame_indices(source, rate, start_frame, count, model):
     return indices, len(kept) - start_frame + 1 if count is None else count
 
 
+def loaded_rate(rate, source):
+    """The loaded frame rate: force_fps's `rate`, or the rate of the video probed as `source` when
+    it is None."""
+    return rate if rate is not None else source["fps"]
+
+
 def video_info(model, resolution, planned, frames):
     """The VideoInfo of `frames` frames loaded as `planned` (plan's) says, but its audio, which
     load_video puts first once read (the preview reads no samples)."""
     source = planned["source"]
-    loaded_fps = planned["rate"] if planned["rate"] is not None else source["fps"]
+    loaded_fps = loaded_rate(planned["rate"], source)
     frame_time = 1 / loaded_fps
     return VideoInfo(model=model, resolution=resolution, orientation=planned["orientation"],
                      source_fps=source["fps"], source_frame_count=source["frames"],
@@ -182,15 +188,28 @@ def _decode(path, source, width, height, how, rate, start_frame, count, model, d
     return images, indices, ranged
 
 
+class FrameRange(TypedDict):
+    """The counts frame_count can take for a file, model, force_fps and start_frame, which Load
+    Video's seconds slider spans: the loaded frame rate (force_fps, or the source's), the model's
+    frame step (counts of the form step * n + 1: 4 for Wan and SCAIL, 1 for None) and the largest
+    count, what an empty frame_count loads (on the frame rule already)."""
+    fps: float
+    step: int
+    maximum: int
+
+
 class LoadPreview(TypedDict):
     """What Load Video's preview shows, from the file's header and packets (no frame is loaded):
     the probe of the file (None when it cannot be read), the video_info the loader outputs without
     its audio (no sample is read; the probe says whether the file has audio; None on an error), the frames from start_frame on at the kept rate (what an empty frame_count stands
-    for, before the cut to the model's frame rule; None when force_fps or start_frame is wrong) and the error the
-    loader raises, word for word (None when it loads)."""
+    for, before the cut to the model's frame rule; None when force_fps or start_frame is wrong), the
+    FrameRange (None when force_fps, start_frame or model is wrong; it does not depend on
+    frame_count, so it comes with frame_count's own errors too) and the error the loader raises,
+    word for word (None when it loads)."""
     source: Optional[dict]
     info: Optional[VideoInfo]
     available: Optional[int]
+    frame_range: Optional[FrameRange]
     error: Optional[str]
 
 
@@ -203,7 +222,7 @@ def preview(path, model, resolution, orientation, force_fps, start_frame, frame_
     from av.error import FFmpegError
 
     probe = lru_cache(maxsize=1)(probe or video_decode.probe)
-    answer = LoadPreview(source=None, info=None, available=None, error=None)
+    answer = LoadPreview(source=None, info=None, available=None, frame_range=None, error=None)
     try:
         planned = plan(path, model, resolution, orientation, force_fps, frame_count, precision, probe)
         indices, _ = frame_indices(planned["source"], planned["rate"], start_frame, planned["count"], model)
@@ -215,9 +234,14 @@ def preview(path, model, resolution, orientation, force_fps, start_frame, frame_
     try:
         source = probe(path)
         answer["source"] = dict(source)
-        kept = video_decode.select_frames(source["fps"], source["frames"], parse_force_fps(force_fps))
+        rate = parse_force_fps(force_fps)
+        kept = video_decode.select_frames(source["fps"], source["frames"], rate)
         if 1 <= start_frame <= len(kept):
             answer["available"] = len(kept) - start_frame + 1
+            if model in sizes.MODELS:
+                step = sizes.MODELS[model]["frames"]
+                answer["frame_range"] = FrameRange(fps=loaded_rate(rate, source), step=step,
+                                                   maximum=len(loaded_frames(kept, start_frame, None, step)))
     except (ValueError, FFmpegError):
         pass
     return answer

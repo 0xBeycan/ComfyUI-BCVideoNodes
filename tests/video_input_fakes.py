@@ -15,7 +15,8 @@ video = Names("video", {
     **refs("pipelines.video_input", "load_video", "loaded_frames", "parse_force_fps", "parse_frame_count",
            "load_reference_image", "conform_video", "preview", "LoadPreview"),
     **refs("nodes.video_input", "BCVLoadVideo", "BCVGetVideoInfo", "BCVLoadReferenceImage", "BCVConformVideo",
-           "PLAN_ROUTE", "PLAN_PARAMS", "register_plan_route", "plan_route", "_probe_file"),
+           "PLAN_ROUTE", "PLAN_PARAMS", "SECONDS", "SECONDS_MAX", "register_plan_route", "plan_route",
+           "_probe_file"),
     **refs("libs.video", "FP32", "FP16", "PRECISIONS", "precision_dtype", "is_half", "HalfFrames", "as_numpy"),
     # read from libs/video.py; patched on every module that reads a half clip through it
     "requantized": Seam(*(Ref(module, "requantized") for module in (

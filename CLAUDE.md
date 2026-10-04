@@ -383,12 +383,18 @@ pack adds after that still turns the saving off for that prompt, with a console 
   `bcv_sizes` (model -> label -> [width, height], portrait; null for `source`, the video's own
   size), from `libs/video_sizes.MODELS`, so
   the table has no second copy in JS;
+  Load Video's `seconds` (the last widget, after `precision`) is frame_count as a duration: the
+  frontend keeps the two in sync from the plan answer's `frame_range` (a count snapped to the
+  nearest of the frame rule, a tie to the smaller, clamped to `maximum`, set on commit; a loaded
+  workflow's frame_count is never changed); the loader ignores its value (`SECONDS`), so it is
+  not one of `PLAN_PARAMS`;
   Save Video's `codec` input carries `bcv_codecs` (codec -> the values of its crf, preset and
   pix_fmt, `libs/video_encode.widget_values`).
 - Load Video's plan route, `GET /bcvideonodes/load_video/plan` (`nodes/video_input.py`): the eight
-  widget values in, `pipelines/video_input.LoadPreview` out ({source {fps, frames, width,
+  widget values the loader reads in (`PLAN_PARAMS`), `pipelines/video_input.LoadPreview` out ({source {fps, frames, width,
   height, start, audio}, info (VideoInfo, what the loader would output, without `audio`: no
-  sample goes into the JSON), available, error (the
+  sample goes into the JSON), available, frame_range {fps, step, maximum} (the loaded rate, the
+  model's frame step, what an empty frame_count loads), error (the
   loader's own message or null)}). It answers from the loader's own functions, so the preview
   and the loader cannot drift; the file is resolved only inside ComfyUI's input folder, or the
   output or temp folder its annotation names.

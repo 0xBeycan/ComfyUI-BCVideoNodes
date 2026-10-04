@@ -25,6 +25,14 @@ import { PlayerWidget, drawMessage, drawTag, fitRect, guard, installPlayer, view
 // values, so the preview never shows a count the loader would not load. Without an answer (no
 // route, a failed request) there is no label.
 //
+// frame_count and the seconds slider follow each other (FrameSync, below). A count is always one
+// of the model's frame rule, at most what an empty frame_count loads (the plan answer's
+// frame_range): typed, it is set to the nearest such count once the field is left or Enter is
+// pressed; from the slider, the nearest count for its duration. The slider spans one frame to that
+// maximum; at its right end frame_count is empty (the whole clip). A workflow's frame_count is
+// never changed when it loads: only a later change of the file, model, force_fps or start_frame
+// sets it into the new range. The loader ignores the slider's value.
+//
 // The preview plays the source file. With force_fps the picture is sampled at that rate (the frame
 // under the playhead at each tick); playback loops over the loaded frames' time span; the part the
 // crop to the model's size cuts away is dimmed. The browser's frame at a tick can differ by one
@@ -34,6 +42,8 @@ const NODE = "BCVLoadVideo";
 const PLAN_ROUTE = "/bcvideonodes/load_video/plan";
 // the widgets the route is asked with: Load Video's inputs, in order
 const PLAN_PARAMS = ["video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count", "precision"];
+// the slider that shows frame_count as a duration (the last input; the loader ignores it)
+const SECONDS = "seconds";
 // the drag data of an item of the queue or the media assets panel: JSON {filename, subfolder,
 // type, media_kind, ...}, as the frontend's own nodes read it
 const ASSET_INFO = "application/x-comfy-asset-info";
@@ -156,6 +166,159 @@ function installPlaceholder(w) {
 function setPlaceholder(w, text) {
 	const placeholder = text == null ? undefined : String(text);
 	if (w?.options && w.options.placeholder !== placeholder) w.options.placeholder = placeholder;
+}
+
+// ---- frame_count and seconds ---------------------------------------------------------------
+
+// the widgets a frame_range depends on (frame_count does not change it)
+const RANGE_PARAMS = ["video", "model", "force_fps", "start_frame"];
+
+// The count of the frame rule (step * n + 1, n >= 0) nearest `count`, a tie to the smaller one.
+function nearestValid(count, step) {
+	const lower = Math.floor((Math.max(count, 1) - 1) / step) * step + 1;
+	return count - lower <= lower + step - count ? lower : lower + step;
+}
+
+// `count` (any number, a duration's frames too) as a count frame_count can take for `range`: the
+// nearest of the frame rule, at most range.maximum (which is on the rule).
+function fitCount(count, range) {
+	return Math.min(nearestValid(count, range.step), range.maximum);
+}
+
+function countToSeconds(count, range) {
+	return count / range.fps;
+}
+
+function secondsToCount(seconds, range) {
+	return fitCount(seconds * range.fps, range);
+}
+
+// frame_count's text as a count, as the loader reads it (a whole number of at least 1); null for
+// empty and for a value the loader refuses (left as typed: the loader's error shows).
+function typedCount(text) {
+	const t = String(text ?? "").trim();
+	return /^\+?\d+$/.test(t) && Number(t) >= 1 ? Number(t) : null;
+}
+
+// The values of RANGE_PARAMS as one key, from `get(name)`.
+function rangeKey(get) {
+	return RANGE_PARAMS.map((name) => String(get(name) ?? "")).join("\n");
+}
+
+// Keeps frame_count and seconds in sync, with the frame_range of the last plan answer. Values are
+// written straight into the widgets, never through their callbacks, so neither sets off the other.
+class FrameSync {
+	constructor(node) {
+		this.node = node;
+		this.reset();
+	}
+
+	// A workflow (re)loaded: the next answer only shows its values, it sets nothing.
+	reset() {
+		this.range = null;
+		this.key = null; // the RANGE_PARAMS of `range`'s answer; null before the first answer
+		this.pending = false; // a count to set once an answer to the current values arrives
+		this.typing = null; // the input whose leaving sets the typed count
+	}
+
+	widget(name) {
+		return widget(this.node, name);
+	}
+
+	// The frame_range of the current file, model, force_fps and start_frame, or null.
+	current() {
+		return this.range && this.key === rangeKey((name) => this.widget(name)?.value) ? this.range : null;
+	}
+
+	// The route answered `query` with `answer` (SourceWidget.apply). Another file, model, force_fps
+	// or start_frame than the last answer's sets frame_count into the new range; the first answer
+	// after a load does not.
+	answered(query, answer) {
+		if (!query || !answer) return; // no answer (another file, a failed request)
+		const params = new URLSearchParams(query);
+		const key = rangeKey((name) => params.get(name));
+		if (this.key !== null && key !== this.key) this.pending = true;
+		this.key = key;
+		this.range = answer.frame_range ?? null;
+		if (this.pending && this.current()) this.fit();
+		else this.show();
+	}
+
+	// frame_count's callback. The count is set once typing is over: right away when no input has
+	// the focus (the canvas's prompt is closed by Enter), else when the focused input (the Vue
+	// renderer's text box) is left or Enter is pressed in it.
+	committed() {
+		setTimeout(() => guard(() => {
+			const el = document.activeElement;
+			const typing = (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && el.isConnected;
+			if (!typing) return this.commit();
+			if (this.typing === el) return;
+			this.typing = el;
+			const done = (e) => {
+				if (e.type === "keydown" && e.key !== "Enter") return;
+				el.removeEventListener("focusout", done);
+				el.removeEventListener("keydown", done);
+				this.typing = null;
+				guard(() => this.commit());
+			};
+			el.addEventListener("focusout", done);
+			el.addEventListener("keydown", done);
+		}), 0);
+	}
+
+	commit() {
+		if (this.current()) this.fit();
+		else this.pending = true; // the answer to the current values sets it
+	}
+
+	// frame_count set to a count of the current range (a value the loader refuses stays as typed).
+	fit() {
+		this.pending = false;
+		const range = this.current();
+		const frames = this.widget("frame_count");
+		const count = typedCount(frames?.value);
+		if (range && count !== null) {
+			const fitted = String(fitCount(count, range));
+			if (frames.value !== fitted) frames.value = fitted;
+		}
+		this.show();
+	}
+
+	// The slider's span and position for frame_count (empty: the right end).
+	show() {
+		const range = this.current();
+		const seconds = this.widget(SECONDS);
+		if (!range || !seconds) return;
+		const count = typedCount(this.widget("frame_count")?.value);
+		seconds.options.min = countToSeconds(1, range);
+		seconds.options.max = countToSeconds(range.maximum, range);
+		seconds.value = countToSeconds(count === null ? range.maximum : Math.min(count, range.maximum), range);
+		this.node.setDirtyCanvas?.(true, false);
+	}
+
+	// The slider's callback: frame_count gets the nearest count for its duration, empty at the right
+	// end; the slider sits on that count's duration.
+	slid() {
+		const range = this.current();
+		const seconds = this.widget(SECONDS);
+		const frames = this.widget("frame_count");
+		if (!range || !seconds || !frames) return;
+		const count = secondsToCount(seconds.value, range);
+		frames.value = count === range.maximum ? "" : String(count);
+		seconds.value = countToSeconds(count, range);
+		this.node.setDirtyCanvas?.(true, false);
+	}
+}
+
+// Calls `fn` after the widget's own callback.
+function after(w, fn) {
+	if (!w) return;
+	const callback = w.callback;
+	w.callback = function (...a) {
+		const out = callback?.apply(this, a);
+		guard(fn);
+		return out;
+	};
 }
 
 // ---- preview -------------------------------------------------------------------------------
@@ -286,6 +449,7 @@ class SourceWidget extends PlayerWidget {
 		p.setRange(info ? [start, start + info.loaded_duration] : null);
 		setPlaceholder(widget(this.node, "force_fps"), answer?.source ? rate(answer.source.fps) : null);
 		setPlaceholder(widget(this.node, "frame_count"), answer?.available);
+		this.node.bcvFrames?.answered(query, answer);
 		this.node.setDirtyCanvas?.(true, false);
 	}
 
@@ -359,6 +523,9 @@ app.registerExtension({
 			}
 			guard(() => applyModel(this, sizes));
 			guard(() => ["force_fps", "frame_count"].forEach((name) => installPlaceholder(widget(this, name))));
+			const frames = (this.bcvFrames = new FrameSync(this));
+			after(widget(this, "frame_count"), () => frames.committed());
+			after(widget(this, SECONDS), () => frames.slid());
 			// The upload button after the inputs' widgets (so the saved widget values stay in input
 			// order), unless the frontend added its own for this input.
 			if (!widget(this, "upload")) {
@@ -377,6 +544,7 @@ app.registerExtension({
 		nodeType.prototype.onConfigure = function (...args) {
 			const r = onConfigure?.apply(this, args);
 			guard(() => applyModel(this, sizes));
+			this.bcvFrames?.reset();
 			return r;
 		};
 

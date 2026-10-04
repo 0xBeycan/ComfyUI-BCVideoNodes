@@ -1,6 +1,6 @@
 """The video input nodes' ComfyUI surface: Load Video's widgets as the contract fixes them (order,
-defaults, the resolution sizes for the frontend, no core video upload, precision the last widget,
-fp16 by default), its validation of a
+defaults, the resolution sizes for the frontend, no core video upload, precision then seconds the
+last widgets, fp16 by default), seconds ignored by the loader, its validation of a
 resolution of another model, its file of the output or temp folder the value names (a video
 dragged from the queue) and never one outside it, Get Video Info's outputs in video_info's order
 (Load Video's audio itself first), Load Reference
@@ -46,12 +46,27 @@ def test_load_video_widgets(folders):
     assert required["start_frame"][0] == "INT" and required["start_frame"][1]["default"] == 1
     assert required["start_frame"][1]["min"] == 1
     assert required["frame_count"][0] == "STRING" and required["frame_count"][1]["default"] == ""
-    # the last widget, optional: a workflow saved before it keeps its widget values (and gets fp16)
+    # the last widgets, optional: a workflow saved before them keeps its widget values (and gets
+    # fp16, and the seconds slider at its right end, the whole clip)
     optional = video.BCVLoadVideo.INPUT_TYPES()["optional"]
-    assert list(optional) == ["precision"]
+    assert list(optional) == ["precision", "seconds"]
     assert optional["precision"][0] == ["fp32", "fp16"] and optional["precision"][1]["default"] == "fp16"
     assert set(optional["precision"][1]) == {"default", "tooltip"}
+    kind, options = optional["seconds"]
+    assert kind == "FLOAT" and options["display"] == "slider" and options["step"] == 0.1
+    assert options["min"] == 0.0 and options["default"] == options["max"] == video.SECONDS_MAX
+    assert set(options) == {"default", "min", "max", "step", "display", "tooltip"}
     assert video.BCVLoadVideo.RETURN_TYPES == ("IMAGE", "AUDIO", "BCV_VIDEO_INFO")
+
+
+@pytest.mark.parametrize("seconds", [0.0, 0.1, 1.5, 86400.0])
+def test_load_video_ignores_seconds(folders, seconds):
+    # frame_count alone says what loads: a seconds value that disagrees with it changes nothing
+    grey_clip(folders / "input" / "clip.mkv", 13)
+    for frame_count, frames in (("", 13), ("5", 5)):
+        expected = video.BCVLoadVideo().load("clip.mkv", "Wan", "480p", "auto", "", 1, frame_count, "fp32")
+        loaded = video.BCVLoadVideo().load("clip.mkv", "Wan", "480p", "auto", "", 1, frame_count, "fp32", seconds)
+        assert loaded[0].shape[0] == frames and torch.equal(loaded[0], expected[0]) and loaded[2] == expected[2]
 
 
 def test_load_video_validation(folders):

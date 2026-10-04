@@ -25,7 +25,8 @@ the full-resolution clip never sits in memory.
   panel is selected where it is, as `name [output]` or `name [temp]`)
 - widgets: `model` `Wan` (or `SCAIL`, `None`), `resolution` `720p`, `orientation` `auto`,
   `force_fps` (empty), `start_frame` 1, `frame_count` (empty), `precision`
-  `fp16` (or `fp32`)
+  `fp16` (or `fp32`), `seconds` (a slider: `frame_count` as a duration; the
+  loader ignores it)
 - out: `images` (IMAGE), `audio` (AUDIO of the loaded range; none when the
   file has no audio), `video_info` (BCV_VIDEO_INFO, for Get Video Info and
   Load Reference Image)
@@ -78,6 +79,31 @@ Which frames are loaded:
   the loaded frames, and the console names the cut ("100 frames -> 97 for
   Wan's 4n+1: the last 3 dropped, audio cut to match").
 - A `force_fps` or a `frame_count` that is not a number is an error.
+
+`frame_count` and `seconds` follow each other in the node, at the loaded
+frame rate (`force_fps`, or the video's own):
+
+- A `frame_count` typed in the node is set, once you leave the field or press
+  Enter, to the nearest count of the model's frame rule (Wan, SCAIL: 4n+1; a
+  tie goes to the smaller: 220 -> 221, 219 -> 217, 218 -> 217; `None`: as
+  typed), and to at most the maximum: what an empty `frame_count` loads for
+  the file, `model`, `force_fps` and `start_frame` (a 233-frame clip from
+  frame 1: 999 -> 233). Empty stays empty, the whole clip; a value that is not
+  a whole number of at least 1 stays as typed and shows the loader's error.
+- Moving `seconds` sets `frame_count` to the nearest valid count for that
+  duration, clamped the same way. The slider spans one frame to the maximum's
+  duration, in steps of 0.1 s; at its right end `frame_count` is empty (the
+  whole clip), which is also where it sits for an empty `frame_count`, its
+  default.
+- A change of the file, `model`, `force_fps` or `start_frame` moves the
+  slider's span, and sets a `frame_count` into it (to the new maximum when it
+  is above it, to the nearest count of a new model's rule). Loading a workflow
+  never changes its `frame_count`: an older workflow gets the slider at its
+  default and keeps its count.
+- `seconds` is only a display: the loader reads `frame_count`, never the
+  slider's value, so a saved `seconds` that disagrees with `frame_count`
+  changes nothing. A count that reaches the loader off the rule (an API
+  prompt) is cut down to the 4n+1 below it, as above.
 
 `precision`: `fp16`, the default, stores the frames as float16, half the RAM
 of an `fp32` load (901 frames at 720 x 1280: 4.98 GB instead of 9.96 GB).

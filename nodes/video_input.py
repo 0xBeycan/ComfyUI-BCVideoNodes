@@ -11,6 +11,12 @@ from .unused_outputs import LINK_INPUTS, drop_unlinked_heavy
 # GET, with Load Video's widget values as the query (PLAN_PARAMS): web/js/load_video.js
 PLAN_ROUTE = "/bcvideonodes/load_video/plan"
 PLAN_PARAMS = ("video", "model", "resolution", "orientation", "force_fps", "start_frame", "frame_count", "precision")
+# Load Video's seconds slider: frame_count shown as a duration, kept in sync by the frontend
+# (web/js/load_video.js). The loader ignores its value (frame_count is what loads), so it is not
+# one of PLAN_PARAMS. Its range is set by the frontend per file; SECONDS_MAX, the default, is the
+# end of the slider: the whole clip, as an empty frame_count.
+SECONDS = "seconds"
+SECONDS_MAX = 86400.0
 
 
 def _input_files(kind):
@@ -48,11 +54,14 @@ class BCVLoadVideo:
                 "orientation": (sizes.ORIENTATIONS, {"default": sizes.AUTO, "tooltip": "auto: portrait when the video is taller than wide, otherwise landscape (a square video is landscape). landscape / portrait: that orientation, reached by a centre crop, never by a rotation."}),
                 "force_fps": ("STRING", {"default": "", "tooltip": "Empty: the video's own frame rate, as it is (a 29.97 fps video loads at 29.97). A number above 0: the loaded frame rate, exactly as typed (30 loads at 30). The real frames on that rate's time grid are loaded: below the video's rate frames are dropped, above it frames are repeated; never blended or interpolated. The audio is the video's own over the loaded frames' span, so it stays in sync."}),
                 "start_frame": ("INT", {"default": 1, "min": 1, "max": 2 ** 31 - 1, "step": 1, "tooltip": "The first frame loaded, counted from 1, after force_fps."}),
-                "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. The count is then cut to the model's 4n+1 (Wan, SCAIL; None keeps it)."}),
+                "frame_count": ("STRING", {"default": "", "tooltip": "Empty: every frame from start_frame on. A whole number of at least 1: that many frames, counted after force_fps. Typed in the node, the count is set, once you leave the field or press Enter, to the nearest count of the model's frame rule (Wan, SCAIL: 4n+1, a tie to the smaller; None: as typed) and to at most what an empty frame_count loads. A count that reaches the loader off the rule (an API prompt) is cut down to the model's 4n+1."}),
             },
             "optional": {
-                # the last widget, so a workflow saved before it keeps its widget values (and gets the default)
+                # after the required widgets, so a workflow saved before it keeps its widget values (and gets the default)
                 "precision": (list(PRECISIONS), {"default": FP16, "tooltip": "The dtype the frames are stored in. fp16 (the default): float16, half the RAM of fp32's clip; every 8-bit level of the video is kept exactly, and the BCVideoNodes nodes read it back as those float32 values a frame at a time (the samplers a chunk's window at a time), so their results are fp32's. Nodes of other packs, core's included, get the float16 clip. fp32: float32, as every IMAGE."}),
+                # after precision, the last widget, so older workflows keep their widget values;
+                # the loader ignores it (SECONDS)
+                SECONDS: ("FLOAT", {"default": SECONDS_MAX, "min": 0.0, "max": SECONDS_MAX, "step": 0.1, "display": "slider", "tooltip": "frame_count as a duration, in seconds at the loaded frame rate (force_fps, or the video's own); the two follow each other. Moving it sets frame_count to the nearest count of the model's frame rule for that duration; at its right end frame_count is empty, the whole clip from start_frame on (the default). It spans one frame to what an empty frame_count loads, for the current file, model, force_fps and start_frame. Only a display: the loader reads frame_count, never this value."}),
             },
             "hidden": dict(LINK_INPUTS),
         }
@@ -67,11 +76,12 @@ class BCVLoadVideo:
     DESCRIPTION = "Loads a video one frame at a time, centre-cropped and resized (lanczos) to the model's generation size straight into the output, so the full-resolution clip never sits in memory (resolution source keeps the video's own size, no resize). Colours follow the file's own colour tags. The frames are float16 at precision fp16 (the default; every 8-bit level kept exactly), float32 at fp32. Outputs the frames, the audio of the loaded range (None when the file has no audio) and video_info."
 
     def load(self, video, model, resolution, orientation, force_fps, start_frame, frame_count, precision=FP16,
-             prompt_graph=None, unique_id=None):
+             seconds=None, prompt_graph=None, unique_id=None):
         import folder_paths
 
         from ..pipelines import video_input
 
+        del seconds  # frame_count's display (SECONDS): what loads is frame_count alone
         path = folder_paths.get_annotated_filepath(video)
         return drop_unlinked_heavy(type(self), video_input.load_video(path, model, resolution, orientation, force_fps,
                                                                       start_frame, frame_count, precision),
@@ -132,7 +142,8 @@ async def plan_route(request):
     if path is None:
         return web.Response(status=400, text="video must be a file of ComfyUI's input, output or temp folder")
     if error := _missing_file(query["video"], "video"):
-        return web.json_response(video_input.LoadPreview(source=None, info=None, available=None, error=error))
+        return web.json_response(video_input.LoadPreview(source=None, info=None, available=None, frame_range=None,
+                                                             error=error))
     # the probe reads the whole container: off the event loop
     answer = await asyncio.get_running_loop().run_in_executor(None, partial(
         video_input.preview, path, query["model"], query["resolution"], query["orientation"], query["force_fps"],
