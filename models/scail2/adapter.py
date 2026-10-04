@@ -7,7 +7,12 @@ the Animate nodes it moves video_frame_offset back by the frames it kept and see
 and its colored mask by that offset. SCAIL-2 was trained on 65-81 frame segments, so the node's
 last_chunk defaults to full (nodes/sampler.py): every chunk, the last one included, runs the full
 frames_per_chunk and the output is cut to total_frames. The reference is CLIP-encoded once per
-run; in replacement mode on a black background, as the VAE path gets it.
+run as official SCAIL-2 encodes it: the VAE reference (cropped and resized to the generation
+size; in replacement mode on a black background) stretched to CLIP's square without antialias or
+8-bit rounding (core_nodes.clip_vision_encode_official).
+
+The pose tokens' RoPE as official SCAIL-2 builds it (rope.py), an object patch on the model
+clone, so it holds only while the sampler's clone is loaded.
 
 The history frames as official SCAIL-2 feeds them (zai-org/SCAIL-2 wan/scail.py, wan-scail2
 branch): on every chained chunk the model gets the encoded previous frames clean at every step
@@ -27,7 +32,8 @@ import torch
 from ...libs.chunking import FULL, overlap_for_motion_frames, snap_down
 from ...libs.video import requantized
 from ..common.animate import AnimateAdapter, check_pose_percents, mask_window
-from ..common.core_nodes import clip_vision_encode
+from ..common.core_nodes import clip_vision_encode_official
+from .rope import official_pose_rope
 
 SIZE_MULTIPLE = 32  # the pose runs at half resolution through the /16 patch grid
 TRAINED_CHUNKS = (65, 81)  # the segment lengths SCAIL-2 was trained on (zai-org/SCAIL-2 issue #16)
@@ -37,6 +43,7 @@ ON = 225.0 / 255.0
 CHARACTER = 0.1
 ANIMATION, REPLACEMENT = "animation", "replacement"
 HISTORY_WRAPPER = "bcvideonodes_scail2_history"  # the key of the APPLY_MODEL wrapper patch_model installs
+ROPE_ENCODE = "diffusion_model.rope_encode"  # the model object patch_model replaces with official's pose RoPE
 # each colored mask's background per mode (SCAIL-Pose's preprocess, core's SCAIL2ColoredMask): the
 # reference mask is white in animation mode and black in replacement mode, the driving mask the
 # opposite
@@ -110,13 +117,17 @@ class SCAIL2Adapter(AnimateAdapter):
             logging.info("[%s] previous_frame_count %d is not on the 4k+1 grid; using %d.", self.node_name, wanted, self._previous)
             animate_inputs["previous_frame_count"] = self._previous
 
-        # SCAIL-2 is trained with the reference stretched to CLIP's square, and in replacement
-        # mode with the character on black (the authors, zai-org/SCAIL-2 issue #30).
-        clip_vision = animate_inputs.pop("clip_vision")
-        image = reference_image[:1]
-        if animate_inputs["replacement_mode"]:
+        # Official SCAIL-2 CLIP-encodes the reference the VAE gets (generate.py, wan/scail.py):
+        # center-cropped and resized to the generation size, here as core crops and resizes the
+        # VAE reference, and in replacement mode with the character on black (the authors,
+        # zai-org/SCAIL-2 issue #30); then stretched to CLIP's square as official does.
+        import comfy.utils
+
+        image = requantized(reference_image[:1]).movedim(-1, 1)
+        image = comfy.utils.common_upscale(image, width, height, "bicubic", "center").movedim(1, -1)
+        if replacement:
             image = character_on_black(image, animate_inputs["reference_image_mask"][:1])
-        animate_inputs["clip_vision_output"] = clip_vision_encode(clip_vision, image)
+        animate_inputs["clip_vision_output"] = clip_vision_encode_official(animate_inputs.pop("clip_vision"), image)
         self._history = None  # the chunk's clean history latent frames, as core encoded them; None on the first chunk
         self._frames = 0  # the chunk's latent frames
         self._clean = None  # them in the sampling space, on the model's device, once the first model call needs them
@@ -154,6 +165,9 @@ class SCAIL2Adapter(AnimateAdapter):
 
         patched = patched.clone()
         patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, HISTORY_WRAPPER, self._with_history)
+        # an object patch: set on the model only while this clone is loaded, so other workflows on
+        # the same model keep core's pose RoPE
+        patched.add_object_patch(ROPE_ENCODE, official_pose_rope(patched.get_model_object(ROPE_ENCODE)))
         return patched
 
     def _with_history(self, executor, x, t, c_concat=None, *args, **kwargs):

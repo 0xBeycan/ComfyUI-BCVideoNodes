@@ -55,7 +55,7 @@ models/              __init__ (imports the model packages in registration order)
                      common/ (registry, interfaces, checkpoint, download, loader, wrapper, blocks, pose_input,
                      core_nodes, animate), vitpose/, yolo/, sapiens2/ (net, wrapper, decode, keypoints),
                      sam3_1_multiplex/ (adapter, loader,
-                     postprocess), wan_animate/, wan_animate2/, scail2/
+                     postprocess), wan_animate/, wan_animate2/, scail2/ (adapter, rope)
 libs/                log, bbox, keypoints, mask (and the final mask: FinalMaskConfig, final_blocks, the one
                      grow + blockify the preprocess and the guards call, final_mask, painted_black; block_size 0
                      cuts no blocks, the Mask Guard's raw-mask mode), chunking, sigmas, video (tail padding;
@@ -200,7 +200,9 @@ pack adds after that still turns the saving off for that prompt, with a console 
     get the chunk's inputs and its offset as the core node gets them: on a windowed chunk the
     window and the offset into it, so a hook indexes what it is handed;
   - `prepare(animate_cls, animate_inputs, reference_image, width, height, frames_per_chunk)`:
-    validate, rename or pop the node's own inputs, encode what is encoded once per run; returns
+    validate, rename or pop the node's own inputs, encode what is encoded once per run (SCAIL-2:
+    the reference's CLIP vision as official encodes it, `core_nodes.clip_vision_encode_official`,
+    on the VAE reference core crops and resizes); returns
     how many frames of the anchor the core node keeps, its last ones (Wan Animate's
     `continue_motion_max_frames`, Wan Animate 2's `CONTINUE_MOTION_FRAMES`, SCAIL-2's
     `previous_frame_count`): the loop seeds every chained chunk with just those output frames, so
@@ -212,7 +214,11 @@ pack adds after that still turns the saving off for that prompt, with a console 
     SCAIL-2 does, the encoded previous frames clean at every step and the 4 mask channels
     (core's `c_concat`) 1 on their latent frames, 0 elsewhere, where core's noise mask alone
     re-noises them and leaves the channels 0; the history is read in `unpack` from the latent
-    frames core's noise mask marks known, and a first chunk passes through untouched);
+    frames core's noise mask marks known, and a first chunk passes through untouched; and an object
+    patch of the diffusion model's `rope_encode` on the clone, `models/scail2/rope.py`: the pose
+    tokens' RoPE as official builds it, the 2 x 2 average of the full grid's rotary values with
+    positions in float32, where core takes one unit-magnitude midpoint rotation built in the
+    inference dtype; the object patch is on the model only while the clone is loaded);
   - `continuation(anchor, offset)`: the core call's chaining inputs (default `continue_motion`,
     `video_frame_offset`; `offset` is the chunk's video_frame_offset), spliced before
     `chunk_inputs`;

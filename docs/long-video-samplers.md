@@ -244,13 +244,39 @@ scheduler. The other references are in the table below.
 
 | Input / widget              | Type                | Notes                                                                 |
 |-----------------------------|---------------------|-----------------------------------------------------------------------|
-| `clip_vision`               | CLIP_VISION         | `clip_vision_h`. The reference is encoded once per run, stretched (crop `none`) as SCAIL-2 was trained; in replacement mode with the character on black (pixels whose reference mask has no channel above 0.1, core's rule for the VAE reference), as the authors require (issue #30). |
+| `clip_vision`               | CLIP_VISION         | `clip_vision_h` (another CLIP vision model is an error). The reference is encoded once per run as official SCAIL-2 encodes it (below). |
 | `pose_video_mask`           | IMAGE               | Colored driving mask, as long as `pose_video` (a mismatch is an error). Extended past its end like the pose (`tail_padding`). |
 | `reference_image_mask`      | IMAGE               | Colored reference mask.                                               |
 | `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for: link SCAIL-2 Preprocess's `replacement_mode` output. |
 | `pose_strength`             | FLOAT, default 1.0  | Passed to `WanSCAILToVideo`.                                          |
-| `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Passed as `pose_start` / `pose_end`. start > end is an error. |
+| `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Passed as `pose_start` / `pose_end`. start > end is an error. Outside the range the model samples without the pose tokens and so without the colored driving mask too (core adds the mask to the pose tokens). Official SCAIL-2 has no such window: pose and driving mask condition every step, which the defaults 0 / 1 give. |
 | `previous_frame_count`      | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off. SCAIL-2 was trained with 5. Snapped down to the 4k+1 grid. The model sees them as history, as official SCAIL-2 feeds them (below). |
+
+CLIP vision: official SCAIL-2 (`generate.py`, `wan/scail.py`,
+`wan/modules/clip.py`) CLIP-encodes the reference the VAE gets: center-cropped
+and resized to the generation size, then stretched to 224 x 224 with bicubic
+interpolation, no antialias and no rounding to 8 bit, and normalized with
+CLIP's mean and std; the model reads the output of every transformer block but
+the last (`use_31_block`). The node does the same: the reference cropped and
+resized to `width` x `height` as core's `WanSCAILToVideo` does it for the VAE,
+in replacement mode with the character on black (pixels whose reference mask
+has no channel above 0.1, core's rule for the VAE reference; the authors
+require a reference on black, issue #30), stretched as official, then core's
+CLIP vision model and its penultimate hidden states, the layer official takes.
+Core's `CLIPVisionEncode` would antialias and round to 8 bit, and the reference
+would reach it uncropped.
+
+Pose RoPE: the pose tokens run at half the video tokens' resolution. Official
+SCAIL-2 (`wan/modules/model_scail2.py` `rope_apply_pose`) gives each one the
+average of the rotary values of the 2 x 2 video positions it covers (the
+phase at their midpoint, the magnitude cos(omega / 2) per frequency, down to
+0.878 at the highest). Core uses one unit-magnitude rotation at the midpoint,
+and builds the positions in the inference dtype, so in bf16 the pose width
+positions from 128 on round to whole numbers. The node replaces the model's
+`rope_encode` with official's pose values (positions in float32; the other
+tokens keep core's values) as an object patch on its own model clone: it is on
+the model only while the sampler samples, and other workflows on the same
+model keep core's.
 
 History frames: every chunk after the first is seeded with the last
 `previous_frame_count` frames of the one before, which `WanSCAILToVideo`

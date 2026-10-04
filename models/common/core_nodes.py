@@ -1,7 +1,10 @@
 """Running a ComfyUI core node outside the graph: node_class, with_schema_defaults, call_node, and
-clip_vision_encode on top of it."""
+clip_vision_encode on top of it; clip_vision_encode_official, core's CLIP vision model on the
+official Wan preprocessing."""
 
 import inspect
+
+import torch
 
 
 def node_class(node_id):
@@ -51,3 +54,37 @@ def clip_vision_encode(clip_vision, image):
     """Core CLIPVisionEncode of ``image`` with crop "none": the image is stretched to CLIP's square
     instead of center-cropped, as Wan Animate 2 and SCAIL-2 were trained."""
     return call_node("CLIPVisionEncode", clip_vision=clip_vision, image=image, crop="none")[0]
+
+
+def clip_vision_encode_official(clip_vision, image):
+    """``image`` [B, H, W, C] in [0, 1] through core's CLIP vision model as the Wan team's
+    CLIPModel.visual preprocesses it (zai-org/SCAIL-2 wan/modules/clip.py, wan-scail2 branch):
+    stretched to CLIP's square with bicubic interpolation, align_corners False and no antialias,
+    neither clamped nor rounded to 8 bit, then normalized with the model's mean and std. Core's
+    CLIPVisionEncode antialiases, clamps and rounds to 8 bit (comfy/clip_model.py clip_preprocess).
+    Returns the outputs CLIPVisionEncode gives (comfy/clip_vision.py encode_image); their
+    penultimate_hidden_states, which core's Wan models read as clip_fea, are the output of all but
+    the last transformer block, the official use_31_block of the 32-block ViT-H."""
+    import comfy.clip_vision
+    import comfy.model_management
+
+    if getattr(clip_vision, "model_type", None) != "clip_vision_model":
+        raise ValueError("clip_vision is a {} model; this sampler needs the CLIP ViT-H vision model of Wan "
+                         "(clip_vision_h.safetensors).".format(getattr(clip_vision, "model_type", type(clip_vision).__name__)))
+    size = clip_vision.image_size
+    pixels = image[..., :3].movedim(-1, 1).to(clip_vision.load_device, torch.float32)
+    pixels = torch.nn.functional.interpolate(pixels, size=(size, size), mode="bicubic", align_corners=False)
+    mean = torch.tensor(clip_vision.image_mean, device=pixels.device, dtype=pixels.dtype).view(1, 3, 1, 1)
+    std = torch.tensor(clip_vision.image_std, device=pixels.device, dtype=pixels.dtype).view(1, 3, 1, 1)
+    pixels = (pixels - mean) / std
+
+    comfy.model_management.load_model_gpu(clip_vision.patcher)
+    out = clip_vision.model(pixel_values=pixels, intermediate_output=-2)
+    device = comfy.model_management.intermediate_device()
+    outputs = comfy.clip_vision.Output()
+    outputs["last_hidden_state"] = out[0].to(device)
+    outputs["image_embeds"] = out[2].to(device)
+    outputs["image_sizes"] = [pixels.shape[1:]] * pixels.shape[0]
+    outputs["penultimate_hidden_states"] = out[1].to(device)
+    outputs["mm_projected"] = out[3]
+    return outputs

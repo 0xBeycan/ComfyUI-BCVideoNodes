@@ -12,25 +12,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from sampler_fakes import (SCAIL2, Calls, FakeCLIPVisionEncode, IndexVAE, aligned, node_module,  # noqa: E402,F401
-                           reference_mask, run)
-
-
-class RecordingCLIPVisionEncode(FakeCLIPVisionEncode):
-    images = []
-
-    @classmethod
-    def EXECUTE_NORMALIZED(cls, clip_vision, image, crop):
-        cls.images.append((image.clone(), crop))
-        return FakeCLIPVisionEncode.EXECUTE_NORMALIZED(clip_vision, image, crop)
-
-
-@pytest.fixture
-def clip_run(node_module, monkeypatch):
-    """(the sampler Names, the images CLIPVisionEncode was handed with their crop)."""
-    RecordingCLIPVisionEncode.images = []
-    monkeypatch.setitem(sys.modules["nodes"].NODE_CLASS_MAPPINGS, "CLIPVisionEncode", RecordingCLIPVisionEncode)
-    return node_module, RecordingCLIPVisionEncode.images
+from sampler_fakes import (SCAIL2, Calls, FakeCLIPVision, FakeModel, IndexVAE, aligned,  # noqa: E402,F401
+                           fake_common_upscale, node_module, reference_mask, run)
 
 
 def chunks_for(total):
@@ -232,22 +215,83 @@ def test_old_core_is_rejected(node_module, monkeypatch):
 
 # --- CLIP vision -------------------------------------------------------------------------------
 
-def test_clip_is_encoded_once_per_run_from_the_plain_reference_in_animation_mode(clip_run):
-    module, images = clip_run
-    reference = torch.rand(1, 64, 32, 3, generator=torch.Generator().manual_seed(0))
-    run(module, pose_frames=240, node=SCAIL2, reference_image=reference)
-    assert len(images) == 1
-    image, crop = images[0]
-    assert crop == "none" and torch.equal(image, reference)
-    assert all(c["clip"] == ("clip", "cv", float(reference[0, 0, 0, 0]), "none") for c in Calls.animate)
+CLIP_MEAN = torch.tensor([0.48145466, 0.4578275, 0.40821073]).view(1, 3, 1, 1)  # wan/modules/clip.py _clip
+CLIP_STD = torch.tensor([0.26862954, 0.26130258, 0.27577711]).view(1, 3, 1, 1)
 
 
-def test_clip_gets_the_character_on_black_in_replacement_mode(clip_run):
-    module, images = clip_run
-    reference = torch.rand(1, 64, 32, 3, generator=torch.Generator().manual_seed(0))
-    run(module, pose_frames=240, node=SCAIL2, reference_image=reference, replacement_mode=True)
-    assert len(images) == 1
-    image, crop = images[0]
-    expected = torch.zeros_like(reference)
-    expected[:, 16:48, 8:24] = reference[:, 16:48, 8:24]  # the blue person of reference_mask()
-    assert crop == "none" and torch.equal(image, expected)
+def official_clip_pixels(reference):
+    """Official SCAIL-2's CLIP input for the VAE reference ``reference`` [1, H, W, 3] in [0, 1],
+    written out: in [-1, 1] (generate.py load_image_to_tensor_chw_normalized), stretched to 224
+    with F.interpolate bicubic, align_corners False, mapped back to [0, 1] and normalized
+    (wan/modules/clip.py CLIPModel.visual)."""
+    image = reference.movedim(-1, 1) * 2.0 - 1.0
+    image = torch.nn.functional.interpolate(image, size=(224, 224), mode="bicubic", align_corners=False)
+    return (image.mul(0.5).add(0.5) - CLIP_MEAN) / CLIP_STD
+
+
+def core_vae_reference(reference, width=32, height=64):
+    """The reference core's WanSCAILToVideo VAE-encodes: center-cropped to the generation aspect
+    and resized bicubic to run()'s 32 x 64 (comfy/utils.py common_upscale)."""
+    return fake_common_upscale(reference.movedim(-1, 1), width, height, "bicubic", "center").movedim(1, -1)
+
+
+def clip_run(module, **overrides):
+    """Runs three chunks with a reference of another aspect than the generation size; returns
+    (the reference, the FakeCLIPVision the run encoded with)."""
+    reference = torch.rand(1, 96, 40, 3, generator=torch.Generator().manual_seed(0))
+    clip_vision = FakeCLIPVision()
+    run(module, pose_frames=240, node=SCAIL2, reference_image=reference, clip_vision=clip_vision, **overrides)
+    return reference, clip_vision
+
+
+def test_clip_gets_the_vae_reference_preprocessed_as_official_once_per_run(node_module):
+    reference, clip_vision = clip_run(node_module)
+    assert len(clip_vision.calls) == 1
+    pixels, layer = clip_vision.calls[0]
+    expected = official_clip_pixels(core_vae_reference(reference))
+    assert layer == -2  # the penultimate block: official use_31_block of the 32-block ViT-H
+    assert pixels.shape == (1, 3, 224, 224) and pixels.dtype == torch.float32
+    assert torch.allclose(pixels, expected, atol=1e-5, rtol=0)
+    # core's CLIPVisionEncode (crop none) antialiases and rounds to 8 bit: not what official feeds
+    core = torch.nn.functional.interpolate(core_vae_reference(reference).movedim(-1, 1), size=(224, 224), mode="bicubic", antialias=True)
+    core = (torch.clip(255.0 * core, 0, 255).round() / 255.0 - CLIP_MEAN) / CLIP_STD
+    assert not torch.allclose(pixels, core, atol=1e-3, rtol=0)
+    # every chunk gets the outputs of that one encode, as CLIPVisionEncode returns them
+    outputs = [c["clip"] for c in Calls.animate]
+    assert len(outputs) == 4 and all(o is outputs[0] for o in outputs)
+    assert outputs[0].penultimate_hidden_states is pixels and outputs[0].last_hidden_state is pixels
+    assert outputs[0].image_sizes == [pixels.shape[1:]]
+
+
+def test_clip_gets_the_character_on_black_in_replacement_mode(node_module):
+    reference, clip_vision = clip_run(node_module, replacement_mode=True)
+    expected = torch.zeros(1, 64, 32, 3)
+    expected[:, 16:48, 8:24] = core_vae_reference(reference)[:, 16:48, 8:24]  # the blue person of reference_mask()
+    assert torch.allclose(clip_vision.calls[0][0], official_clip_pixels(expected), atol=1e-5, rtol=0)
+
+
+def test_clip_of_a_half_reference_is_read_at_its_8_bit_levels(node_module):
+    reference = torch.randint(0, 256, (1, 96, 40, 3), generator=torch.Generator().manual_seed(0)) / 255.0
+    clip_vision = FakeCLIPVision()
+    run(node_module, pose_frames=81, node=SCAIL2, reference_image=reference.half(), clip_vision=clip_vision)
+    assert torch.allclose(clip_vision.calls[0][0], official_clip_pixels(core_vae_reference(reference)), atol=1e-5, rtol=0)
+
+
+def test_a_clip_vision_model_other_than_vit_h_is_an_error(node_module):
+    clip_vision = FakeCLIPVision()
+    clip_vision.model_type = "siglip_vision_model"
+    with pytest.raises(ValueError, match="clip_vision is a siglip_vision_model model; this sampler needs the CLIP ViT-H"):
+        run(node_module, pose_frames=81, node=SCAIL2, clip_vision=clip_vision)
+
+
+# --- the pose RoPE -----------------------------------------------------------------------------
+
+def test_official_pose_rope_is_an_object_patch_on_the_clone(node_module):
+    model = FakeModel()
+    run(node_module, pose_frames=81, node=SCAIL2, model=model)
+    patched = Calls.sampler[0]["model"]
+    assert list(patched.object_patches) == ["diffusion_model.rope_encode"]
+    # it wraps the model's own rope_encode: a call without pose tokens is core's call
+    rope_encode = patched.object_patches["diffusion_model.rope_encode"]
+    assert rope_encode(3, 8, 4, device="cpu", dtype=torch.bfloat16) == ("core rope_encode", (3, 8, 4), {"device": "cpu", "dtype": torch.bfloat16})
+    assert model.object_patches == {}  # the model the node was handed keeps core's rope_encode

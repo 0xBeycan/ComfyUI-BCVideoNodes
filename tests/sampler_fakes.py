@@ -63,19 +63,37 @@ class FakeVAE:
     process_output = staticmethod(lambda image: image.add_(1.0).div_(2.0).clamp_(0.0, 1.0))
 
 
+def original_rope_encode(*args, **kwargs):
+    """The stand-in for core's SCAILWanModel.rope_encode the SCAIL-2 adapter wraps: returns what
+    it was called with."""
+    return "core rope_encode", args, kwargs
+
+
+ORIGINAL_OBJECTS = {"diffusion_model.rope_encode": original_rope_encode}
+
+
 class FakeModel:
     def __init__(self):
         self.model_options = {"transformer_options": {}}
         self.wrappers = {}  # comfy/model_patcher.py ModelPatcher.wrappers: {wrapper type: {key: [wrapper]}}
+        self.object_patches = {}  # ModelPatcher.object_patches: {dotted name: object}
 
     def add_wrapper_with_key(self, wrapper_type, key, wrapper):
         self.wrappers.setdefault(wrapper_type, {}).setdefault(key, []).append(wrapper)
+
+    def add_object_patch(self, name, obj):
+        self.object_patches[name] = obj
+
+    def get_model_object(self, name):
+        """comfy/model_patcher.py: the object patch, else the model's own object (here a stand-in)."""
+        return self.object_patches.get(name, ORIGINAL_OBJECTS[name])
 
     def clone(self):
         import copy
         clone = FakeModel()
         clone.model_options = copy.deepcopy(self.model_options)
         clone.wrappers = {kind: {key: list(found) for key, found in keyed.items()} for kind, keyed in self.wrappers.items()}
+        clone.object_patches = dict(self.object_patches)
         if hasattr(self, "shift"):
             clone.shift = self.shift
         return clone
@@ -287,6 +305,37 @@ class FakeCLIPVisionEncode:
         return FakeNodeOutput(("clip", clip_vision, float(image[0, 0, 0, 0]), crop))
 
 
+class FakeOutput:
+    """comfy/clip_vision.py Output: attributes set and read by key."""
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, item):
+        setattr(self, key, item)
+
+
+class FakeCLIPVision:
+    """comfy/clip_vision.py ClipVisionModel of the ViT-H config as clip_vision_encode_official
+    reads it; its model records the pixel values it was handed and returns (last hidden state,
+    penultimate hidden states, image embeds, mm_projected) as core's CLIPVisionModelProjection
+    does, each the pixel values themselves, so what reached the model is visible in the output."""
+
+    model_type = "clip_vision_model"
+    image_size = 224
+    image_mean = [0.48145466, 0.4578275, 0.40821073]  # comfy/clip_vision.py defaults
+    image_std = [0.26862954, 0.26130258, 0.27577711]
+    load_device = "cpu"
+    patcher = "patcher"
+
+    def __init__(self):
+        self.calls = []  # (pixel_values, intermediate_output) per model call
+
+    def model(self, pixel_values, intermediate_output=None):
+        self.calls.append((pixel_values, intermediate_output))
+        return pixel_values, pixel_values, pixel_values, None
+
+
 class FakeSamplerCustom:
     FUNCTION = "EXECUTE_NORMALIZED"
 
@@ -401,6 +450,10 @@ def node_module(monkeypatch):
     comfy = types.ModuleType("comfy")
     comfy_mm = types.ModuleType("comfy.model_management")
     comfy_mm.throw_exception_if_processing_interrupted = lambda: None
+    comfy_mm.load_model_gpu = lambda patcher: None
+    comfy_mm.intermediate_device = lambda: torch.device("cpu")
+    comfy_clip_vision = types.ModuleType("comfy.clip_vision")
+    comfy_clip_vision.Output = FakeOutput
     comfy_samplers = types.ModuleType("comfy.samplers")
     comfy_samplers.SAMPLER_NAMES = ["euler", "lcm"]
     comfy_samplers.SCHEDULER_NAMES = ["normal", "simple", "beta"]
@@ -410,6 +463,7 @@ def node_module(monkeypatch):
     comfy_patcher_extension = types.ModuleType("comfy.patcher_extension")
     comfy_patcher_extension.WrappersMP = types.SimpleNamespace(APPLY_MODEL="apply_model")  # comfy/patcher_extension.py
     comfy.model_management = comfy_mm
+    comfy.clip_vision = comfy_clip_vision
     comfy.patcher_extension = comfy_patcher_extension
     comfy.samplers = comfy_samplers
     comfy.utils = comfy_utils
@@ -432,6 +486,7 @@ def node_module(monkeypatch):
     for name, module in {
         "comfy": comfy,
         "comfy.model_management": comfy_mm,
+        "comfy.clip_vision": comfy_clip_vision,
         "comfy.samplers": comfy_samplers,
         "comfy.utils": comfy_utils,
         "comfy.patcher_extension": comfy_patcher_extension,
@@ -566,7 +621,7 @@ def driving_videos(frames):
 NODE_DEFAULTS = {
     ANIMATE1: dict(continue_motion_max_frames=5),
     ANIMATE2: dict(reference_image_strength=1.0, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0, attn_log_scale=0.0),
-    SCAIL2: dict(clip_vision="cv", replacement_mode=False, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0,
+    SCAIL2: dict(replacement_mode=False, pose_strength=1.0, pose_start_percent=0.0, pose_end_percent=1.0,
                  previous_frame_count=5),
 }
 
@@ -610,5 +665,6 @@ def run(module, pose_frames, node=ANIMATE2, total_frames=0, frames_per_chunk=81,
         replacement_mode = overrides.get("replacement_mode", False)
         kwargs["pose_video_mask"] = kwargs["pose_video"].clone() + (1.0 if replacement_mode else 0.0)
         kwargs["reference_image_mask"] = reference_mask(replacement_mode)
+        kwargs["clip_vision"] = FakeCLIPVision()
     kwargs.update(overrides)
     return getattr(module, node)().generate(**kwargs)

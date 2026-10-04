@@ -132,6 +132,7 @@ CHECK3_MODULES = [
     "models.wan_animate2.attention",
     "models.scail2",
     "models.scail2.adapter",
+    "models.scail2.rope",
     "pipelines.sapiens2_pose",
     "models.sapiens2",
     "models.sapiens2.net",

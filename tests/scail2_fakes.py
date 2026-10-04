@@ -7,6 +7,8 @@ scail2 = Names("scail2", {
            "driving_on_black"),
     **refs("libs.mask", "render_identity"),
     **refs("models.scail2.adapter", "ANIMATION", "REPLACEMENT", "character_on_black", "mask_convention"),
+    **refs("models.scail2.rope", "official_pose_rope"),
+    **refs("models.common.core_nodes", "clip_vision_encode_official"),
     **refs("nodes.sampler", "BCVSCAIL2LongVideoSampler"),
     **refs("pipelines.guard.scail2", "check_scail2", "driving_person", "latent_reading"),
     **refs("libs.resize", "center_crop"),
