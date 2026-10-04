@@ -1,13 +1,23 @@
 """WanSCAILToVideo (SCAIL-2) in the long-video loop.
 
 The core node's chaining contract differs from Wan Animate's: it is seeded with previous_frames
-(the last previous_frame_count of them, VAE-encoded into the first latent frames and kept clean
-by a noise mask) and returns 4 outputs, with no trim values, so the trim is computed here. Like
+(the last previous_frame_count of them, VAE-encoded into the first latent frames, which a noise
+mask marks known) and returns 4 outputs, with no trim values, so the trim is computed here. Like
 the Animate nodes it moves video_frame_offset back by the frames it kept and seeks the pose video
 and its colored mask by that offset. SCAIL-2 was trained on 65-81 frame segments, so the node's
 last_chunk defaults to full (nodes/sampler.py): every chunk, the last one included, runs the full
 frames_per_chunk and the output is cut to total_frames. The reference is CLIP-encoded once per
 run; in replacement mode on a black background, as the VAE path gets it.
+
+The history frames as official SCAIL-2 feeds them (zai-org/SCAIL-2 wan/scail.py, wan-scail2
+branch): on every chained chunk the model gets the encoded previous frames clean at every step
+(`apply_clean_history`) and the 4 mask channels of the video tokens 1 on those latent frames, 0
+elsewhere (`history_mask`, concatenated after the 16 latent channels: wan/modules/model_scail2.py).
+Core's noise mask alone feeds the model those frames re-noised to the current sigma and the mask
+channels all zero (WAN21.concat_cond of a model built with image_to_video=False). The adapter's
+APPLY_MODEL wrapper (`_with_history`) writes both into the model call: core's c_concat is those
+4 channels, concatenated after the latent's 16 in BaseModel._apply_model. Core's noise mask stays:
+it clamps the denoised history frames back to the clean latent, so the chunk ends with them clean.
 """
 
 import logging
@@ -26,6 +36,7 @@ TRAINED_CHUNKS = (65, 81)  # the segment lengths SCAIL-2 was trained on (zai-org
 ON = 225.0 / 255.0
 CHARACTER = 0.1
 ANIMATION, REPLACEMENT = "animation", "replacement"
+HISTORY_WRAPPER = "bcvideonodes_scail2_history"  # the key of the APPLY_MODEL wrapper patch_model installs
 # each colored mask's background per mode (SCAIL-Pose's preprocess, core's SCAIL2ColoredMask): the
 # reference mask is white in animation mode and black in replacement mode, the driving mask the
 # opposite
@@ -106,6 +117,10 @@ class SCAIL2Adapter(AnimateAdapter):
         if animate_inputs["replacement_mode"]:
             image = character_on_black(image, animate_inputs["reference_image_mask"][:1])
         animate_inputs["clip_vision_output"] = clip_vision_encode(clip_vision, image)
+        self._history = None  # the chunk's clean history latent frames, as core encoded them; None on the first chunk
+        self._frames = 0  # the chunk's latent frames
+        self._clean = None  # them in the sampling space, on the model's device, once the first model call needs them
+        self._calls = 0  # the model calls they went into, which after_chunk logs
         return self._previous
 
     def _check_mode(self, replacement, name, mask, background):
@@ -134,15 +149,66 @@ class SCAIL2Adapter(AnimateAdapter):
                              "re-run the preprocess (SCAIL-2 Preprocess), or resize the mask to the pose video's "
                              "size.".format(int(mask.shape[2]), int(mask.shape[1]), int(pose_video.shape[2]), int(pose_video.shape[1])))
 
+    def patch_model(self, patched, animate_inputs):
+        import comfy.patcher_extension
+
+        patched = patched.clone()
+        patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.APPLY_MODEL, HISTORY_WRAPPER, self._with_history)
+        return patched
+
+    def _with_history(self, executor, x, t, c_concat=None, *args, **kwargs):
+        """BaseModel.apply_model with the chunk's history as official SCAIL-2 feeds it: the first
+        latent frames of ``x`` the clean history, and the 4 mask channels (``c_concat``) 1 there
+        and 0 elsewhere. Without history (the first chunk) the call is passed on untouched."""
+        if self._history is None:
+            return executor(x, t, c_concat, *args, **kwargs)
+        known = int(self._history.shape[2])
+        if c_concat is None or c_concat.shape[1] != 4 or x.shape[2] != self._frames:
+            raise RuntimeError("[{}] the model call is not the chunk's {} latent frames with 4 mask channels to mark the "
+                               "previous frames in (c_concat {}, x {}): the model is not SCAIL-2, a context window "
+                               "splits the chunk, or core changed how it feeds them; use a SCAIL-2 model without "
+                               "context windows, on an up-to-date ComfyUI.".format(
+                                   self.node_name, self._frames, None if c_concat is None else tuple(c_concat.shape), tuple(x.shape)))
+        if self._clean is None or self._clean.device != x.device or self._clean.dtype != x.dtype:
+            self._clean = executor.class_obj.process_latent_in(self._history.to(x.device)).to(x.dtype)
+        x = x.clone()
+        x[:, :, :known] = self._clean
+        mask = torch.zeros_like(c_concat)
+        mask[:, :, :known] = 1.0
+        self._calls += 1
+        return executor(x, t, mask, *args, **kwargs)
+
     def continuation(self, anchor, offset):
         return {"video_frame_offset": offset, "previous_frames": anchor}
 
     def unpack(self, outputs, anchor):
         positive, negative, latent, offset = outputs[:self.OUTPUTS]
+        # the history the model call gets (_with_history): the latent frames core's noise mask
+        # marks known, as core encoded them
+        self._history = self._clean = None
+        if anchor is not None:
+            if latent.get("noise_mask") is None:
+                raise RuntimeError("[{}] {} returned the previous frames without a noise_mask: core changed how it seeds "
+                                   "a chained chunk; update ComfyUI-BCVideoNodes.".format(self.node_name, self.ANIMATE_NODE))
+            known = int((latent["noise_mask"][0, 0].amax(dim=(1, 2)) == 0).sum())
+            self._history = latent["samples"][:, :, :known].clone()
+            self._frames = int(latent["samples"].shape[2])
         # the previous frames come back decoded at the head of the chunk; the references travel
         # as conditioning, so no latent frame is dropped
         trim_image = 0 if anchor is None else min(self._previous, int(anchor.shape[0]))
         return positive, negative, latent, 0, trim_image, offset
+
+    def after_chunk(self, index):
+        if self._history is None:
+            return
+        calls, self._calls = self._calls, 0
+        logging.info("[%s] chunk %d: %d clean history latent frames, marked in the mask channels, in %d model calls.",
+                     self.node_name, index + 1, int(self._history.shape[2]), calls)
+        if calls == 0:
+            logging.warning("[%s] chunk %d has history frames but no model call went through the history wrapper: the "
+                            "model saw them re-noised, without the history mask. Another patch replaced "
+                            "BaseModel.apply_model.", self.node_name, index + 1)
+        self._history = self._clean = None
 
     def anchor_region(self, first, length, height, width, animate_inputs):
         if not animate_inputs["replacement_mode"]:

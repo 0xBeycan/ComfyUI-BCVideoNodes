@@ -207,7 +207,12 @@ pack adds after that still turns the saving off for that prompt, with a console 
     the first chained chunk's window reaches back by no more than them, and the overlap is what
     they decode to (`libs/chunking.overlap_for_motion_frames`);
   - `check_videos(pose_video, animate_inputs)`: checks between the videos, before any is held;
-  - `patch_model`: model patches, once per run;
+  - `patch_model`: model patches, once per run (Wan Animate 2: the seed-frame attention bias;
+    SCAIL-2: an APPLY_MODEL wrapper that feeds the model a chained chunk's history as official
+    SCAIL-2 does, the encoded previous frames clean at every step and the 4 mask channels
+    (core's `c_concat`) 1 on their latent frames, 0 elsewhere, where core's noise mask alone
+    re-noises them and leaves the channels 0; the history is read in `unpack` from the latent
+    frames core's noise mask marks known, and a first chunk passes through untouched);
   - `continuation(anchor, offset)`: the core call's chaining inputs (default `continue_motion`,
     `video_frame_offset`; `offset` is the chunk's video_frame_offset), spliced before
     `chunk_inputs`;
@@ -218,7 +223,8 @@ pack adds after that still turns the saving off for that prompt, with a console 
     measures and corrects a chunk whose decoded frames show driving frames `first` onwards,
     [length, height, width] weights, or None (the default) for the whole frame; the character
     only where core re-feeds the background every chunk (replacement mode);
-  - `after_chunk(index)`: called once per chunk after it is sampled and decoded (no-op default).
+  - `after_chunk(index)`: called once per chunk after it is sampled and decoded (no-op default;
+    Wan Animate 2 and SCAIL-2 log how many model calls their patch reached).
   A change to a default is a change to both Wan Animate samplers.
 - The chunk length policy is not the adapter's: it is the samplers' `last_chunk` widget,
   `libs/chunking.LAST_CHUNK` (`fit`: the last chunk fitted to what is left; `full`: every chunk

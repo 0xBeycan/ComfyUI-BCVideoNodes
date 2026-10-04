@@ -36,7 +36,7 @@ sampler = Names("sampler", {
     **refs("models.common.animate", "AnimateAdapter"),
     "registry": Ref("models.common.registry"),
     **refs("models.wan_animate.adapter", "WanAnimateAdapter"),
-    **refs("models.scail2.adapter", "SCAIL2Adapter", "mask_convention"),
+    **refs("models.scail2.adapter", "SCAIL2Adapter", "mask_convention", "HISTORY_WRAPPER"),
     **refs("libs.color", "srgb_to_lab"),
     **seams("pipelines.long_video", "lab_transfer", "requantized"),
     **seams("libs.mask", "painted_black"),
@@ -66,11 +66,16 @@ class FakeVAE:
 class FakeModel:
     def __init__(self):
         self.model_options = {"transformer_options": {}}
+        self.wrappers = {}  # comfy/model_patcher.py ModelPatcher.wrappers: {wrapper type: {key: [wrapper]}}
+
+    def add_wrapper_with_key(self, wrapper_type, key, wrapper):
+        self.wrappers.setdefault(wrapper_type, {}).setdefault(key, []).append(wrapper)
 
     def clone(self):
         import copy
         clone = FakeModel()
         clone.model_options = copy.deepcopy(self.model_options)
+        clone.wrappers = {kind: {key: list(found) for key, found in keyed.items()} for kind, keyed in self.wrappers.items()}
         if hasattr(self, "shift"):
             clone.shift = self.shift
         return clone
@@ -402,7 +407,10 @@ def node_module(monkeypatch):
     comfy_utils = types.ModuleType("comfy.utils")
     comfy_utils.ProgressBar = FakeProgressBar
     comfy_utils.common_upscale = fake_common_upscale
+    comfy_patcher_extension = types.ModuleType("comfy.patcher_extension")
+    comfy_patcher_extension.WrappersMP = types.SimpleNamespace(APPLY_MODEL="apply_model")  # comfy/patcher_extension.py
     comfy.model_management = comfy_mm
+    comfy.patcher_extension = comfy_patcher_extension
     comfy.samplers = comfy_samplers
     comfy.utils = comfy_utils
 
@@ -426,6 +434,7 @@ def node_module(monkeypatch):
         "comfy.model_management": comfy_mm,
         "comfy.samplers": comfy_samplers,
         "comfy.utils": comfy_utils,
+        "comfy.patcher_extension": comfy_patcher_extension,
         "nodes": core_nodes,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)

@@ -37,7 +37,8 @@ seam between chunks is the frames the core node carries over and trims back
 off (1 for Animate 2, `continue_motion_max_frames` for Animate,
 `previous_frame_count` for SCAIL-2), so there is no cross-window blending and
 no re-denoising. A chunk is handed just those seed frames, the ones its core
-node keeps. After each core conditioning call the loop runs
+node keeps. SCAIL-2 feeds the model those frames as its official code does:
+clean at every step, and flagged as history (see the SCAIL-2 section). After each core conditioning call the loop runs
 `gc.collect()`: core's `WanAnimateToVideo` leaves the Wan VAE encoder's
 features in a reference cycle, GiBs of VRAM at 720p that otherwise stay
 until Python's own collector runs (see [Measured against the earlier workflow](measurements.md)).
@@ -249,7 +250,24 @@ scheduler. The other references are in the table below.
 | `replacement_mode`          | BOOLEAN, default off | Must match the mode the masks were rendered for: link SCAIL-2 Preprocess's `replacement_mode` output. |
 | `pose_strength`             | FLOAT, default 1.0  | Passed to `WanSCAILToVideo`.                                          |
 | `pose_start_percent`, `pose_end_percent` | FLOAT, 0.0 / 1.0 | Passed as `pose_start` / `pose_end`. start > end is an error. |
-| `previous_frame_count`      | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off. SCAIL-2 was trained with 5. Snapped down to the 4k+1 grid. |
+| `previous_frame_count`      | INT, default 5      | Frames of the previous chunk that seed the next one and are trimmed back off. SCAIL-2 was trained with 5. Snapped down to the 4k+1 grid. The model sees them as history, as official SCAIL-2 feeds them (below). |
+
+History frames: every chunk after the first is seeded with the last
+`previous_frame_count` frames of the one before, which `WanSCAILToVideo`
+VAE-encodes into the chunk's first latent frames (2 for the default 5). The
+official SCAIL-2 code (`zai-org/SCAIL-2`, `wan-scail2` branch, `wan/scail.py`)
+gives the model those latent frames clean before every step and sets the 4
+mask channels of the video tokens to 1 on them and 0 elsewhere (the history
+mask, concatenated after the 16 latent channels). Core alone marks them known
+with a noise mask instead, so the model sees them re-noised to the current
+sigma (pure noise at the first step) and the mask channels stay 0. The node
+installs a model wrapper that writes the clean history and the history mask
+into every model call of a chained chunk; core's noise mask stays, so the
+history frames come out of the sampler clean and are trimmed as before. The
+first chunk has no history and runs untouched. The log line "chunk N: K clean
+history latent frames, marked in the mask channels, in M model calls" shows
+it ran (M: the chunk's model calls); a chained chunk with 0 calls is
+logged as a warning: another patch took over the model call.
 
 `width` and `height` must be divisible by 32 (the pose runs at half
 resolution through the /16 patch grid); anything else is an error. 512 x 896
